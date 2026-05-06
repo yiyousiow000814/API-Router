@@ -383,4 +383,12 @@ Checked`
     expect(html).toContain(">+1</div>");
     expect(html).toContain(">#1</div>");
   });
+
+  it("renders markdown image references as inline images", () => {
+    const html = renderMessageRichHtml("![render](C:\\tmp\\render.png)");
+
+    expect(html).toContain("msgInlineImageFrame");
+    expect(html).toContain("/codex/file?path=C%3A%5Ctmp%5Crender.png");
+    expect(html).toContain('alt="render"');
+  });
 });

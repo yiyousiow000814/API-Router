@@ -52,6 +52,21 @@ pub(super) struct TurnStartRequest {
     pub(super) approval_policy: Option<String>,
     #[serde(default)]
     pub(super) sandbox_policy: Option<Value>,
+    #[serde(default)]
+    pub(super) attachments: Vec<TurnAttachment>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct TurnAttachment {
+    #[serde(default)]
+    pub(super) kind: String,
+    #[serde(default)]
+    pub(super) file_name: String,
+    #[serde(default)]
+    pub(super) mime_type: String,
+    #[serde(default)]
+    pub(super) path: String,
 }
 
 pub(super) fn turn_thread_id(req: &TurnStartRequest) -> Option<&str> {
@@ -86,18 +101,38 @@ fn prompt_with_plan_protocol(prompt: &str, collaboration_mode: Option<&str>) -> 
 
 pub(super) fn build_turn_start_params(thread_id: &str, req: &TurnStartRequest) -> Value {
     let prompt = prompt_with_plan_protocol(&req.prompt, req.collaboration_mode.as_deref());
+    let mut input = vec![json!({
+        "type": "text",
+        "text": prompt,
+        "textElements": []
+    })];
+    for attachment in req
+        .attachments
+        .iter()
+        .filter(|attachment| !attachment.path.trim().is_empty())
+    {
+        let kind = attachment.kind.trim().to_ascii_lowercase();
+        if kind == "image"
+            || attachment
+                .mime_type
+                .trim()
+                .to_ascii_lowercase()
+                .starts_with("image/")
+        {
+            input.push(json!({
+                "type": "local_image",
+                "path": attachment.path
+            }));
+        } else {
+            input.push(json!({
+                "type": "mention",
+                "path": attachment.path
+            }));
+        }
+    }
     let mut params = serde_json::Map::from_iter([
         ("threadId".to_string(), Value::String(thread_id.to_string())),
-        (
-            "input".to_string(),
-            json!([
-                {
-                    "type": "text",
-                    "text": prompt,
-                    "textElements": []
-                }
-            ]),
-        ),
+        ("input".to_string(), Value::Array(input)),
         ("workspace".to_string(), json!(req.workspace)),
         ("cwd".to_string(), json!(req.cwd)),
         ("model".to_string(), json!(req.model)),
@@ -662,7 +697,99 @@ pub(super) struct UploadRequest {
     file_name: String,
     #[serde(default)]
     mime_type: String,
+    #[serde(default)]
+    kind: String,
     base64_data: String,
+}
+
+fn file_extension(value: &str) -> String {
+    std::path::Path::new(value)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| format!(".{}", value.trim().to_ascii_lowercase()))
+        .unwrap_or_default()
+}
+
+fn classify_upload_attachment(
+    file_name: &str,
+    mime_type: &str,
+    kind_hint: &str,
+) -> Option<&'static str> {
+    let kind = kind_hint.trim().to_ascii_lowercase();
+    let mime = mime_type.trim().to_ascii_lowercase();
+    let ext = file_extension(file_name);
+    const IMAGE_EXTS: &[&str] = &[".png", ".jpg", ".jpeg", ".gif", ".webp"];
+    const FILE_EXTS: &[&str] = &[
+        ".c",
+        ".cc",
+        ".cpp",
+        ".cs",
+        ".css",
+        ".csv",
+        ".doc",
+        ".docx",
+        ".go",
+        ".h",
+        ".hpp",
+        ".html",
+        ".java",
+        ".js",
+        ".json",
+        ".jsonl",
+        ".jsx",
+        ".log",
+        ".md",
+        ".markdown",
+        ".pdf",
+        ".php",
+        ".ppt",
+        ".pptx",
+        ".ps1",
+        ".py",
+        ".rb",
+        ".rs",
+        ".sh",
+        ".sql",
+        ".ts",
+        ".tsx",
+        ".tsv",
+        ".txt",
+        ".xls",
+        ".xlsx",
+        ".xml",
+        ".yaml",
+        ".yml",
+        ".toml",
+    ];
+    if IMAGE_EXTS.contains(&ext.as_str())
+        && (mime.is_empty() || mime.starts_with("image/"))
+        && (kind.is_empty() || kind == "image")
+    {
+        return Some("image");
+    }
+    if kind == "file" && FILE_EXTS.contains(&ext.as_str()) {
+        return Some("file");
+    }
+    if FILE_EXTS.contains(&ext.as_str()) {
+        return Some("file");
+    }
+    if mime.starts_with("text/")
+        || matches!(
+            mime.as_str(),
+            "application/json"
+                | "application/pdf"
+                | "application/msword"
+                | "application/vnd.ms-excel"
+                | "application/vnd.ms-powerpoint"
+                | "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                | "application/xml"
+        )
+    {
+        return Some("file");
+    }
+    None
 }
 
 pub(super) async fn codex_attachments_upload(
@@ -679,6 +806,16 @@ pub(super) async fn codex_attachments_upload(
             "threadId and fileName are required",
         );
     }
+    let attachment_kind =
+        match classify_upload_attachment(&req.file_name, &req.mime_type, &req.kind) {
+            Some(kind) => kind,
+            None => {
+                return api_error(
+                    StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                    "unsupported attachment type",
+                )
+            }
+        };
     let max_base64_len = super::MAX_ATTACHMENT_BYTES.div_ceil(3) * 4 + 8;
     if req.base64_data.len() > max_base64_len {
         return api_error(
@@ -730,6 +867,7 @@ pub(super) async fn codex_attachments_upload(
         "threadId": req.thread_id,
         "fileName": safe_name,
         "mimeType": req.mime_type,
+        "kind": attachment_kind,
         "path": path.to_string_lossy(),
     }))
     .into_response()
@@ -1552,8 +1690,8 @@ pub(super) async fn codex_rpc_proxy(
 #[allow(clippy::await_holding_lock)]
 mod tests {
     use super::{
-        build_turn_start_params, build_turn_start_response, parse_slash_command,
-        prompt_with_plan_protocol, read_plan_mode_from_rollout_path,
+        build_turn_start_params, build_turn_start_response, classify_upload_attachment,
+        parse_slash_command, prompt_with_plan_protocol, read_plan_mode_from_rollout_path,
         record_terminal_turn_start_runtime, service_tier_override_json, status_read_result,
         supported_slash_commands, turn_thread_id, ServiceTierOverride, TurnStartRequest,
     };
@@ -1579,6 +1717,44 @@ mod tests {
         assert_eq!(params["input"][0]["type"], "text");
         assert_eq!(params["input"][0]["text"], "hi");
         assert_eq!(params["effort"], "high");
+    }
+
+    #[test]
+    fn turn_start_params_include_image_and_file_attachments() {
+        let raw = r#"{"threadId":"t1","prompt":"describe these","attachments":[{"kind":"image","fileName":"screen.png","mimeType":"image/png","path":"C:\\uploads\\screen.png"},{"kind":"file","fileName":"notes.md","mimeType":"text/markdown","path":"C:\\uploads\\notes.md"}]}"#;
+        let req: TurnStartRequest = serde_json::from_str(raw).expect("deserialize");
+        let params = build_turn_start_params("t1", &req);
+
+        assert_eq!(params["input"][0]["type"], "text");
+        assert_eq!(params["input"][0]["text"], "describe these");
+        assert_eq!(params["input"][1]["type"], "local_image");
+        assert_eq!(params["input"][1]["path"], "C:\\uploads\\screen.png");
+        assert_eq!(params["input"][2]["type"], "mention");
+        assert_eq!(params["input"][2]["path"], "C:\\uploads\\notes.md");
+    }
+
+    #[test]
+    fn classify_upload_attachment_accepts_images_and_docs() {
+        assert_eq!(
+            classify_upload_attachment("screen.png", "image/png", ""),
+            Some("image")
+        );
+        assert_eq!(
+            classify_upload_attachment("notes.md", "text/markdown", ""),
+            Some("file")
+        );
+        assert_eq!(
+            classify_upload_attachment("tool.exe", "application/x-msdownload", ""),
+            None
+        );
+        assert_eq!(
+            classify_upload_attachment("tool.exe", "application/x-msdownload", "image"),
+            None
+        );
+        assert_eq!(
+            classify_upload_attachment("screen.png", "", "image"),
+            Some("image")
+        );
     }
 
     #[test]
@@ -1648,6 +1824,7 @@ mod tests {
             service_tier: ServiceTierOverride::Missing,
             approval_policy: None,
             sandbox_policy: None,
+            attachments: Vec::new(),
         };
         assert_eq!(turn_thread_id(&req), None);
     }

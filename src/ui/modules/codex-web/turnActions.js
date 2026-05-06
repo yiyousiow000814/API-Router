@@ -29,8 +29,10 @@ export function buildTurnPayload({
   planModeEnabled,
   fastModeEnabled,
   permissionPreset,
+  attachments,
 }) {
   const permission = buildPermissionRuntimeOptions(permissionPreset);
+  const normalizedAttachments = normalizeTurnAttachments(attachments);
   return {
     threadId: String(activeThreadId || "").trim(),
     prompt,
@@ -43,7 +45,132 @@ export function buildTurnPayload({
     serviceTier: fastModeEnabled === true ? "fast" : null,
     approvalPolicy: permission.approvalPolicy,
     sandboxPolicy: permission.sandboxPolicy,
+    attachments: normalizedAttachments.length ? normalizedAttachments : undefined,
   };
+}
+
+export const MAX_WEB_CODEX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+
+const IMAGE_ATTACHMENT_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
+const FILE_ATTACHMENT_EXTENSIONS = new Set([
+  ".c",
+  ".cc",
+  ".cpp",
+  ".cs",
+  ".css",
+  ".csv",
+  ".doc",
+  ".docx",
+  ".go",
+  ".h",
+  ".hpp",
+  ".html",
+  ".java",
+  ".js",
+  ".json",
+  ".jsonl",
+  ".jsx",
+  ".log",
+  ".md",
+  ".markdown",
+  ".pdf",
+  ".php",
+  ".ppt",
+  ".pptx",
+  ".ps1",
+  ".py",
+  ".rb",
+  ".rs",
+  ".sh",
+  ".sql",
+  ".ts",
+  ".tsx",
+  ".tsv",
+  ".txt",
+  ".xls",
+  ".xlsx",
+  ".xml",
+  ".yaml",
+  ".yml",
+  ".toml",
+]);
+const FILE_ATTACHMENT_MIME_PREFIXES = ["text/"];
+const FILE_ATTACHMENT_MIME_TYPES = new Set([
+  "application/json",
+  "application/pdf",
+  "application/msword",
+  "application/vnd.ms-excel",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/xml",
+]);
+
+function fileExtension(value) {
+  const name = String(value || "").trim().toLowerCase();
+  const dot = name.lastIndexOf(".");
+  return dot >= 0 ? name.slice(dot) : "";
+}
+
+function classifyAttachment(file) {
+  const name = String(file?.name || file?.fileName || "").trim();
+  const mimeType = String(file?.type || file?.mimeType || "").trim().toLowerCase();
+  const ext = fileExtension(name);
+  if (IMAGE_ATTACHMENT_EXTENSIONS.has(ext) && (!mimeType || mimeType.startsWith("image/"))) {
+    return "image";
+  }
+  if (FILE_ATTACHMENT_EXTENSIONS.has(ext)) {
+    return "file";
+  }
+  if (FILE_ATTACHMENT_MIME_TYPES.has(mimeType)) return "file";
+  if (FILE_ATTACHMENT_MIME_PREFIXES.some((prefix) => mimeType.startsWith(prefix))) return "file";
+  return "";
+}
+
+function normalizeTurnAttachments(attachments) {
+  return (Array.isArray(attachments) ? attachments : [])
+    .map((item) => {
+      const path = String(item?.path || "").trim();
+      const fileName = String(item?.fileName || item?.name || "").trim();
+      const mimeType = String(item?.mimeType || item?.type || "").trim();
+      const kind = String(item?.kind || classifyAttachment(item) || "file").trim().toLowerCase() === "image"
+        ? "image"
+        : "file";
+      if (!path || !fileName) return null;
+      return { kind, fileName, mimeType, path };
+    })
+    .filter(Boolean);
+}
+
+function attachmentPreviewForMessage(item) {
+  if (!item || item.kind !== "image") return null;
+  const path = String(item.path || "").trim();
+  if (!path) return null;
+  return {
+    src: `/codex/file?path=${encodeURIComponent(path)}`,
+    label: String(item.fileName || "image").trim() || "image",
+    kind: "path",
+    rawPath: path,
+    fileName: String(item.fileName || "").trim(),
+  };
+}
+
+function pendingAttachmentImages(attachments) {
+  return normalizeTurnAttachments(attachments)
+    .map(attachmentPreviewForMessage)
+    .filter(Boolean);
+}
+
+function assertUploadableAttachment(file) {
+  const name = String(file?.name || "").trim();
+  if (!name) throw new Error("Attachment file name is required");
+  if (Number(file?.size || 0) > MAX_WEB_CODEX_ATTACHMENT_BYTES) {
+    throw new Error(`Attachment too large: ${name} exceeds 10 MiB`);
+  }
+  const kind = classifyAttachment(file);
+  if (!kind) throw new Error(`Unsupported attachment type: ${name}`);
+  return kind;
 }
 
 function appendServiceTierQuery(params, fastModeEnabled) {
@@ -471,15 +598,18 @@ export function createTurnActionsModule(deps) {
     updateMobileComposerState();
   }
 
-  function appendOptimisticUserMessage(prompt) {
+  function appendOptimisticUserMessage(prompt, attachments = []) {
     const text = String(prompt || "");
-    if (!text.trim()) return;
+    const images = pendingAttachmentImages(attachments);
+    if (!text.trim() && !images.length) return;
     if (!Array.isArray(state.activeThreadMessages)) state.activeThreadMessages = [];
-    state.activeThreadMessages = state.activeThreadMessages.concat([{ role: "user", text, kind: "" }]);
-    addChat("user", text, {
+    state.activeThreadMessages = state.activeThreadMessages.concat([{ role: "user", text, kind: "", images }]);
+    const options = {
       animate: false,
       source: "turnSendOptimisticUser",
-    });
+    };
+    if (images.length) options.attachments = images;
+    addChat("user", text, options);
   }
 
   function readQueuedTurns() {
@@ -1125,9 +1255,10 @@ export function createTurnActionsModule(deps) {
   async function sendTurn(promptOverride, options = {}) {
     if (blockInSandbox("send turn")) return;
     const prompt = String(promptOverride == null ? getPromptValue() : promptOverride).trim();
+    const hasPendingAttachments = normalizeTurnAttachments(state.pendingAttachments).length > 0;
     const preservedDraftValue =
       options.fromQueuedTurn === true ? String(byId("mobilePromptInput")?.value || "") : "";
-    if (!prompt) {
+    if (!prompt && !hasPendingAttachments) {
       if (state.activeThreadPendingTurnRunning === true && promptOverride == null) {
         return interruptTurn();
       }
@@ -1232,7 +1363,9 @@ export function createTurnActionsModule(deps) {
       planModeEnabled: state.planModeEnabled,
       fastModeEnabled: state.fastModeEnabled,
       permissionPreset: state.permissionPresetByWorkspace?.[workspace],
+      attachments: state.pendingAttachments,
     });
+    const turnAttachments = normalizeTurnAttachments(state.pendingAttachments);
     const shouldAnimateWorkspaceBadge = !state.activeThreadStarted;
     state.activeThreadStarted = true;
     state.activeThreadWorkspace = workspace;
@@ -1252,11 +1385,13 @@ export function createTurnActionsModule(deps) {
     }
     updateHeaderUi(shouldAnimateWorkspaceBadge);
     hideWelcomeCard();
-    appendOptimisticUserMessage(prompt);
+    appendOptimisticUserMessage(prompt, turnAttachments);
     state.chatShouldStickToBottom = true;
     scrollToBottomReliable();
     setMainTab("chat");
     clearPromptValue();
+    state.pendingAttachments = [];
+    renderAttachmentPills([]);
     if (options.fromQueuedTurn === true && preservedDraftValue) {
       const input = byId("mobilePromptInput");
       if (input) input.value = preservedDraftValue;
@@ -1272,6 +1407,8 @@ export function createTurnActionsModule(deps) {
     try {
       started = await api("/codex/turns/start", { method: "POST", body: payload });
     } catch (error) {
+      state.pendingAttachments = turnAttachments;
+      renderAttachmentPills(state.pendingAttachments);
       rollbackOptimisticPendingTurn(prompt, {
         restorePrompt: options.fromQueuedTurn !== true,
       });
@@ -1316,6 +1453,13 @@ export function createTurnActionsModule(deps) {
   async function uploadAttachment(file) {
     if (blockInSandbox("attachment upload")) return;
     if (!file) return;
+    let kind;
+    try {
+      kind = assertUploadableAttachment(file);
+    } catch (error) {
+      setStatus(resolveActionErrorMessage(error), true);
+      throw error;
+    }
     const bytes = new Uint8Array(await file.arrayBuffer());
     let binary = "";
     for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
@@ -1326,10 +1470,22 @@ export function createTurnActionsModule(deps) {
         threadId: resolveCurrentThreadId(state) || "unassigned",
         fileName: file.name,
         mimeType: file.type || "application/octet-stream",
+        kind,
         base64Data,
       },
     });
-    renderAttachmentPills([file]);
+    const uploaded = {
+      kind: String(data.kind || kind || "file").trim() === "image" ? "image" : "file",
+      fileName: String(data.fileName || file.name).trim(),
+      mimeType: String(data.mimeType || file.type || "application/octet-stream").trim(),
+      path: String(data.path || "").trim(),
+    };
+    if (!uploaded.path) throw new Error("attachment upload failed: missing path");
+    state.pendingAttachments = [
+      ...(Array.isArray(state.pendingAttachments) ? state.pendingAttachments : []),
+      uploaded,
+    ];
+    renderAttachmentPills(state.pendingAttachments);
     setStatus(`Attachment uploaded: ${data.fileName || file.name}`);
   }
 

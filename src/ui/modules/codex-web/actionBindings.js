@@ -750,9 +750,11 @@ export function createActionBindingsModule(deps) {
       }
     }
     bindInput("attachInput", "change", (event) => {
-      uploadAttachment(event.target?.files?.[0]).catch((e) =>
-        setStatus(resolveActionErrorMessage(e), true)
-      );
+      uploadAttachment(event.target?.files?.[0])
+        .catch((e) => setStatus(resolveActionErrorMessage(e), true))
+        .finally(() => {
+          if (event?.target) event.target.value = "";
+        });
     });
     bindClick("mobileAttachBtn", () => byId("attachInput")?.click());
     bindResponsiveClick("mobileSendBtn", () => {

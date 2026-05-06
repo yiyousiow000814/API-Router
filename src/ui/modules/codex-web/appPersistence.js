@@ -288,7 +288,7 @@ export function createAppPersistenceModule(deps) {
     for (const file of files) {
       const node = documentRef.createElement("span");
       node.className = "pill mono";
-      node.textContent = truncateLabel(file?.name || "attachment");
+      node.textContent = truncateLabel(file?.name || file?.fileName || "attachment");
       box.appendChild(node);
     }
   }
