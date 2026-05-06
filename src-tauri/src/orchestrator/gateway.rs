@@ -1432,10 +1432,14 @@ pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: 
         .route("/v1/models", get(models))
         .route("/v1/responses", post(responses))
         .route("/responses", post(responses))
-        .route("/", get(codex_app_server_ws))
+        .route("/", get(app_web_index))
+        .route("/assets/*path", get(app_web_asset))
         .route("/codex-web", get(codex_web_index))
-        .route("/codex-web/app.js", get(codex_web_app_js))
-        .route("/codex-web/modules/*path", get(codex_web_module_js))
+        .route("/codex-web/", get(codex_web_index))
+        .route("/codex-web/*path", get(codex_web_static_asset))
+        .route("/codex-web/assets/*path", get(codex_web_root_asset))
+        .route("/__backend/ipc", get(codex_backend_ipc_ws))
+        .route("/__backend/upload", post(codex_backend_upload))
         .route("/codex-web/codex-icon.svg", get(codex_web_icon_svg))
         .route(
             "/codex-web/apple-touch-icon.png",
@@ -1563,9 +1567,11 @@ fn write_gateway_startup_diag(stage: &str, addr: Option<SocketAddr>, detail: Opt
 }
 
 include!("gateway/request_helpers.rs");
+mod app_web_assets;
 mod web_codex_actions;
 mod web_codex_assets;
 mod web_codex_auth;
+mod web_codex_backend_bridge;
 mod web_codex_git;
 mod web_codex_history;
 pub(crate) mod web_codex_home;
@@ -1584,6 +1590,7 @@ mod web_codex_thread_routes;
 pub(crate) mod web_codex_threads;
 mod web_codex_ws;
 include!("gateway/web_codex.rs");
+use self::app_web_assets::{app_web_asset, app_web_index};
 use self::web_codex_actions::{
     codex_approval_resolve, codex_attachments_upload, codex_rpc_proxy, codex_slash_commands,
     codex_slash_execute, codex_slash_review_branches, codex_slash_review_commits,
@@ -1591,9 +1598,10 @@ use self::web_codex_actions::{
     codex_turn_interrupt, codex_turn_start, codex_turn_stream, codex_user_input_resolve,
 };
 use self::web_codex_assets::{
-    codex_web_app_js, codex_web_apple_touch_icon_png, codex_web_favicon, codex_web_icon_svg,
-    codex_web_index, codex_web_logo_png, codex_web_manifest, codex_web_module_js,
+    codex_web_apple_touch_icon_png, codex_web_favicon, codex_web_icon_svg, codex_web_index,
+    codex_web_logo_png, codex_web_manifest, codex_web_root_asset, codex_web_static_asset,
 };
+use self::web_codex_backend_bridge::{codex_backend_ipc_ws, codex_backend_upload};
 use self::web_codex_home::web_codex_rpc_home_override_for_target;
 use self::web_codex_hosts::{
     codex_hosts_create, codex_hosts_delete, codex_hosts_list, codex_hosts_update,

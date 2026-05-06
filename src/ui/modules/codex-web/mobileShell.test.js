@@ -352,6 +352,125 @@ describe("mobileShell", () => {
     expect(body._classes.has("drawer-left-dragging")).toBe(false);
   });
 
+  it("drags the thread drawer with touch pointers on pointer-enabled mobile webviews", () => {
+    const handlers = new Map();
+    const body = {
+      _classes: new Set(),
+      _style: new Map(),
+      classList: {
+        contains(name) {
+          return body._classes.has(name);
+        },
+        add(...names) {
+          for (const name of names) body._classes.add(name);
+        },
+        remove(...names) {
+          for (const name of names) body._classes.delete(name);
+        },
+      },
+      style: {
+        setProperty(name, value) {
+          body._style.set(name, value);
+        },
+        removeProperty(name) {
+          body._style.delete(name);
+        },
+      },
+    };
+    const backdrop = {
+      classList: {
+        _classes: new Set(),
+        toggle(name, force) {
+          if (force) {
+            this._classes.add(name);
+            return;
+          }
+          this._classes.delete(name);
+        },
+        add(name) {
+          this._classes.add(name);
+        },
+        remove(name) {
+          this._classes.delete(name);
+        },
+      },
+    };
+    createMobileShellModule({
+      state: {
+        drawerOpenPhaseTimer: 0,
+        threadListVisibleOpenAnimationUntil: 0,
+        threadListPendingSidebarOpenAnimation: false,
+        threadListVisibleAnimationTimer: 0,
+        threadListLoading: false,
+        threadItems: [],
+        threadListPendingVisibleAnimationByWorkspace: { windows: false, wsl2: false },
+        threadListAnimateNextRender: false,
+        threadListAnimateThreadIds: new Set(),
+        threadListExpandAnimateGroupKeys: new Set(),
+        threadListSkipScrollRestoreOnce: false,
+      },
+      byId(id) {
+        if (id === "mobileDrawerBackdrop") return backdrop;
+        return null;
+      },
+      documentRef: {
+        body,
+        querySelector(selector) {
+          if (selector === ".leftPanel") {
+            return {
+              getBoundingClientRect() {
+                return { width: 300 };
+              },
+            };
+          }
+          return null;
+        },
+        addEventListener(name, handler) {
+          handlers.set(name, handler);
+        },
+      },
+      windowRef: {
+        innerWidth: 420,
+        PointerEvent: function PointerEvent() {},
+      },
+      normalizeWorkspaceTarget(value) {
+        return value;
+      },
+      getWorkspaceTarget() {
+        return "windows";
+      },
+      pushThreadAnimDebug() {},
+      renderThreads() {},
+    });
+
+    handlers.get("pointerdown")({
+      pointerType: "touch",
+      isPrimary: true,
+      clientX: 12,
+      clientY: 220,
+    });
+    handlers.get("pointermove")({
+      pointerType: "touch",
+      isPrimary: true,
+      clientX: 78,
+      clientY: 226,
+    });
+
+    expect(body._classes.has("drawer-left-dragging")).toBe(true);
+    expect(body._style.get("--drawer-left-drag-translate")).toBe("-258px");
+    expect(backdrop.classList._classes.has("show")).toBe(true);
+
+    handlers.get("pointerup")({
+      pointerType: "touch",
+      isPrimary: true,
+      clientX: 148,
+      clientY: 226,
+    });
+
+    expect(body._classes.has("drawer-left-open")).toBe(true);
+    expect(body._classes.has("drawer-left-dragging")).toBe(false);
+  });
+
   it("commits drawer opening from the last drag point when touchend omits changedTouches", () => {
     const handlers = new Map();
     const body = {

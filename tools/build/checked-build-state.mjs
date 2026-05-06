@@ -20,6 +20,7 @@ const CHECKED_BUILD_INPUTS = [
   'package-lock.json',
   'codex-web.html',
   'index.html',
+  'third_party/codex-web',
   'tsconfig.json',
   'vite.config.ts',
   'src',

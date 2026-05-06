@@ -1,0 +1,10 @@
+{
+  "name": "codex-web",
+  "source": "https://github.com/0xcaff/codex-web",
+  "commit": "3bbefc17b11ee43712fd031881a2d5afaf9bb853",
+  "cloned_at": "06-05-2026",
+  "notes": [
+    "Vendored upstream copy. Keep changes here minimal and patch-oriented.",
+    "Upstream currently prepares browser assets from a hosted macOS Codex Desktop zip."
+  ]
+}

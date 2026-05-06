@@ -1,0 +1,44 @@
+--- a/webview/assets/electronBridge-compat.js
++++ b/webview/assets/electronBridge-compat.js
+@@ -27,5 +27,20 @@
+   const systemThemeSubscribers = new Set();
++  const resolvedWindowType = resolveCodexWindowType();
+ 
++  function resolveCodexWindowType() {
++    try {
++      const coarsePointer =
++        window.matchMedia?.("(pointer: coarse)")?.matches === true ||
++        window.matchMedia?.("(hover: none)")?.matches === true ||
++        Number(window.navigator?.maxTouchPoints || 0) > 0;
++      const narrowViewport = Number(window.innerWidth || 0) > 0 && Number(window.innerWidth || 0) <= 900;
++      if (coarsePointer && narrowViewport) {
++        return "browser";
++      }
++    } catch {}
++    return "electron";
++  }
++
+   function trace(kind, detail) {
+     const entry = { at: Date.now(), kind, detail };
+     const target = (window.__API_ROUTER_BRIDGE_TRACE__ ||= []);
+@@ -220,6 +234,6 @@
+ 
+  window.electronBridge = {
+-    windowType: "electron",
++    windowType: resolvedWindowType,
+     sendMessageFromView(message) {
+       if (message?.type === "shared-object-set") {
+         if (message.value === undefined) {
+@@ -297,6 +311,7 @@
+     },
+   };
+ 
++  window.codexWindowType = resolvedWindowType;
+   document.documentElement.dataset.codexWindowType = resolvedWindowType;
+   window.__API_ROUTER_CODEX_WEB__ = true;
+   connect();
+--- a/webview/assets/index-BXNYCtJT.js
++++ b/webview/assets/index-BXNYCtJT.js
+@@ -76074,1 +76074,1 @@
+-var Kj=Fn(),qj=new URL(window.location.href).searchParams,ep=`electron`;document.documentElement.dataset.codexWindowType=ep,document.documentElement.dataset.windowType=ep,document.documentElement.dataset.codexOs=$j(),qj.get(`mcpAppSandboxDevtools`)===`1`&&(document.documentElement.dataset.mcpAppSandboxDevtools=`true`),Kj&&document.documentElement.classList.add(`compact-window`),we(),window.addEventListener(`error`,e=>{let t=e?.error?.stack??e?.error?.message??e?.message??`Unknown error`;J.dispatchMessage(`log-message`,{level:`error`,message:`[desktop-notifications][global-error] ${String(t)}`})}),window.addEventListener(`unhandledrejection`,e=>{let t=e.reason,n=typeof t==`object`&&t?t.stack??t.message??JSON.stringify(t):String(t);J.dispatchMessage(`log-message`,{level:`error`,message:`[desktop-notifications][unhandled-rejection] ${n}`})});var Jj=document.getElementById(`root`);if(!Jj)throw Error(`Root container not found`);var Yj=window;Yj.__codexRoot||=(0,vm.createRoot)(Jj);var Xj=Yj.__codexRoot;Zj();async function Zj(){await Qj(),Xj.render((0,$.jsx)(Q.StrictMode,{children:(0,$.jsx)(Ij,{})}))}async function Qj(){}function $j(){let e=navigator,t=e.userAgentData?.platform?.toLowerCase()??e.platform?.toLowerCase()??e.userAgent.toLowerCase();return t.includes(`win`)?`win32`:t.includes(`mac`)||t.includes(`darwin`)?`darwin`:t.includes(`linux`)?`linux`:`unknown`}
++var Kj=Fn(),qj=new URL(window.location.href).searchParams,__apiRouterCodexWindowType=window.electronBridge?.windowType??window.codexWindowType??`electron`;document.documentElement.dataset.codexWindowType=__apiRouterCodexWindowType,document.documentElement.dataset.windowType=__apiRouterCodexWindowType,document.documentElement.dataset.codexOs=$j(),qj.get(`mcpAppSandboxDevtools`)===`1`&&(document.documentElement.dataset.mcpAppSandboxDevtools=`true`),Kj&&document.documentElement.classList.add(`compact-window`),we(),window.addEventListener(`error`,e=>{let t=e?.error?.stack??e?.error?.message??e?.message??`Unknown error`;J.dispatchMessage(`log-message`,{level:`error`,message:`[desktop-notifications][global-error] ${String(t)}`})}),window.addEventListener(`unhandledrejection`,e=>{let t=e.reason,n=typeof t==`object`&&t?t.stack??t.message??JSON.stringify(t):String(t);J.dispatchMessage(`log-message`,{level:`error`,message:`[desktop-notifications][unhandled-rejection] ${n}`})});var Jj=document.getElementById(`root`);if(!Jj)throw Error(`Root container not found`);var Yj=window;Yj.__codexRoot||=(0,vm.createRoot)(Jj);var Xj=Yj.__codexRoot;Zj();async function Zj(){await Qj(),Xj.render((0,$.jsx)(Q.StrictMode,{children:(0,$.jsx)(Ij,{})}))}async function Qj(){}function $j(){let e=navigator,t=e.userAgentData?.platform?.toLowerCase()??e.platform?.toLowerCase()??e.userAgent.toLowerCase();return t.includes(`win`)?`win32`:t.includes(`mac`)||t.includes(`darwin`)?`darwin`:t.includes(`linux`)?`linux`:`unknown`}

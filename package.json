@@ -45,7 +45,9 @@
     "ui:e2e:requests-reload": "node tests/ui/e2e/tauri/requests-reload.mjs",
     "ui:e2e:requests-graph-hydration": "node tests/ui/e2e/tauri/requests-graph-hydration.mjs",
     "test": "npm run check:gateway-provider-id && vitest run",
-    "bench:thread-open": "node tools/benchmarks/thread-open-latency.mjs"
+    "bench:thread-open": "node tools/benchmarks/thread-open-latency.mjs",
+    "vendor:codex-web:sync": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/codex-web/sync-upstream.ps1",
+    "codex-web:prepare-upstream": "node tools/codex-web/prepare-upstream.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.9.6",

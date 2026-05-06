@@ -149,6 +149,13 @@ fn local_legacy_rpc_result(method: &str) -> Option<Value> {
     }
 }
 
+fn normalize_app_server_method(method: &str) -> &str {
+    match method.trim() {
+        "account-info" => "account/read",
+        other => other,
+    }
+}
+
 fn replay_notification_state(
     st: &NotificationState,
     since_event_id: u64,
@@ -3263,6 +3270,28 @@ mod tests {
         _set_test_request_handler(None).await;
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn account_info_alias_normalizes_before_native_request() {
+        let _guard = lock_tests();
+        _clear_notifications_for_test().await;
+        _set_test_request_handler(Some(std::sync::Arc::new(|_codex_home, method, _params| {
+            assert_eq!(method, "account/read");
+            Ok(serde_json::json!({ "ok": true }))
+        })))
+        .await;
+
+        let result = request_in_home(
+            Some(r"C:\Users\yiyou\API-Router\user-data\codex-home"),
+            "account-info",
+            serde_json::json!({}),
+        )
+        .await
+        .expect("normalized account alias request");
+
+        assert_eq!(result, serde_json::json!({ "ok": true }));
+        _set_test_request_handler(None).await;
+    }
+
     #[cfg(target_os = "windows")]
     #[tokio::test(flavor = "current_thread")]
     async fn legacy_pending_input_methods_resolve_locally_for_wsl_homes() {
@@ -4571,6 +4600,7 @@ pub async fn request_in_home(
     method: &str,
     params: Value,
 ) -> Result<Value, String> {
+    let method = normalize_app_server_method(method);
     if let Some(result) = local_legacy_rpc_result(method) {
         return Ok(result);
     }
