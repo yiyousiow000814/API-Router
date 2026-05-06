@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { execFileSync } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
 import {
   captureCheckedBuildSnapshot,
@@ -18,6 +19,7 @@ function makeProjectSkeleton(root) {
   writeFile(path.join(root, 'package-lock.json'), '{"lockfileVersion":3}\n')
   writeFile(path.join(root, 'index.html'), '<!doctype html>\n')
   writeFile(path.join(root, 'codex-web.html'), '<!doctype html>\n')
+  writeFile(path.join(root, 'third_party', 'codex-web', 'README.md'), '# codex-web\n')
   writeFile(path.join(root, 'tsconfig.json'), '{"compilerOptions":{}}\n')
   writeFile(path.join(root, 'vite.config.ts'), 'export default {}\n')
   writeFile(path.join(root, 'src', 'ui', 'App.tsx'), 'export const App = () => null\n')
@@ -32,6 +34,11 @@ function makeProjectSkeleton(root) {
   writeFile(path.join(root, 'tools', 'windows', 'run-with-win-sdk.mjs'), 'console.log("sdk");\n')
   writeFile(path.join(root, 'src-tauri', 'target', 'release', 'api_router.exe'), 'exe\n')
   writeFile(path.join(root, 'API Router.exe'), 'root exe\n')
+  execFileSync('git', ['init'], { cwd: root, stdio: 'ignore', windowsHide: true })
+  execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: root, stdio: 'ignore', windowsHide: true })
+  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: root, stdio: 'ignore', windowsHide: true })
+  execFileSync('git', ['add', '.'], { cwd: root, stdio: 'ignore', windowsHide: true })
+  execFileSync('git', ['commit', '-m', 'test'], { cwd: root, stdio: 'ignore', windowsHide: true })
 }
 
 describe('checked build freshness', () => {
@@ -60,6 +67,20 @@ describe('checked build freshness', () => {
 
     const file = path.join(root, 'src', 'ui', 'App.tsx')
     fs.writeFileSync(file, 'export const App = () => "changed"\n', 'utf8')
+
+    const freshness = isCheckedBuildFresh(root)
+    expect(freshness.fresh).toBe(false)
+  })
+
+  it('goes stale when the imported codex-web base changes', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'api-router-checked-build-'))
+    makeProjectSkeleton(root)
+
+    const snapshot = captureCheckedBuildSnapshot(root)
+    writeCheckedBuildStamp(root, snapshot)
+
+    const file = path.join(root, 'third_party', 'codex-web', 'README.md')
+    fs.writeFileSync(file, '# codex-web changed\n', 'utf8')
 
     const freshness = isCheckedBuildFresh(root)
     expect(freshness.fresh).toBe(false)

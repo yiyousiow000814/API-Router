@@ -360,6 +360,31 @@ fn normalize_remote_app_server_params(method: &str, params: Value) -> Value {
     Value::Object(next)
 }
 
+fn app_server_compat_result(method: &str) -> Option<Value> {
+    match method {
+        "get-global-state" => Some(json!({})),
+        "list-pinned-threads" => Some(json!({ "items": [] })),
+        "extension-info" => Some(json!({
+            "name": "api-router",
+            "version": env!("CARGO_PKG_VERSION"),
+            "windowType": "electron",
+        })),
+        "os-info" => Some(json!({
+            "platform": std::env::consts::OS,
+            "platformFamily": std::env::consts::FAMILY,
+        })),
+        "is-copilot-api-available" => Some(json!(false)),
+        _ => None,
+    }
+}
+
+fn normalize_remote_app_server_method(method: &str) -> &str {
+    match method {
+        "account-info" => "account/read",
+        other => other,
+    }
+}
+
 pub(super) async fn codex_ws(
     State(st): State<GatewayState>,
     headers: HeaderMap,
@@ -438,7 +463,8 @@ async fn codex_app_server_ws_loop(
                             })).await;
                             continue;
                         };
-                        let method = value.get("method").and_then(Value::as_str).unwrap_or_default();
+                        let raw_method = value.get("method").and_then(Value::as_str).unwrap_or_default();
+                        let method = normalize_remote_app_server_method(raw_method);
                         let id = value.get("id").cloned();
                         match method {
                             "initialize" => {
@@ -476,6 +502,14 @@ async fn codex_app_server_ws_loop(
                                             "id": id,
                                             "error": jsonrpc_error_payload("Not initialized"),
                                         })).await;
+                                    }
+                                    continue;
+                                }
+                                if let Some(result) = app_server_compat_result(method) {
+                                    if let Some(id) = id {
+                                        if !send_ws_json(&mut socket, &json!({ "id": id, "result": result })).await {
+                                            return;
+                                        }
                                     }
                                     continue;
                                 }
@@ -2756,5 +2790,17 @@ mod tests {
         crate::codex_app_server::_set_test_request_handler(None).await;
         crate::codex_app_server::_clear_notifications_for_test().await;
         test_result.expect("app-server turn/start strip timed out");
+    }
+
+    #[test]
+    fn normalizes_account_info_method_alias() {
+        assert_eq!(
+            normalize_remote_app_server_method("account-info"),
+            "account/read"
+        );
+        assert_eq!(
+            normalize_remote_app_server_method("account/read"),
+            "account/read"
+        );
     }
 }

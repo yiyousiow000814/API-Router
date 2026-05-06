@@ -23,6 +23,21 @@ function readTouchPoint(event) {
   };
 }
 
+function readPointerPoint(event) {
+  if (!event) return null;
+  const x = Number(event.clientX);
+  const y = Number(event.clientY);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { x, y };
+}
+
+function isTouchLikePointerEvent(event, windowRef) {
+  const pointerType = String(event?.pointerType || "").toLowerCase();
+  if (pointerType === "touch" || pointerType === "pen") return event?.isPrimary !== false;
+  if (pointerType === "mouse") return false;
+  return Number(windowRef?.navigator?.maxTouchPoints || 0) > 0;
+}
+
 export function isCompactMobileViewport(windowRef) {
   if (windowRef?.matchMedia) return windowRef.matchMedia("(max-width: 1080px)").matches;
   if (typeof windowRef?.innerWidth === "number") return windowRef.innerWidth <= 1080;
@@ -203,59 +218,146 @@ export function createMobileShellModule(deps) {
     let swipeDrawerWidth = 0;
     let swipeMode = "open";
     let swipeHorizontalLocked = false;
+    const supportsPointerEvents = typeof windowRef?.PointerEvent === "function";
+
+    function resetSwipeState() {
+      swipeStart = null;
+      swipeLastPoint = null;
+      swipeDrawerWidth = 0;
+      swipeMode = "open";
+      swipeHorizontalLocked = false;
+    }
+
+    function handleSwipeStart(point, target) {
+      if (!point) {
+        resetSwipeState();
+        return;
+      }
+      if (shouldUseHorizontalScrollPriority(target, windowRef)) {
+        resetSwipeState();
+        return;
+      }
+      if (
+        shouldStartDrawerEdgeSwipe({
+          startX: point.x,
+          body: documentRef.body,
+          windowRef,
+        })
+      ) {
+        swipeStart = point;
+        swipeLastPoint = point;
+        swipeDrawerWidth = Number(getLeftDrawerPanel()?.getBoundingClientRect?.().width || 0);
+        swipeMode = "open";
+        swipeHorizontalLocked = false;
+        return;
+      }
+      const panelRect = getLeftDrawerPanel()?.getBoundingClientRect?.() || null;
+      if (
+        shouldStartDrawerCloseSwipe({
+          startX: point.x,
+          body: documentRef.body,
+          panelRect,
+          windowRef,
+        })
+      ) {
+        swipeStart = point;
+        swipeLastPoint = point;
+        swipeDrawerWidth = Number(panelRect?.width || 0);
+        swipeMode = "close";
+        swipeHorizontalLocked = false;
+        return;
+      }
+      resetSwipeState();
+    }
+
+    function handleSwipeMove(point) {
+      if (!swipeStart) return;
+      if (!point) {
+        resetSwipeState();
+        return;
+      }
+      const deltaX = point.x - swipeStart.x;
+      const deltaY = Math.abs(point.y - swipeStart.y);
+      if (!swipeHorizontalLocked && Math.abs(deltaX) >= EDGE_SWIPE_HORIZONTAL_LOCK_PX && Math.abs(deltaX) > deltaY) {
+        swipeHorizontalLocked = true;
+      }
+      const invalidHorizontalDirection =
+        swipeMode === "open" ? deltaX < -12 : deltaX > 12;
+      const shouldCancelForVerticalDrift =
+        !swipeHorizontalLocked && deltaY > EDGE_SWIPE_VERTICAL_TOLERANCE_PX;
+      if (shouldCancelForVerticalDrift || invalidHorizontalDirection) {
+        clearDrawerDragVisual();
+        resetSwipeState();
+        return;
+      }
+      swipeLastPoint = point;
+      updateDrawerDragVisual(deltaX, swipeMode);
+    }
+
+    function handleSwipeEnd(point) {
+      if (swipeStart) {
+        const finalPoint = point || swipeLastPoint || swipeStart;
+        const deltaX = finalPoint.x - swipeStart.x;
+        const shouldOpen =
+          swipeMode === "open" &&
+          shouldCommitDrawerOpen({
+            deltaX,
+            drawerWidth: swipeDrawerWidth,
+          });
+        const shouldClose =
+          swipeMode === "close" &&
+          shouldCommitDrawerClose({
+            deltaX,
+            drawerWidth: swipeDrawerWidth,
+          });
+        clearDrawerDragVisual();
+        if (shouldOpen) setMobileTab("threads");
+        else if (shouldClose) setMobileTab("chat");
+      }
+      resetSwipeState();
+    }
+
+    if (supportsPointerEvents) {
+      documentRef.addEventListener(
+        "pointerdown",
+        (event) => {
+          if (!isTouchLikePointerEvent(event, windowRef)) return;
+          handleSwipeStart(readPointerPoint(event), event.target);
+        },
+        { passive: true }
+      );
+      documentRef.addEventListener(
+        "pointermove",
+        (event) => {
+          if (!isTouchLikePointerEvent(event, windowRef)) return;
+          handleSwipeMove(readPointerPoint(event));
+        },
+        { passive: true }
+      );
+      documentRef.addEventListener(
+        "pointerup",
+        (event) => {
+          if (!isTouchLikePointerEvent(event, windowRef)) return;
+          handleSwipeEnd(readPointerPoint(event));
+        },
+        { passive: true }
+      );
+      documentRef.addEventListener(
+        "pointercancel",
+        (event) => {
+          if (!isTouchLikePointerEvent(event, windowRef)) return;
+          clearDrawerDragVisual();
+          resetSwipeState();
+        },
+        { passive: true }
+      );
+      return;
+    }
 
     documentRef.addEventListener(
       "touchstart",
       (event) => {
-        const point = readTouchPoint(event);
-        if (!point) {
-          swipeStart = null;
-          swipeLastPoint = null;
-          return;
-        }
-        if (shouldUseHorizontalScrollPriority(event.target, windowRef)) {
-          swipeStart = null;
-          swipeLastPoint = null;
-          swipeDrawerWidth = 0;
-          swipeMode = "open";
-          swipeHorizontalLocked = false;
-          return;
-        }
-        if (
-          shouldStartDrawerEdgeSwipe({
-            startX: point.x,
-            body: documentRef.body,
-            windowRef,
-          })
-        ) {
-          swipeStart = point;
-          swipeLastPoint = point;
-          swipeDrawerWidth = Number(getLeftDrawerPanel()?.getBoundingClientRect?.().width || 0);
-          swipeMode = "open";
-          swipeHorizontalLocked = false;
-          return;
-        }
-        const panelRect = getLeftDrawerPanel()?.getBoundingClientRect?.() || null;
-        if (
-          shouldStartDrawerCloseSwipe({
-            startX: point.x,
-            body: documentRef.body,
-            panelRect,
-            windowRef,
-          })
-        ) {
-          swipeStart = point;
-          swipeLastPoint = point;
-          swipeDrawerWidth = Number(panelRect?.width || 0);
-          swipeMode = "close";
-          swipeHorizontalLocked = false;
-          return;
-        }
-        swipeStart = null;
-        swipeLastPoint = null;
-        swipeDrawerWidth = 0;
-        swipeMode = "open";
-        swipeHorizontalLocked = false;
+        handleSwipeStart(readTouchPoint(event), event.target);
       },
       { passive: true }
     );
@@ -263,33 +365,7 @@ export function createMobileShellModule(deps) {
     documentRef.addEventListener(
       "touchmove",
       (event) => {
-        if (!swipeStart) return;
-        const point = readTouchPoint(event);
-        if (!point) {
-          swipeStart = null;
-          swipeLastPoint = null;
-          return;
-        }
-        const deltaX = point.x - swipeStart.x;
-        const deltaY = Math.abs(point.y - swipeStart.y);
-        if (!swipeHorizontalLocked && Math.abs(deltaX) >= EDGE_SWIPE_HORIZONTAL_LOCK_PX && Math.abs(deltaX) > deltaY) {
-          swipeHorizontalLocked = true;
-        }
-        const invalidHorizontalDirection =
-          swipeMode === "open" ? deltaX < -12 : deltaX > 12;
-        const shouldCancelForVerticalDrift =
-          !swipeHorizontalLocked && deltaY > EDGE_SWIPE_VERTICAL_TOLERANCE_PX;
-        if (shouldCancelForVerticalDrift || invalidHorizontalDirection) {
-          clearDrawerDragVisual();
-          swipeStart = null;
-          swipeLastPoint = null;
-          swipeDrawerWidth = 0;
-          swipeMode = "open";
-          swipeHorizontalLocked = false;
-          return;
-        }
-        swipeLastPoint = point;
-        updateDrawerDragVisual(deltaX, swipeMode);
+        handleSwipeMove(readTouchPoint(event));
       },
       { passive: true }
     );
@@ -297,30 +373,7 @@ export function createMobileShellModule(deps) {
     documentRef.addEventListener(
       "touchend",
       (event) => {
-        if (swipeStart) {
-          const point = readTouchPoint(event) || swipeLastPoint || swipeStart;
-          const deltaX = point.x - swipeStart.x;
-          const shouldOpen =
-            swipeMode === "open" &&
-            shouldCommitDrawerOpen({
-              deltaX,
-              drawerWidth: swipeDrawerWidth,
-            });
-          const shouldClose =
-            swipeMode === "close" &&
-            shouldCommitDrawerClose({
-              deltaX,
-              drawerWidth: swipeDrawerWidth,
-            });
-          clearDrawerDragVisual();
-          if (shouldOpen) setMobileTab("threads");
-          else if (shouldClose) setMobileTab("chat");
-        }
-        swipeStart = null;
-        swipeLastPoint = null;
-        swipeDrawerWidth = 0;
-        swipeMode = "open";
-        swipeHorizontalLocked = false;
+        handleSwipeEnd(readTouchPoint(event));
       },
       { passive: true }
     );
@@ -329,11 +382,7 @@ export function createMobileShellModule(deps) {
       "touchcancel",
       () => {
         clearDrawerDragVisual();
-        swipeStart = null;
-        swipeLastPoint = null;
-        swipeDrawerWidth = 0;
-        swipeMode = "open";
-        swipeHorizontalLocked = false;
+        resetSwipeState();
       },
       { passive: true }
     );

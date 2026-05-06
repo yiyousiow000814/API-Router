@@ -40,7 +40,7 @@ tauri = { version = "2.9.5", features = ["tray-icon"] }
 tauri-plugin-log = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-single-instance = "2"
-axum = { version = "0.7", features = ["ws"] }
+axum = { version = "0.7", features = ["ws", "multipart"] }
 http = "1"
 hyper = { version = "1", features = ["http1", "server"] }
 tokio = { version = "1", features = ["io-util", "macros", "process", "rt-multi-thread", "signal", "time"] }

@@ -27,20 +27,7 @@ pub fn resolve_git_dir(repo_root: &Path) -> PathBuf {
     }
 }
 
-fn normalize_path(path: PathBuf) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
-            }
-            other => normalized.push(other.as_os_str()),
-        }
-    }
-    normalized
-}
-
+#[allow(dead_code)]
 pub fn git_watch_paths(repo_root: &Path) -> Vec<PathBuf> {
     let git_entry = repo_root.join(".git");
     let git_dir = resolve_git_dir(repo_root);
@@ -56,8 +43,23 @@ pub fn git_watch_paths(repo_root: &Path) -> Vec<PathBuf> {
     paths
 }
 
+#[allow(dead_code)]
 fn push_if_exists(paths: &mut Vec<PathBuf>, path: PathBuf) {
     if path.exists() {
         paths.push(path);
     }
+}
+
+fn normalize_path(path: PathBuf) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
 }

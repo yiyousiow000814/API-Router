@@ -25,6 +25,28 @@ async fn health_and_status_work_without_upstream() {
         .clone()
         .oneshot(
             Request::builder()
+                .uri("/")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers().get(axum::http::header::CONTENT_TYPE).unwrap(),
+        "text/html; charset=utf-8"
+    );
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("root body");
+    let body = String::from_utf8(body.to_vec()).expect("root html");
+    assert!(body.contains("<title>API Router</title>"));
+    assert!(body.contains("id=\"app\""));
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
                 .uri("/health")
                 .body(Body::empty())
                 .unwrap(),

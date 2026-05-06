@@ -1,0 +1,33 @@
+--- a/webview/assets/use-model-settings-D-IrMVLP.js
++++ b/webview/assets/use-model-settings-D-IrMVLP.js
+@@ -62034,6 +62034,11 @@
+   let o = new EventTarget(),
+     s = new CR(),
+     c = a,
++    lre = !1,
++    ure = () => (lre ? {} : { inputmode: `none` }),
++    dre = (e) => {
++      lre !== e && ((lre = e), l.isDestroyed || l.setProps({ attributes: ure }));
++    },
+     l = new oL(null, {
+       state: Mse.create({
+         schema: bR,
+@@ -62111,6 +62116,18 @@
+         let t = l.state.apply(e);
+         (l.updateState(t), o.dispatchEvent(new Event(Aj)));
+       },
++      attributes: ure,
++      handleDOMEvents: {
++        mousedown(e, t) {
++          return dre(!0), !1;
++        },
++        touchstart(e, t) {
++          return dre(!0), !1;
++        },
++        blur(e, t) {
++          return dre(!1), !1;
++        },
++      },
+       handlePaste(e, t) {
+         if (t.defaultPrevented) return !0;
+         let n = t.clipboardData,
