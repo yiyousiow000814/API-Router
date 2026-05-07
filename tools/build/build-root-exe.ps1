@@ -1977,6 +1977,14 @@ function Invoke-BuildCommand {
   $startInfo.RedirectStandardError = $true
 
   $process = [System.Diagnostics.Process]::Start($startInfo)
+  if ($StartHidden) {
+    try {
+      $process.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal
+      Write-RemoteUpdateLog "Set hidden build command priority to BelowNormal: pid=$($process.Id)"
+    } catch {
+      Write-RemoteUpdateLog "Failed to lower hidden build command priority: $($_.Exception.Message)"
+    }
+  }
   $stdout = $process.StandardOutput.ReadToEnd()
   $stderr = $process.StandardError.ReadToEnd()
   $process.WaitForExit()

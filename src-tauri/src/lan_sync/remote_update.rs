@@ -4775,6 +4775,8 @@ mod tests {
         assert!(build_script.contains("function Invoke-BuildStage"));
         assert!(build_script.contains("Invoke-BuildStage `"));
         assert!(build_script.contains("-FilePath $NodeCli"));
+        assert!(build_script.contains("ProcessPriorityClass]::BelowNormal"));
+        assert!(build_script.contains("Set hidden build command priority to BelowNormal"));
         assert!(build_script.contains("function Update-RemoteUpdateTimelineStep"));
         assert!(build_script.contains("function Try-CopyOptionalArtifact"));
         assert!(build_script.contains("-Phase 'build_release_binary'"));
