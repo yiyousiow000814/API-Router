@@ -1,3 +1,5 @@
+import { renderMessageRichHtml } from "./messageRender.js";
+
 export function dataUrlToBlob(dataUrl) {
   const match = /^data:([^;,]+)?(?:;charset=[^;,]+)?(;base64)?,(.*)$/i.exec(
     String(dataUrl || "")
@@ -25,6 +27,12 @@ function attachmentDisplayLabel(label) {
   const match = /^Image\s*#(\d+)\s*$/i.exec(text);
   if (match) return `#${match[1]}`;
   return text || "image";
+}
+
+function fileExtension(value) {
+  const text = String(value || "").trim().toLowerCase();
+  const dot = text.lastIndexOf(".");
+  return dot >= 0 ? text.slice(dot) : "";
 }
 
 function buildBrokenAttachmentCardHtml(label, overlayHtml = "", escapeHtmlRef = (value) => String(value || "")) {
@@ -58,6 +66,37 @@ export function createImageViewerModule(deps) {
     } catch {
       return /\.pdf(?:$|[?#])/i.test(String(src || ""));
     }
+  }
+
+  function isMarkdownPreviewFile(fileName, mimeType) {
+    const ext = fileExtension(fileName);
+    const mime = String(mimeType || "").trim().toLowerCase();
+    return ext === ".md" || ext === ".markdown" || mime === "text/markdown";
+  }
+
+  function isTextPreviewFile(fileName, mimeType) {
+    const ext = fileExtension(fileName);
+    const mime = String(mimeType || "").trim().toLowerCase();
+    return (
+      isMarkdownPreviewFile(fileName, mimeType) ||
+      ext === ".txt" ||
+      ext === ".log" ||
+      ext === ".json" ||
+      ext === ".jsonl" ||
+      ext === ".csv" ||
+      ext === ".tsv" ||
+      ext === ".xml" ||
+      ext === ".yaml" ||
+      ext === ".yml" ||
+      ext === ".toml" ||
+      ext === ".js" ||
+      ext === ".jsx" ||
+      ext === ".ts" ||
+      ext === ".tsx" ||
+      mime.startsWith("text/") ||
+      mime === "application/json" ||
+      mime === "application/xml"
+    );
   }
 
   function setViewerTransform({ scale, tx, ty }) {
@@ -333,13 +372,24 @@ export function createImageViewerModule(deps) {
       `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v10"></path><path d="M8.5 10.5L12 14l3.5-3.5"></path><path d="M5 20h14"></path></svg>` +
       `</button>` +
       `</div>` +
+      `<div class="filePreviewStage">` +
       `<iframe id="filePreviewFrame" class="filePreviewFrame" title="File preview"></iframe>` +
+      `<div id="filePreviewText" class="filePreviewText"></div>` +
+      `<div id="filePreviewUnsupported" class="filePreviewUnsupported"></div>` +
+      `<div id="filePreviewLoading" class="filePreviewLoading">Loading preview...</div>` +
+      `</div>` +
       `</div>`;
     documentRef.body.appendChild(backdrop);
 
     const close = () => {
       const frame = byId("filePreviewFrame");
+      const text = byId("filePreviewText");
+      const unsupported = byId("filePreviewUnsupported");
+      const loading = byId("filePreviewLoading");
       if (frame) frame.src = "about:blank";
+      if (text) text.innerHTML = "";
+      if (unsupported) unsupported.innerHTML = "";
+      if (loading) loading.hidden = true;
       backdrop.classList.remove("show");
     };
     wireBlurBackdropShield(backdrop, {
@@ -357,21 +407,61 @@ export function createImageViewerModule(deps) {
     }
   }
 
-  function openFilePreview(src, label) {
+  function openFilePreview(src, label, options = {}) {
     ensureFilePreview();
     const backdrop = byId("filePreviewBackdrop");
     const frame = byId("filePreviewFrame");
     const title = byId("filePreviewTitle");
     const download = byId("filePreviewDownloadBtn");
-    if (!backdrop || !frame) return false;
+    const text = byId("filePreviewText");
+    const unsupported = byId("filePreviewUnsupported");
+    const loading = byId("filePreviewLoading");
+    if (!backdrop || !frame || !text || !unsupported || !loading) return false;
 
     const safeSrc = String(src || "").trim();
     const safeLabel = String(label || "").trim() || "attachment";
+    const safeFileName = String(options.fileName || safeLabel || "").trim();
+    const safeMimeType = String(options.mimeType || "").trim();
     if (!safeSrc) return false;
     if (title) title.textContent = safeLabel;
-    frame.src = isPdfPreviewSrc(safeSrc)
-      ? `${safeSrc}#view=FitH&zoom=page-width`
-      : safeSrc;
+    frame.src = "about:blank";
+    frame.hidden = true;
+    text.hidden = true;
+    unsupported.hidden = true;
+    loading.hidden = false;
+    if (isPdfPreviewSrc(safeSrc) || /\.pdf$/i.test(safeFileName) || safeMimeType === "application/pdf") {
+      frame.hidden = false;
+      loading.hidden = true;
+      frame.src = `${safeSrc}#view=FitH&zoom=page-width`;
+    } else if (isTextPreviewFile(safeFileName, safeMimeType)) {
+      const renderText = async () => {
+        try {
+          const response = await fetch(safeSrc, { credentials: "same-origin" });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const textValue = await response.text();
+          if (isMarkdownPreviewFile(safeFileName, safeMimeType)) {
+            text.innerHTML = renderMessageRichHtml(textValue);
+          } else {
+            text.innerHTML = `<pre>${String(textValue || "").replace(/[&<>]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[ch]))}</pre>`;
+          }
+          text.hidden = false;
+        } catch {
+          unsupported.innerHTML =
+            `<div class="filePreviewUnsupportedTitle">Preview unavailable</div>` +
+            `<div class="filePreviewUnsupportedBody">This file can be downloaded, but it cannot be rendered in the browser preview.</div>`;
+          unsupported.hidden = false;
+        } finally {
+          loading.hidden = true;
+        }
+      };
+      void renderText();
+    } else {
+      unsupported.innerHTML =
+        `<div class="filePreviewUnsupportedTitle">Preview unavailable</div>` +
+        `<div class="filePreviewUnsupportedBody">This file can be downloaded, but it cannot be rendered in the browser preview.</div>`;
+      unsupported.hidden = false;
+      loading.hidden = true;
+    }
     if (download) {
       download.onclick = () => {
         const a = documentRef.createElement("a");

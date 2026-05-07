@@ -3072,6 +3072,12 @@
       background: #ffffff;
       box-shadow: 0 28px 40px rgba(0, 0, 0, 0.35);
     }
+    .filePreviewStage {
+      min-height: 0;
+      overflow: auto;
+      background: #ffffff;
+      position: relative;
+    }
     .filePreviewTop {
       padding: 10px 12px;
       display: flex;
@@ -3095,6 +3101,36 @@
       min-height: 0;
       border: 0;
       background: #ffffff;
+    }
+    .filePreviewText,
+    .filePreviewUnsupported {
+      min-height: 100%;
+      padding: 16px;
+      color: #172235;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .filePreviewText pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace);
+      font-size: 12px;
+      line-height: 1.55;
+      color: #23324a;
+    }
+    .filePreviewUnsupported {
+      display: grid;
+      align-content: start;
+      gap: 8px;
+    }
+    .filePreviewUnsupportedTitle {
+      font-size: 15px;
+      font-weight: 850;
+      color: #0d1220;
+    }
+    .filePreviewUnsupportedBody {
+      color: #506079;
     }
     @media (max-width: 560px) {
       .imageViewerBackdrop { padding: 0; }

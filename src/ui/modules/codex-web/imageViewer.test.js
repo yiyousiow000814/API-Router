@@ -101,11 +101,17 @@ describe("imageViewer", () => {
     };
     const frame = { src: "" };
     const title = { textContent: "" };
+    const text = { hidden: false, innerHTML: "" };
+    const unsupported = { hidden: false, innerHTML: "" };
+    const loading = { hidden: false };
     const download = { onclick: null };
     const backBtn = { onclick: null };
     elements.set("filePreviewBackdrop", backdrop);
     elements.set("filePreviewFrame", frame);
     elements.set("filePreviewTitle", title);
+    elements.set("filePreviewText", text);
+    elements.set("filePreviewUnsupported", unsupported);
+    elements.set("filePreviewLoading", loading);
     elements.set("filePreviewDownloadBtn", download);
     elements.set("filePreviewBackBtn", backBtn);
     const module = createImageViewerModule({
@@ -129,8 +135,131 @@ describe("imageViewer", () => {
       requestAnimationFrameRef: (callback) => callback(),
     });
 
-    expect(module.openFilePreview("/codex/file?path=C%3A%5Cuploads%5Creport.pdf", "report.pdf")).toBe(true);
+    expect(module.openFilePreview("/codex/file?path=C%3A%5Cuploads%5Creport.pdf", "report.pdf", { fileName: "report.pdf", mimeType: "application/pdf" })).toBe(true);
     expect(frame.src).toBe("/codex/file?path=C%3A%5Cuploads%5Creport.pdf#view=FitH&zoom=page-width");
     expect(title.textContent).toBe("report.pdf");
+    expect(frame.hidden).toBe(false);
+    expect(text.hidden).toBe(true);
+    expect(unsupported.hidden).toBe(true);
+    expect(loading.hidden).toBe(true);
+  });
+
+  it("renders markdown file previews without using a frame", async () => {
+    const elements = new Map();
+    const backdrop = {
+      classList: {
+        add() {},
+        remove() {},
+      },
+      innerHTML: "",
+    };
+    const frame = { src: "" };
+    const title = { textContent: "" };
+    const text = { hidden: false, innerHTML: "" };
+    const unsupported = { hidden: false, innerHTML: "" };
+    const loading = { hidden: false };
+    const download = { onclick: null };
+    const backBtn = { onclick: null };
+    elements.set("filePreviewBackdrop", backdrop);
+    elements.set("filePreviewFrame", frame);
+    elements.set("filePreviewTitle", title);
+    elements.set("filePreviewText", text);
+    elements.set("filePreviewUnsupported", unsupported);
+    elements.set("filePreviewLoading", loading);
+    elements.set("filePreviewDownloadBtn", download);
+    elements.set("filePreviewBackBtn", backBtn);
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      text: async () => "# Notes\n\nhello",
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const module = createImageViewerModule({
+      byId: (id) => elements.get(id) || null,
+      state: {
+        chatSmoothScrollUntil: 0,
+        chatShouldStickToBottom: true,
+      },
+      escapeHtml: (value) => String(value || ""),
+      wireBlurBackdropShield: () => {},
+      scrollChatToBottom: () => {},
+      updateScrollToBottomBtn: () => {},
+      documentRef: {
+        body: { appendChild() {} },
+        createElement() {
+          return {};
+        },
+        addEventListener() {},
+      },
+      navigatorRef: {},
+      requestAnimationFrameRef: (callback) => callback(),
+    });
+
+    expect(module.openFilePreview("/codex/file?path=C%3A%5Cuploads%5Cnotes.md", "notes.md", { fileName: "notes.md", mimeType: "text/markdown" })).toBe(true);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(fetchMock).toHaveBeenCalledWith("/codex/file?path=C%3A%5Cuploads%5Cnotes.md", { credentials: "same-origin" });
+    expect(frame.hidden).toBe(true);
+    expect(frame.src).toBe("about:blank");
+    expect(text.hidden).toBe(false);
+    expect(text.innerHTML).toContain("<h1");
+    expect(text.innerHTML).toContain("Notes");
+    expect(unsupported.hidden).toBe(true);
+    expect(loading.hidden).toBe(true);
+    vi.unstubAllGlobals();
+  });
+
+  it("shows an in-app unsupported preview state for binary files", () => {
+    const elements = new Map();
+    const backdrop = {
+      classList: {
+        add() {},
+        remove() {},
+      },
+      innerHTML: "",
+    };
+    const frame = { src: "" };
+    const title = { textContent: "" };
+    const text = { hidden: false, innerHTML: "" };
+    const unsupported = { hidden: false, innerHTML: "" };
+    const loading = { hidden: false };
+    const download = { onclick: null };
+    const backBtn = { onclick: null };
+    elements.set("filePreviewBackdrop", backdrop);
+    elements.set("filePreviewFrame", frame);
+    elements.set("filePreviewTitle", title);
+    elements.set("filePreviewText", text);
+    elements.set("filePreviewUnsupported", unsupported);
+    elements.set("filePreviewLoading", loading);
+    elements.set("filePreviewDownloadBtn", download);
+    elements.set("filePreviewBackBtn", backBtn);
+    const module = createImageViewerModule({
+      byId: (id) => elements.get(id) || null,
+      state: {
+        chatSmoothScrollUntil: 0,
+        chatShouldStickToBottom: true,
+      },
+      escapeHtml: (value) => String(value || ""),
+      wireBlurBackdropShield: () => {},
+      scrollChatToBottom: () => {},
+      updateScrollToBottomBtn: () => {},
+      documentRef: {
+        body: { appendChild() {} },
+        createElement() {
+          return {};
+        },
+        addEventListener() {},
+      },
+      navigatorRef: {},
+      requestAnimationFrameRef: (callback) => callback(),
+    });
+
+    expect(module.openFilePreview("/codex/file?path=C%3A%5Cuploads%5Csheet.xlsx", "sheet.xlsx", { fileName: "sheet.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" })).toBe(true);
+    expect(frame.hidden).toBe(true);
+    expect(frame.src).toBe("about:blank");
+    expect(text.hidden).toBe(true);
+    expect(unsupported.hidden).toBe(false);
+    expect(unsupported.innerHTML).toContain("Preview unavailable");
+    expect(loading.hidden).toBe(true);
   });
 });

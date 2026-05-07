@@ -1525,7 +1525,10 @@ export function createTurnActionsModule(deps) {
       return true;
     }
     const url = `/codex/file?path=${encodeURIComponent(attachment.path)}`;
-    const opened = openFilePreview(url, label);
+    const opened = openFilePreview(url, label, {
+      fileName: attachment.fileName,
+      mimeType: attachment.mimeType,
+    });
     if (opened !== false) return true;
     setStatus(`File ready: ${label}`);
     return true;

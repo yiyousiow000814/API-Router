@@ -448,6 +448,7 @@ describe("turnActions", () => {
     expect(filePreviewCalls[0]).toEqual([
       "/codex/file?path=C%3A%5Cuploads%5Cnotes.md",
       "notes.md",
+      { fileName: "notes.md", mimeType: "text/markdown" },
     ]);
     expect(openedUrls).toEqual([]);
   });
