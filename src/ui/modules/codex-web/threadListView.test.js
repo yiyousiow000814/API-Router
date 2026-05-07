@@ -397,7 +397,6 @@ describe("threadListView", () => {
     expect(events.indexOf("history:thread-1")).toBeGreaterThan(events.indexOf("chat-opening:on"));
     expect(events.indexOf("ws:connect")).toBeGreaterThan(events.indexOf("history:thread-1"));
     expect(events.indexOf("ws:sync")).toBeGreaterThan(events.indexOf("history:thread-1"));
-    expect(events).toContain("GET:/codex/threads/thread-1/transport?workspace=windows");
     expect(events).not.toContain(
       "POST:/codex/threads/thread-1/resume?workspace=windows"
     );
@@ -584,12 +583,7 @@ describe("threadListView", () => {
     });
 
     expect(resumed).toBe(null);
-    expect(calls).toEqual([
-      {
-        path: "/codex/threads/thread-notloaded/transport?workspace=windows",
-        method: "GET",
-      },
-    ]);
+    expect(calls).toEqual([]);
     expect(state.activeThreadOpenState).toMatchObject({
       threadId: "thread-notloaded",
       threadStatusType: "notloaded",
@@ -668,15 +662,13 @@ describe("threadListView", () => {
     ).toBe(false);
   });
 
-  it("resumes opened threads in background to attach live updates", async () => {
+  it("resumes opened threads in background for live updates", async () => {
     const calls = [];
     const state = {
-      activeThreadAttachTransport: "",
       activeThreadPendingTurnThreadId: "",
       activeThreadPendingTurnId: "",
       activeThreadPendingTurnRunning: false,
       pendingThreadResumes: new Map(),
-      threadAttachTransportById: new Map(),
     };
     const ui = [];
     const api = async (path, options = {}) => {
@@ -718,8 +710,6 @@ describe("threadListView", () => {
       },
     ]);
     expect(state.activeThreadOpenState.loaded).toBe(true);
-    expect(state.activeThreadAttachTransport).toBe("terminal-session");
-    expect(state.threadAttachTransportById.get("thread-1")).toBe("terminal-session");
     expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
     expect(state.activeThreadPendingTurnId).toBe("turn-123");
     expect(state.activeThreadPendingTurnRunning).toBe(true);
@@ -735,13 +725,11 @@ describe("threadListView", () => {
   it("does not resume completed threads after history load", async () => {
     const calls = [];
     const state = {
-      activeThreadAttachTransport: "",
       activeThreadHistoryThreadId: "thread-1",
       activeThreadHistoryIncomplete: false,
       activeThreadPendingTurnRunning: false,
       activeThreadPendingTurnThreadId: "",
       pendingThreadResumes: new Map(),
-      threadAttachTransportById: new Map(),
     };
     const api = async (path, options = {}) => {
       calls.push({ path, method: options.method || "GET" });
@@ -768,28 +756,19 @@ describe("threadListView", () => {
     });
 
     expect(ws).toEqual([]);
-    expect(calls).toEqual([
-      {
-        path: "/codex/threads/thread-1/transport?workspace=windows",
-        method: "GET",
-      },
-    ]);
+    expect(calls).toEqual([]);
     expect(state.activeThreadOpenState.loaded).toBe(false);
-    expect(state.activeThreadAttachTransport).toBe("terminal-session");
-    expect(state.threadAttachTransportById.get("thread-1")).toBe("terminal-session");
   });
 
   it("does not blindly resume when loaded history overrides stale running sidebar state", async () => {
     const calls = [];
     const state = {
-      activeThreadAttachTransport: "",
       activeThreadHistoryThreadId: "thread-1",
       activeThreadHistoryIncomplete: false,
       activeThreadHistoryStatusType: "idle",
       activeThreadPendingTurnRunning: false,
       activeThreadPendingTurnThreadId: "",
       pendingThreadResumes: new Map(),
-      threadAttachTransportById: new Map(),
     };
     const api = async (path, options = {}) => {
       calls.push({ path, method: options.method || "GET" });
@@ -808,26 +787,19 @@ describe("threadListView", () => {
       },
     });
 
-    expect(calls).toEqual([
-      {
-        path: "/codex/threads/thread-1/transport?workspace=windows",
-        method: "GET",
-      },
-    ]);
+    expect(calls).toEqual([]);
     expect(state.activeThreadOpenState.loaded).toBe(false);
   });
 
   it("does not resume when loaded history overrides stale notLoaded sidebar state", async () => {
     const calls = [];
     const state = {
-      activeThreadAttachTransport: "",
       activeThreadHistoryThreadId: "thread-1",
       activeThreadHistoryIncomplete: false,
       activeThreadHistoryStatusType: "idle",
       activeThreadPendingTurnRunning: false,
       activeThreadPendingTurnThreadId: "",
       pendingThreadResumes: new Map(),
-      threadAttachTransportById: new Map(),
     };
     const api = async (path, options = {}) => {
       calls.push({ path, method: options.method || "GET" });
@@ -846,12 +818,7 @@ describe("threadListView", () => {
       },
     });
 
-    expect(calls).toEqual([
-      {
-        path: "/codex/threads/thread-1/transport?workspace=windows",
-        method: "GET",
-      },
-    ]);
+    expect(calls).toEqual([]);
     expect(state.activeThreadOpenState.loaded).toBe(false);
   });
 

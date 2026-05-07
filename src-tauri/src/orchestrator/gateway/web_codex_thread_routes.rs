@@ -727,11 +727,7 @@ pub(super) async fn codex_threads_create(
     }
     let params = build_thread_start_params(&req);
     let workspace_target = req.workspace.as_deref().and_then(parse_workspace_target);
-    let gateway_token = st.secrets.get_gateway_token().unwrap_or_default();
-    let manager = CodexSessionManager::new(workspace_target).with_terminal_bridge(
-        st.cfg.read().listen.port,
-        (!gateway_token.trim().is_empty()).then_some(gateway_token),
-    );
+    let manager = CodexSessionManager::new(workspace_target);
     match manager.thread_start(params).await {
         Ok(outcome) => {
             crate::orchestrator::gateway::web_codex_threads::invalidate_thread_list_cache_all();

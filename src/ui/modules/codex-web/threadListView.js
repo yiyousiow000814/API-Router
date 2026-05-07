@@ -107,55 +107,6 @@ export function buildThreadResumeUrl(threadId, options = {}) {
   return `/codex/threads/${encodeURIComponent(threadId)}/resume${query ? `?${query}` : ""}`;
 }
 
-export function buildThreadTransportUrl(threadId, options = {}) {
-  const params = new URLSearchParams();
-  const workspace = String(options.workspace || "").trim();
-  if (workspace === "windows" || workspace === "wsl2") params.set("workspace", workspace);
-  const query = params.toString();
-  return `/codex/threads/${encodeURIComponent(threadId)}/transport${query ? `?${query}` : ""}`;
-}
-
-function attachedLiveThreadTransport(response) {
-  if (response?.attached === true) {
-    return String(response?.transport || "terminal-session").trim();
-  }
-  const transport = String(response?.transport || "").trim();
-  return transport === "terminal-session" ? transport : "";
-}
-
-function setThreadAttachTransport(state, threadId, transport) {
-  const id = String(threadId || "").trim();
-  const normalizedTransport = String(transport || "").trim();
-  if (!state || !id) return;
-  if (!(state.threadAttachTransportById instanceof Map)) {
-    state.threadAttachTransportById = new Map();
-  }
-  if (normalizedTransport) state.threadAttachTransportById.set(id, normalizedTransport);
-  else state.threadAttachTransportById.delete(id);
-}
-
-async function syncThreadAttachTransport({
-  threadId,
-  workspace,
-  state,
-  api,
-}) {
-  const id = String(threadId || "").trim();
-  if (!id) return null;
-  let attachTransport = "";
-  try {
-    const response = await api(buildThreadTransportUrl(id, { workspace }));
-    attachTransport = attachedLiveThreadTransport(response);
-  } catch {
-    attachTransport = "";
-  }
-  if (state) {
-    state.activeThreadAttachTransport = attachTransport;
-    setThreadAttachTransport(state, id, attachTransport);
-  }
-  return attachTransport || null;
-}
-
 export async function resumeThreadLiveOnOpen({
   threadId,
   workspace,
@@ -184,7 +135,6 @@ export async function resumeThreadLiveOnOpen({
   const needsResume = openState.resumeRequired === true;
   if (!needsResume) {
     setThreadOpenState(state, openState);
-    await syncThreadAttachTransport({ threadId: id, workspace, state, api });
     if (workspace === "windows" || workspace === "wsl2") {
       await refreshWorkspaceRuntimeState(workspace, { silent: true, updateHeader: true }).catch(() => null);
     }
@@ -207,7 +157,6 @@ export async function resumeThreadLiveOnOpen({
   try {
     const resumed = await resumePromise;
     if (state) {
-      const attachTransport = attachedLiveThreadTransport(resumed);
       const resumedTurnId = String(
         resumed?.turnId ||
         resumed?.turn_id ||
@@ -218,11 +167,6 @@ export async function resumeThreadLiveOnOpen({
         ""
       ).trim();
       setThreadOpenState(state, openState, { loaded: true });
-      state.activeThreadAttachTransport = attachTransport;
-      setThreadAttachTransport(state, id, attachTransport);
-      if (!attachTransport) {
-        await syncThreadAttachTransport({ threadId: id, workspace, state, api });
-      }
       if (resumedTurnId) {
         syncPendingTurnRuntime(state, id, {
           turnId: resumedTurnId,

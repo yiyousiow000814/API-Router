@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  buildManagedTerminalUrl,
   buildThreadCreatePayload,
   buildTurnPayload,
   createTurnActionsModule,
@@ -123,12 +122,6 @@ describe("turnActions", () => {
       approvalPolicy: "untrusted",
       sandbox: "readOnly",
     });
-  });
-
-  it("builds managed terminal url from thread id", () => {
-    expect(buildManagedTerminalUrl("thread/one")).toBe(
-      "/codex/threads/thread%2Fone/managed-terminal"
-    );
   });
 
   it("rejects unsupported attachment types before upload", async () => {
@@ -550,124 +543,6 @@ describe("turnActions", () => {
       },
     ]);
     expect(state.pendingAttachments).toEqual([]);
-  });
-
-  it("opens a managed terminal surface for the active thread", async () => {
-    const calls = [];
-    const statusCalls = [];
-    const state = {
-      activeThreadId: "thread-1",
-      activeThreadWorkspace: "windows",
-      activeThreadRolloutPath: "C:\\repo\\.codex\\sessions\\rollout.jsonl",
-      activeThreadAttachTransport: "",
-      activeThreadAttachPendingUntil: 0,
-      activeThreadStarted: true,
-      activeThreadMessages: [],
-      pendingThreadResumes: new Map(),
-      chatShouldStickToBottom: false,
-      selectedModel: "",
-      selectedReasoningEffort: "",
-      permissionPresetByWorkspace: { windows: "/permission auto", wsl2: "/permission auto" },
-      threadItemsAll: [
-        {
-          id: "thread-1",
-          cwd: "C:\\repo",
-          workspace: "windows",
-        },
-      ],
-      threadAttachTransportById: new Map(),
-      ws: null,
-    };
-    let headerUpdates = 0;
-    let runtimeRefreshes = 0;
-    const module = createTurnActionsModule({
-      state,
-      byId: () => ({ value: "" }),
-      api: async (path, options = {}) => {
-        calls.push({ path, method: options.method || "GET", body: options.body || null });
-        if (path === "/codex/threads/thread-1/managed-terminal") {
-          return {
-            ok: true,
-            threadId: "thread-1",
-            attached: true,
-            transport: "terminal-session",
-            cwd: "C:\\repo",
-            path: "C:\\repo\\.codex\\sessions\\rollout.jsonl",
-          };
-        }
-        throw new Error(`unexpected api call: ${path}`);
-      },
-      wsSend: () => false,
-      wsCall: async () => ({}),
-      nextReqId: () => "req-1",
-      connectWs: () => {},
-      syncEventSubscription: () => {},
-      getPromptValue: () => "",
-      getWorkspaceTarget: () => "windows",
-      getStartCwdForWorkspace: () => "C:\\fallback",
-      waitPendingThreadResume: async () => {},
-      registerPendingThreadResume: () => {},
-      refreshWorkspaceRuntimeState: async () => {
-        runtimeRefreshes += 1;
-        return { connected: true };
-      },
-      updateHeaderUi: () => {
-        headerUpdates += 1;
-      },
-      addChat: () => {},
-      clearChatMessages: () => {},
-      hideWelcomeCard: () => {},
-      showWelcomeCard: () => {},
-      clearPromptValue: () => {},
-      renderComposerContextLeft: () => {},
-      scrollToBottomReliable: () => {},
-      scheduleChatLiveFollow: () => {},
-      createAssistantStreamingMessage: () => ({ msg: null, body: null }),
-      appendStreamingDelta: () => {},
-      finalizeAssistantMessage: () => {},
-      normalizeTextPayload: (value) => value,
-      maybeNotifyTurnDone: () => {},
-      renderAttachmentPills: () => {},
-      refreshThreads: async () => {},
-      refreshHosts: async () => {},
-      refreshPending: async () => {},
-      setStatus: (message, isWarn = false) => {
-        statusCalls.push({ message, isWarn });
-      },
-      setActiveThread: () => {},
-      setMainTab: () => {},
-      setMobileTab: () => {},
-      setChatOpening: () => {},
-      hideSlashCommandMenu: () => {},
-      blockInSandbox: () => false,
-    });
-
-    const result = await module.openManagedTerminalSurface();
-
-    expect(result).toEqual({
-      ok: true,
-      threadId: "thread-1",
-      attached: true,
-      transport: "terminal-session",
-      cwd: "C:\\repo",
-      path: "C:\\repo\\.codex\\sessions\\rollout.jsonl",
-    });
-    expect(calls).toEqual([
-      {
-        path: "/codex/threads/thread-1/managed-terminal",
-        method: "POST",
-        body: { workspace: "windows", cwd: "C:\\repo" },
-      },
-    ]);
-    expect(state.activeThreadAttachTransport).toBe("terminal-session");
-    expect(state.threadAttachTransportById.get("thread-1")).toBe("terminal-session");
-    expect(state.activeThreadAttachPendingUntil).toBe(0);
-    expect(runtimeRefreshes).toBe(1);
-    expect(headerUpdates).toBeGreaterThanOrEqual(2);
-    expect(statusCalls).toContainEqual({
-      message: "Terminal linked to this chat.",
-      isWarn: false,
-    });
   });
 
   it("executes slash commands through the slash endpoint instead of starting a turn", async () => {
@@ -2113,7 +1988,6 @@ describe("turnActions", () => {
     expect(hidden).toBe(1);
     expect(activeThreadIds).toEqual([""]);
     expect(state.activeThreadId).toBe("");
-    expect(state.activeThreadAttachTransport).toBe("");
     expect(state.planModeEnabled).toBe(false);
   });
 
@@ -3210,7 +3084,6 @@ it("clears failed-turn synthetic pending suppression before starting a new turn"
     expect(calls).toEqual([]);
     expect(state.activeThreadId).toBe("");
     expect(state.activeThreadRolloutPath).toBe("");
-    expect(state.activeThreadAttachTransport).toBe("");
     expect(state.activeThreadOpenState?.loaded).toBe(false);
   });
 
@@ -3582,17 +3455,15 @@ it("clears failed-turn synthetic pending suppression before starting a new turn"
     ]);
   });
 
-  it("interrupts terminal-session threads by thread even when history already assigned a turn id", async () => {
+  it("interrupts a live turn by turn id when history already assigned it", async () => {
     const calls = [];
     const state = {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "wsl2",
-      activeThreadAttachTransport: "terminal-session",
       activeThreadPendingTurnThreadId: "thread-1",
       activeThreadPendingTurnId: "turn-live",
       activeThreadPendingTurnRunning: true,
       suppressedIncompleteHistoryRuntimeByThreadId: {},
-      threadAttachTransportById: new Map([["thread-1", "terminal-session"]]),
     };
     const module = createTurnActionsModule({
       state,
@@ -3641,7 +3512,7 @@ it("clears failed-turn synthetic pending suppression before starting a new turn"
     await module.interruptTurn();
 
     expect(calls).toEqual([
-      { path: "/codex/threads/thread-1/interrupt?workspace=wsl2", method: "POST" },
+      { path: "/codex/turns/turn-live/interrupt", method: "POST" },
     ]);
   });
 

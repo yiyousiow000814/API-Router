@@ -216,10 +216,6 @@ export function buildThreadCreatePayload({
   };
 }
 
-export function buildManagedTerminalUrl(threadId) {
-  return `/codex/threads/${encodeURIComponent(threadId)}/managed-terminal`;
-}
-
 function isSlashCommandPrompt(prompt) {
   return /^\/\S+/.test(String(prompt || "").trim());
 }
@@ -273,33 +269,6 @@ function readFastModeEnabledFromCommand(prompt, fallback = false) {
 function requiresActiveThreadForSlashCommand(command) {
   const text = String(command || "").trim().toLowerCase();
   return text.startsWith("/model ");
-}
-
-function attachedLiveThread(response) {
-  return response?.attached === true || String(response?.transport || "").trim() === "terminal-session";
-}
-
-function attachedLiveThreadTransport(response) {
-  if (response?.attached === true) {
-    return String(response?.transport || "terminal-session").trim();
-  }
-  const transport = String(response?.transport || "").trim();
-  return transport === "terminal-session" ? transport : "";
-}
-
-function setThreadAttachTransport(state, threadId, transport) {
-  const id = String(threadId || "").trim();
-  const normalizedTransport = String(transport || "").trim();
-  if (!state || !id) return;
-  if (!(state.threadAttachTransportById instanceof Map)) {
-    state.threadAttachTransportById = new Map();
-  }
-  if (normalizedTransport) state.threadAttachTransportById.set(id, normalizedTransport);
-  else state.threadAttachTransportById.delete(id);
-}
-
-function activeThreadAttachPending(state) {
-  return Number(state?.activeThreadAttachPendingUntil || 0) > Date.now();
 }
 
 export function createTurnActionsModule(deps) {
@@ -396,73 +365,9 @@ export function createTurnActionsModule(deps) {
     ].filter(Boolean).join("\n");
   }
 
-  function setAttachPending(active = false) {
-    state.activeThreadAttachPendingUntil = active ? Date.now() + 2400 : 0;
-    updateHeaderUi();
-  }
-
-  function resolveManagedTerminalCwd(workspace = getWorkspaceTarget()) {
-    const activeThreadId = resolveCurrentThreadId(state);
-    const workspaceKey = String(workspace || "").trim().toLowerCase() === "wsl2" ? "wsl2" : "windows";
-    const threadItem = Array.isArray(state.threadItemsAll)
-      ? state.threadItemsAll.find((item) => String(item?.id || item?.threadId || "").trim() === activeThreadId)
-      : null;
-    const threadCwd = String(threadItem?.cwd || "").trim();
-    if (threadCwd) return threadCwd;
-    return String(getStartCwdForWorkspace(workspaceKey) || "").trim();
-  }
-
   function visibleUserMessageCount() {
     const box = byId("chatBox");
     return box?.querySelectorAll?.(".msg.user")?.length || 0;
-  }
-
-  async function openManagedTerminalSurface(options = {}) {
-    if (blockInSandbox("open linked terminal")) return null;
-    const threadId = String(options.threadId || resolveCurrentThreadId(state) || "").trim();
-    if (!threadId) throw new Error("No active chat to link.");
-    if (activeThreadAttachPending(state)) return null;
-    if (String(state.activeThreadAttachTransport || "").trim().toLowerCase() === "terminal-session") {
-      setStatus("Terminal already linked to this chat.");
-      return null;
-    }
-    const workspace = String(
-      options.workspace || state.activeThreadWorkspace || getWorkspaceTarget() || "windows"
-    )
-      .trim()
-      .toLowerCase() === "wsl2"
-      ? "wsl2"
-      : "windows";
-    const cwd = String(options.cwd || resolveManagedTerminalCwd(workspace) || "").trim();
-    setAttachPending(true);
-    setStatus("Opening linked terminal...");
-    try {
-      const response = await api(buildManagedTerminalUrl(threadId), {
-        method: "POST",
-        body: {
-          workspace,
-          cwd: cwd || undefined,
-        },
-      });
-      const attachTransport = attachedLiveThreadTransport(response);
-      state.activeThreadAttachTransport = attachTransport;
-      setThreadAttachTransport(state, threadId, attachTransport);
-      if (String(response?.path || "").trim()) {
-        state.activeThreadRolloutPath = String(response.path).trim();
-      }
-      setAttachPending(false);
-      await refreshRuntimeForWorkspace(workspace);
-      updateHeaderUi();
-      setStatus(
-        attachTransport
-          ? "Terminal linked to this chat."
-          : "Linked terminal launched for this chat."
-      );
-      return response;
-    } catch (error) {
-      setAttachPending(false);
-      throw error;
-    }
   }
 
   function persistPermissionPresetState() {
@@ -823,20 +728,11 @@ export function createTurnActionsModule(deps) {
     const turnId = String(state.activeThreadPendingTurnId || "").trim();
     if (!threadId) throw new Error("No running turn to stop.");
     const workspace = String(state.activeThreadWorkspace || state.workspaceTarget || "").trim();
-    const attachTransport =
-      String(
-        state.activeThreadAttachTransport ||
-        state.threadAttachTransportById?.get?.(threadId) ||
-        ""
-      )
-        .trim()
-        .toLowerCase();
-    const useThreadInterrupt = attachTransport === "terminal-session" || !turnId;
+    const useThreadInterrupt = !turnId;
     pushLiveDebugEvent("turn.interrupt:request", {
       threadId,
       turnId,
       workspace,
-      attachTransport,
       useThreadInterrupt,
       historyStatusType: String(state.activeThreadHistoryStatusType || "").trim().toLowerCase(),
       pendingRunning: state.activeThreadPendingTurnRunning === true,
@@ -1041,7 +937,6 @@ export function createTurnActionsModule(deps) {
     state.activeThreadWorkspace = workspace;
     state.planModeEnabled = false;
     state.activeThreadRolloutPath = "";
-    state.activeThreadAttachTransport = "";
     setActiveThreadOpenState(resolveThreadOpenState());
     state.activeThreadTokenUsage = null;
     state.activeThreadPendingTurnId = "";
@@ -1116,14 +1011,12 @@ export function createTurnActionsModule(deps) {
           permissionPreset: state.permissionPresetByWorkspace?.[workspace],
         }),
       });
-      const attached = attachedLiveThread(created);
       activeThreadId = String(created?.id || created?.threadId || created?.thread?.id || "").trim();
       const createdRolloutPath = String(
         created?.thread?.path || created?.path || created?.rolloutPath || created?.rollout_path || ""
       ).trim();
       if (activeThreadId) {
         setActiveThread(activeThreadId);
-        const attachTransport = attachedLiveThreadTransport(created);
         state.activeThreadStarted = false;
         state.activeThreadWorkspace = workspace;
         state.activeThreadRolloutPath = createdRolloutPath;
@@ -1134,8 +1027,6 @@ export function createTurnActionsModule(deps) {
             loaded: true,
           })
         );
-        state.activeThreadAttachTransport = attachTransport;
-        setThreadAttachTransport(state, activeThreadId, attachTransport);
       }
       refreshRuntimeForWorkspace(workspace);
     }
@@ -1202,7 +1093,6 @@ export function createTurnActionsModule(deps) {
     }
     if (nextRolloutPath) state.activeThreadRolloutPath = nextRolloutPath;
     if (method === "thread/start") {
-      const attachTransport = attachedLiveThreadTransport(result);
       state.activeThreadStarted = false;
         setActiveThreadOpenState(
           resolveThreadOpenState({
@@ -1210,8 +1100,6 @@ export function createTurnActionsModule(deps) {
             loaded: true,
           })
         );
-      state.activeThreadAttachTransport = attachTransport;
-      setThreadAttachTransport(state, nextThreadId, attachTransport);
       state.activeThreadWorkspace = workspace;
       state.planModeEnabled = false;
       state.activeThreadTokenUsage = null;
@@ -1300,14 +1188,12 @@ export function createTurnActionsModule(deps) {
             permissionPreset: state.permissionPresetByWorkspace?.[workspace],
           }),
         });
-        const attached = attachedLiveThread(created);
         const createdRolloutPath = String(
           created?.thread?.path || created?.path || created?.rolloutPath || created?.rollout_path || ""
         ).trim();
         activeThreadId = String(created?.id || created?.threadId || created?.thread?.id || "").trim();
         if (!activeThreadId) throw new Error("turn start failed: missing threadId");
         setActiveThread(activeThreadId);
-        const attachTransport = attachedLiveThreadTransport(created);
         state.activeThreadWorkspace = workspace;
         state.activeThreadRolloutPath = createdRolloutPath;
         setActiveThreadOpenState(
@@ -1316,8 +1202,6 @@ export function createTurnActionsModule(deps) {
             loaded: true,
           })
         );
-        state.activeThreadAttachTransport = attachTransport;
-        setThreadAttachTransport(state, activeThreadId, attachTransport);
         refreshRuntimeForWorkspace(workspace);
       } else if (activeThreadRequiresResume()) {
         const resumePromise = api(
@@ -1617,7 +1501,6 @@ export function createTurnActionsModule(deps) {
     interruptTurn,
     maybeRestoreDeferredQueuedTurnEdit,
     newThread,
-    openManagedTerminalSurface,
     queueFollowUpTurn,
     resolveApproval,
     resolveProposedPlanConfirmation,

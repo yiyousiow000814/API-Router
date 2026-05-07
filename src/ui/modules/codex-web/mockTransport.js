@@ -45,7 +45,6 @@ function isSafeModePassthroughRoute(method, url) {
       normalizedUrl.startsWith("/codex/folders?") ||
       normalizedUrl.startsWith("/codex/git?") ||
       /^\/codex\/threads\/[^/]+\/history(?:\?|$)/.test(normalizedUrl) ||
-      /^\/codex\/threads\/[^/]+\/transport(?:\?|$)/.test(normalizedUrl) ||
       /^\/codex\/threads\/[^/]+\/git(?:\?|$)/.test(normalizedUrl)
     )
   ) {
@@ -804,7 +803,6 @@ export function createMockCodexTransport(deps) {
     if (liveRead && url === "/codex/user-input/pending" && method === "GET") return liveRead;
     if (liveRead && url.startsWith("/codex/git?") && method === "GET") return liveRead;
     if (liveRead && /^\/codex\/threads\/[^/]+\/resume(?:\?|$)/.test(url) && method === "POST") return liveRead;
-    if (liveRead && /^\/codex\/threads\/[^/]+\/transport(?:\?|$)/.test(url) && method === "GET") return liveRead;
     if (liveRead && /^\/codex\/threads\/[^/]+\/git(?:\?|$)/.test(url) && method === "GET") return liveRead;
     if (liveRead && url === "/codex/git/branch" && method === "POST") return liveRead;
     if (liveRead && /^\/codex\/threads\/[^/]+\/branch(?:\?|$)/.test(url) && method === "POST") return liveRead;
@@ -996,25 +994,6 @@ export function createMockCodexTransport(deps) {
       const thread = getThread(decodeURIComponent(resumeMatch[1] || ""));
       if (!thread) throw new Error("Mock thread not found");
       return { threadId: thread.id, id: thread.id, thread: { id: thread.id, path: thread.rolloutPath } };
-    }
-    const transportMatch = url.match(/^\/codex\/threads\/([^/]+)\/transport(?:\?|$)/);
-    if (transportMatch && method === "GET") {
-      const thread = getThread(decodeURIComponent(transportMatch[1] || ""));
-      if (!thread) throw new Error("Mock thread not found");
-      return { ok: true, threadId: thread.id, attached: false, transport: null };
-    }
-    const managedTerminalMatch = url.match(/^\/codex\/threads\/([^/]+)\/managed-terminal$/);
-    if (managedTerminalMatch && method === "POST") {
-      const thread = getThread(decodeURIComponent(managedTerminalMatch[1] || ""));
-      if (!thread) throw new Error("Mock thread not found");
-      return {
-        ok: true,
-        threadId: thread.id,
-        attached: true,
-        transport: "terminal-session",
-        cwd: thread.cwd,
-        path: thread.rolloutPath,
-      };
     }
     if (url.startsWith("/codex/slash/commands?") && method === "GET") return buildSlashCatalog(state);
     if (url.startsWith("/codex/slash/review/branches?") && method === "GET") return buildReviewItems("branches");

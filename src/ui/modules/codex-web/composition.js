@@ -384,7 +384,6 @@ export function createCodexWebComposition(deps) {
     clearQueuedTurn: turnActions.clearQueuedTurn,
     editQueuedTurn: turnActions.editQueuedTurn,
     maybeRestoreDeferredQueuedTurnEdit: turnActions.maybeRestoreDeferredQueuedTurnEdit,
-    openManagedTerminalSurface: turnActions.openManagedTerminalSurface,
     queueFollowUpTurn: turnActions.queueFollowUpTurn,
     saveQueuedTurnEdit: turnActions.saveQueuedTurnEdit,
     sendNowTurn: turnActions.sendNowTurn,
