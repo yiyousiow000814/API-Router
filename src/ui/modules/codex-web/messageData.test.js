@@ -83,6 +83,23 @@ vscode: 150 条
     expect(parsed.text).toBe("这里就能分辨哪一些应该被隐藏了");
   });
 
+  it("displays only the typed request from Codex file mention wrappers", () => {
+    const parsed = parseUserMessageParts({
+      content: [
+        {
+          type: "input_text",
+          text: `# Files mentioned by the user:
+
+## A81975.pdf: A81975.pdf
+
+## My request for Codex:
+看看我手机上截图的，可能你需要那个pdf来研究，我也放上来了`,
+        },
+      ],
+    });
+    expect(parsed.text).toBe("看看我手机上截图的，可能你需要那个pdf来研究，我也放上来了");
+  });
+
   it("strips Codex desktop git directives from assistant display text", () => {
     expect(
       normalizeDisplayedAssistantText(`已推送到 fix/thread-source-allowlist。
