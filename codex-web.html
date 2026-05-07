@@ -3150,51 +3150,11 @@
       min-height: 160px;
       width: 100%;
     }
-    .filePreviewPdfPageCanvas {
-      position: relative;
-      background: #ffffff;
-      border: 1px solid rgba(13, 18, 32, 0.12);
-      box-shadow: 0 8px 22px rgba(13, 18, 32, 0.14);
-      overflow: hidden;
-    }
     .filePreviewPdfCanvasHost canvas {
       display: block;
       max-width: 100%;
       height: auto;
       background: #ffffff;
-    }
-    .filePreviewPdfTextLayer {
-      position: absolute;
-      inset: 0;
-      overflow: hidden;
-      opacity: 1;
-      line-height: 1;
-      text-align: initial;
-      transform-origin: 0 0;
-      pointer-events: none;
-      -webkit-text-size-adjust: none;
-      text-size-adjust: none;
-      --min-font-size: 1;
-      --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
-      --min-font-size-inv: calc(1 / var(--min-font-size));
-    }
-    .filePreviewPdfTextLayer :is(span, br) {
-      color: #101820;
-      position: absolute;
-      white-space: pre;
-      transform-origin: 0% 0%;
-    }
-    .filePreviewPdfTextLayer > :not(.markedContent),
-    .filePreviewPdfTextLayer .markedContent span:not(.markedContent) {
-      z-index: 1;
-      --font-height: 0;
-      font-size: calc(var(--text-scale-factor) * var(--font-height));
-      --scale-x: 1;
-      --rotate: 0deg;
-      transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
-    }
-    .filePreviewPdfTextLayer .markedContent {
-      display: contents;
     }
     .filePreviewText,
     .filePreviewUnsupported {

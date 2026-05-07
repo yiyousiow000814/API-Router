@@ -392,7 +392,6 @@ describe("imageViewer", () => {
       onclick: null,
     };
     const download = { onclick: null };
-    const streamTextContent = vi.fn(() => ({ stream: true }));
     elements.set("filePreviewBackdrop", backdrop);
     elements.set("filePreviewFrame", frame);
     elements.set("filePreviewTitle", title);
@@ -409,7 +408,6 @@ describe("imageViewer", () => {
     const getPage = vi.fn(async () => ({
       getViewport: ({ scale }) => ({ width: 200 * scale, height: 300 * scale }),
       render,
-      streamTextContent,
     }));
     const getDocument = vi.fn(() => ({
       promise: Promise.resolve({ numPages: 2, getPage }),
@@ -420,12 +418,6 @@ describe("imageViewer", () => {
         ENABLE: 1,
         ENABLE_FORMS: 2,
       },
-      TextLayer: vi.fn(function TextLayer({ container }) {
-        this.container = container;
-        this.render = vi.fn(async () => {
-          container.rendered = true;
-        });
-      }),
       getDocument,
     }));
     const module = createImageViewerModule({
@@ -479,19 +471,109 @@ describe("imageViewer", () => {
     });
     expect(getPage).toHaveBeenCalledWith(1);
     expect(render).toHaveBeenCalledWith(expect.objectContaining({ annotationMode: 2 }));
-    expect(streamTextContent).toHaveBeenCalledWith({
-      includeMarkedContent: true,
-      disableNormalization: true,
-    });
     expect(frame.hidden).toBe(true);
     expect(frame.src).toBe("about:blank");
     expect(pdfJs.hidden).toBe(false);
     expect(pdfHost.node).toBeTruthy();
-    expect(pdfHost.node.className).toBe("filePreviewPdfPageCanvas");
-    expect(pdfHost.node.children.some((node) => node.className === "filePreviewPdfTextLayer" && node.rendered)).toBe(true);
     expect(pdfPage.textContent).toBe("1 / 2");
     expect(unsupported.hidden).toBe(true);
     expect(loading.hidden).toBe(true);
+  });
+
+  it("fits wide iphone pdf previews to the available width", async () => {
+    const elements = new Map();
+    const backdrop = {
+      classList: {
+        add() {},
+        remove() {},
+      },
+      innerHTML: "",
+    };
+    const frame = { src: "" };
+    const title = { textContent: "" };
+    const text = { hidden: false, innerHTML: "" };
+    const unsupported = { hidden: false, innerHTML: "" };
+    const loading = { hidden: false };
+    const pdfJs = { hidden: false };
+    const pdfHost = {
+      innerHTML: "",
+      clientWidth: 360,
+      appendChild(node) {
+        this.node = node;
+      },
+    };
+    const pdfPage = { textContent: "" };
+    const pdfPrev = { disabled: false, onclick: null };
+    const pdfNext = { disabled: false, onclick: null };
+    const download = { onclick: null };
+    elements.set("filePreviewBackdrop", backdrop);
+    elements.set("filePreviewFrame", frame);
+    elements.set("filePreviewTitle", title);
+    elements.set("filePreviewText", text);
+    elements.set("filePreviewUnsupported", unsupported);
+    elements.set("filePreviewLoading", loading);
+    elements.set("filePreviewPdfJs", pdfJs);
+    elements.set("filePreviewPdfCanvasHost", pdfHost);
+    elements.set("filePreviewPdfPage", pdfPage);
+    elements.set("filePreviewPdfPrevBtn", pdfPrev);
+    elements.set("filePreviewPdfNextBtn", pdfNext);
+    elements.set("filePreviewDownloadBtn", download);
+    const render = vi.fn(() => ({ promise: Promise.resolve() }));
+    const getPage = vi.fn(async () => ({
+      getViewport: ({ scale }) => ({ width: 1000 * scale, height: 793 * scale }),
+      render,
+    }));
+    const getDocument = vi.fn(() => ({
+      promise: Promise.resolve({ numPages: 4, getPage }),
+    }));
+    const loadPdfJs = vi.fn(async () => ({
+      GlobalWorkerOptions: {},
+      AnnotationMode: {
+        ENABLE: 1,
+        ENABLE_FORMS: 2,
+      },
+      getDocument,
+    }));
+    const module = createImageViewerModule({
+      byId: (id) => elements.get(id) || null,
+      state: {
+        chatSmoothScrollUntil: 0,
+        chatShouldStickToBottom: true,
+      },
+      escapeHtml: (value) => String(value || ""),
+      wireBlurBackdropShield: () => {},
+      scrollChatToBottom: () => {},
+      updateScrollToBottomBtn: () => {},
+      documentRef: {
+        body: { appendChild() {} },
+        createElement(tag) {
+          if (tag === "canvas") {
+            return {
+              style: {},
+              getContext: () => ({ canvasContext: true }),
+            };
+          }
+          return {};
+        },
+        addEventListener() {},
+      },
+      navigatorRef: {
+        userAgent:
+          "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148",
+      },
+      loadPdfJs,
+      requestAnimationFrameRef: (callback) => callback(),
+    });
+
+    expect(module.openFilePreview("/codex/file?path=C%3A%5Cuploads%5CA81975.pdf", "A81975.pdf", { fileName: "A81975.pdf", mimeType: "application/pdf" })).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(getPage).toHaveBeenCalledWith(1);
+    expect(render).toHaveBeenCalledWith(expect.objectContaining({ annotationMode: 2 }));
+    expect(pdfHost.node.style.width).toBe("336px");
+    expect(pdfHost.node.style.height).toBe("267px");
   });
 
   it("renders csv file previews as a table", async () => {

@@ -597,13 +597,11 @@ export function createImageViewerModule(deps) {
     await nextAnimationFrame(requestAnimationFrameRef);
     const baseViewport = page.getViewport({ scale: 1 });
     const availableWidth = Math.max(240, Number(host.clientWidth || host.parentElement?.clientWidth || 360) - 24);
-    const scale = Math.min(2, Math.max(0.6, availableWidth / Math.max(1, baseViewport.width)));
+    const scale = Math.min(2, Math.max(0.1, availableWidth / Math.max(1, baseViewport.width)));
     const viewport = page.getViewport({ scale });
     const dpr = Math.min(2, Math.max(1, Number(globalThis.devicePixelRatio || 1)));
     const canvas = documentRef.createElement("canvas");
     const context = canvas.getContext?.("2d");
-    const pageWrap = documentRef.createElement("div");
-    pageWrap.className = "filePreviewPdfPageCanvas";
     const pixelWidth = Math.ceil(viewport.width * dpr);
     const pixelHeight = Math.ceil(viewport.height * dpr);
     canvas.width = pixelWidth;
@@ -611,11 +609,8 @@ export function createImageViewerModule(deps) {
     canvas.style.width = `${Math.ceil(viewport.width)}px`;
     canvas.style.height = `${Math.ceil(viewport.height)}px`;
     canvas.style.display = "block";
-    pageWrap.style.width = canvas.style.width;
-    pageWrap.style.height = canvas.style.height;
     host.innerHTML = "";
-    pageWrap.appendChild(canvas);
-    host.appendChild(pageWrap);
+    host.appendChild(canvas);
     const annotationMode = pdfPreviewState.pdfjs?.AnnotationMode?.ENABLE_FORMS || pdfPreviewState.pdfjs?.AnnotationMode?.ENABLE;
     const renderTask = page.render({
       canvasContext: context,
@@ -625,21 +620,6 @@ export function createImageViewerModule(deps) {
     });
     pdfPreviewState.renderTask = renderTask;
     await renderTask.promise;
-    if (requestId !== filePreviewRequestId || !pdfPreviewState?.renderTextLayer || !pdfPreviewState.pdfjs?.TextLayer) return;
-    const textLayerHost = documentRef.createElement("div");
-    textLayerHost.className = "filePreviewPdfTextLayer";
-    pageWrap.appendChild(textLayerHost);
-    try {
-      const textLayer = new pdfPreviewState.pdfjs.TextLayer({
-        textContentSource: page.streamTextContent({
-          includeMarkedContent: true,
-          disableNormalization: true,
-        }),
-        container: textLayerHost,
-        viewport,
-      });
-      await textLayer.render();
-    } catch {}
   }
 
   async function renderPdfJsPreview(src, requestId) {
@@ -649,7 +629,6 @@ export function createImageViewerModule(deps) {
     const next = byId("filePreviewPdfNextBtn");
     if (!pdfJs) return;
     try {
-      const onAppleMobile = isAppleMobilePreview();
       const pdfjs = await loadPdfJs();
       if (requestId !== filePreviewRequestId) return;
       const loadingTask = pdfjs.getDocument({
@@ -659,7 +638,7 @@ export function createImageViewerModule(deps) {
       });
       const pdf = await loadingTask.promise;
       if (requestId !== filePreviewRequestId) return;
-      pdfPreviewState = { pdfjs, pdf, pageNum: 1, renderTask: null, renderTextLayer: onAppleMobile };
+      pdfPreviewState = { pdfjs, pdf, pageNum: 1, renderTask: null };
       if (prev) prev.onclick = () => renderPdfJsPage(requestId, (pdfPreviewState?.pageNum || 1) - 1);
       if (next) next.onclick = () => renderPdfJsPage(requestId, (pdfPreviewState?.pageNum || 1) + 1);
       pdfJs.hidden = false;
