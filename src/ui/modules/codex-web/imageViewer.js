@@ -50,6 +50,16 @@ export function createImageViewerModule(deps) {
 
   let imageViewerState = null;
 
+  function isPdfPreviewSrc(src) {
+    try {
+      const url = new URL(String(src || ""), "http://localhost");
+      const path = url.searchParams.get("path") || "";
+      return /\.pdf$/i.test(path) || /\.pdf$/i.test(url.pathname);
+    } catch {
+      return /\.pdf(?:$|[?#])/i.test(String(src || ""));
+    }
+  }
+
   function setViewerTransform({ scale, tx, ty }) {
     const img = byId("imageViewerImg");
     if (!img) return;
@@ -359,7 +369,9 @@ export function createImageViewerModule(deps) {
     const safeLabel = String(label || "").trim() || "attachment";
     if (!safeSrc) return false;
     if (title) title.textContent = safeLabel;
-    frame.src = safeSrc;
+    frame.src = isPdfPreviewSrc(safeSrc)
+      ? `${safeSrc}#view=FitH&zoom=page-width`
+      : safeSrc;
     if (download) {
       download.onclick = () => {
         const a = documentRef.createElement("a");

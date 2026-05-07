@@ -710,6 +710,32 @@ fn file_extension(value: &str) -> String {
         .unwrap_or_default()
 }
 
+fn sanitize_upload_file_name(file_name: &str) -> String {
+    let safe_name = sanitize_name(file_name, "attachment.bin");
+    if std::path::Path::new(&safe_name).extension().is_some() {
+        return safe_name;
+    }
+
+    let ext = file_extension(file_name);
+    if ext.is_empty() {
+        return safe_name;
+    }
+
+    let raw_stem = std::path::Path::new(file_name)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    let safe_stem = sanitize_name(raw_stem, "attachment")
+        .trim_matches('.')
+        .to_string();
+    let stem = if safe_stem.is_empty() {
+        "attachment".to_string()
+    } else {
+        safe_stem
+    };
+    format!("{stem}{ext}")
+}
+
 fn classify_upload_attachment(
     file_name: &str,
     mime_type: &str,
@@ -853,7 +879,7 @@ pub(super) async fn codex_attachments_upload(
             e.to_string(),
         );
     }
-    let safe_name = sanitize_name(&req.file_name, "attachment.bin");
+    let safe_name = sanitize_upload_file_name(&req.file_name);
     let path = thread_dir.join(&safe_name);
     if let Err(e) = std::fs::write(&path, bytes) {
         return api_error_detail(
@@ -1692,8 +1718,9 @@ mod tests {
     use super::{
         build_turn_start_params, build_turn_start_response, classify_upload_attachment,
         parse_slash_command, prompt_with_plan_protocol, read_plan_mode_from_rollout_path,
-        record_terminal_turn_start_runtime, service_tier_override_json, status_read_result,
-        supported_slash_commands, turn_thread_id, ServiceTierOverride, TurnStartRequest,
+        record_terminal_turn_start_runtime, sanitize_upload_file_name, service_tier_override_json,
+        status_read_result, supported_slash_commands, turn_thread_id, ServiceTierOverride,
+        TurnStartRequest,
     };
     use crate::orchestrator::gateway::web_codex_home::WorkspaceTarget;
     use serde_json::{json, Value};
@@ -1754,6 +1781,16 @@ mod tests {
         assert_eq!(
             classify_upload_attachment("screen.png", "", "image"),
             Some("image")
+        );
+    }
+
+    #[test]
+    fn sanitize_upload_file_name_preserves_extension_for_non_ascii_stems() {
+        assert_eq!(sanitize_upload_file_name("说明.md"), "attachment.md");
+        assert_eq!(sanitize_upload_file_name("报告.pdf"), "attachment.pdf");
+        assert_eq!(
+            sanitize_upload_file_name("release notes.md"),
+            "release_notes.md"
         );
     }
 

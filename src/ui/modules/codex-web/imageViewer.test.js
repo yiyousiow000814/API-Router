@@ -87,4 +87,50 @@ describe("imageViewer", () => {
     expect(scrollChatToBottom).not.toHaveBeenCalled();
     expect(updateScrollToBottomBtn).toHaveBeenCalled();
   });
+
+  it("opens pdf previews at page width inside the app", () => {
+    const elements = new Map();
+    const backdrop = {
+      classList: {
+        add() {},
+        remove() {},
+      },
+      appendChild() {},
+      innerHTML: "",
+      ownerDocument: null,
+    };
+    const frame = { src: "" };
+    const title = { textContent: "" };
+    const download = { onclick: null };
+    const backBtn = { onclick: null };
+    elements.set("filePreviewBackdrop", backdrop);
+    elements.set("filePreviewFrame", frame);
+    elements.set("filePreviewTitle", title);
+    elements.set("filePreviewDownloadBtn", download);
+    elements.set("filePreviewBackBtn", backBtn);
+    const module = createImageViewerModule({
+      byId: (id) => elements.get(id) || null,
+      state: {
+        chatSmoothScrollUntil: 0,
+        chatShouldStickToBottom: true,
+      },
+      escapeHtml: (value) => String(value || ""),
+      wireBlurBackdropShield: () => {},
+      scrollChatToBottom: () => {},
+      updateScrollToBottomBtn: () => {},
+      documentRef: {
+        body: { appendChild() {} },
+        createElement() {
+          return {};
+        },
+        addEventListener() {},
+      },
+      navigatorRef: {},
+      requestAnimationFrameRef: (callback) => callback(),
+    });
+
+    expect(module.openFilePreview("/codex/file?path=C%3A%5Cuploads%5Creport.pdf", "report.pdf")).toBe(true);
+    expect(frame.src).toBe("/codex/file?path=C%3A%5Cuploads%5Creport.pdf#view=FitH&zoom=page-width");
+    expect(title.textContent).toBe("report.pdf");
+  });
 });
