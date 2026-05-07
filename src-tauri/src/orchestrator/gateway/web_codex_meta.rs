@@ -782,6 +782,35 @@ pub(super) struct CodexFileQuery {
     path: String,
 }
 
+fn codex_file_content_type(ext: &str) -> Option<&'static str> {
+    match ext {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "svg" => Some("image/svg+xml; charset=utf-8"),
+        "txt" | "md" | "markdown" | "log" => Some("text/plain; charset=utf-8"),
+        "csv" => Some("text/csv; charset=utf-8"),
+        "tsv" => Some("text/tab-separated-values; charset=utf-8"),
+        "html" => Some("text/html; charset=utf-8"),
+        "css" => Some("text/css; charset=utf-8"),
+        "js" | "jsx" | "ts" | "tsx" => Some("text/plain; charset=utf-8"),
+        "json" | "jsonl" => Some("application/json; charset=utf-8"),
+        "yaml" | "yml" | "toml" | "xml" | "rs" | "py" | "go" | "java" | "c" | "cc" | "cpp"
+        | "h" | "hpp" | "cs" | "php" | "rb" | "sh" | "ps1" | "sql" => {
+            Some("text/plain; charset=utf-8")
+        }
+        "pdf" => Some("application/pdf"),
+        "doc" => Some("application/msword"),
+        "docx" => Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+        "ppt" => Some("application/vnd.ms-powerpoint"),
+        "pptx" => Some("application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+        "xls" => Some("application/vnd.ms-excel"),
+        "xlsx" => Some("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+        _ => None,
+    }
+}
+
 pub(super) async fn codex_file(
     State(st): State<GatewayState>,
     headers: HeaderMap,
@@ -809,13 +838,8 @@ pub(super) async fn codex_file(
         .unwrap_or_default()
         .trim()
         .to_ascii_lowercase();
-    let content_type = match ext.as_str() {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "svg" => "image/svg+xml; charset=utf-8",
-        _ => return api_error(StatusCode::UNSUPPORTED_MEDIA_TYPE, "unsupported file type"),
+    let Some(content_type) = codex_file_content_type(ext.as_str()) else {
+        return api_error(StatusCode::UNSUPPORTED_MEDIA_TYPE, "unsupported file type");
     };
 
     let meta = match tokio::fs::metadata(&path).await {
@@ -1099,8 +1123,8 @@ pub(super) async fn codex_models(
 #[cfg(test)]
 mod tests {
     use super::{
-        cached_codex_models_payload, clear_provider_switchboard_cache, codex_models_cache,
-        extract_model_and_effort_from_toml, provider_switchboard_cache_key,
+        cached_codex_models_payload, clear_provider_switchboard_cache, codex_file_content_type,
+        codex_models_cache, extract_model_and_effort_from_toml, provider_switchboard_cache_key,
         provider_switchboard_details, provider_switchboard_homes_cache,
         read_persisted_codex_models_payload, resolve_codex_file_path_with_wsl_distro,
         write_persisted_codex_models_payload, CodexModelsCacheEntry, CodexModelsQuery,
@@ -1320,6 +1344,21 @@ model_reasoning_effort = "   "
         let err = resolve_codex_file_path_with_wsl_distro("tmp/image.png", Some("Ubuntu"))
             .expect_err("relative paths must be rejected");
         assert_eq!(err, "path must be absolute");
+    }
+
+    #[test]
+    fn codex_file_content_type_matches_supported_attachment_files() {
+        assert_eq!(codex_file_content_type("png"), Some("image/png"));
+        assert_eq!(codex_file_content_type("pdf"), Some("application/pdf"));
+        assert_eq!(
+            codex_file_content_type("md"),
+            Some("text/plain; charset=utf-8")
+        );
+        assert_eq!(
+            codex_file_content_type("docx"),
+            Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        );
+        assert_eq!(codex_file_content_type("exe"), None);
     }
 
     #[cfg(target_os = "windows")]
