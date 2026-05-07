@@ -468,6 +468,7 @@ describe("imageViewer", () => {
       url: "/codex/file?path=C%3A%5Cuploads%5Creport.pdf",
       disableFontFace: false,
       useSystemFonts: true,
+      wasmUrl: "/codex-web/modules/pdfjs/wasm/",
     });
     expect(getPage).toHaveBeenCalledWith(1);
     expect(render).toHaveBeenCalledWith(expect.objectContaining({ annotationMode: 2 }));

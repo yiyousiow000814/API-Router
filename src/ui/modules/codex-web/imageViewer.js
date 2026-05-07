@@ -2,6 +2,7 @@ import { renderMessageRichHtml } from "./messageRender.js";
 
 const PDFJS_MODULE_URL = "/codex-web/modules/pdfjs/pdf.min.mjs";
 const PDFJS_WORKER_URL = "/codex-web/modules/pdfjs/pdf.worker.min.mjs";
+const PDFJS_WASM_URL = "/codex-web/modules/pdfjs/wasm/";
 
 async function defaultLoadPdfJs() {
   const pdfjs = await import(PDFJS_MODULE_URL);
@@ -635,6 +636,7 @@ export function createImageViewerModule(deps) {
         url: src,
         disableFontFace: false,
         useSystemFonts: true,
+        wasmUrl: PDFJS_WASM_URL,
       });
       const pdf = await loadingTask.promise;
       if (requestId !== filePreviewRequestId) return;
