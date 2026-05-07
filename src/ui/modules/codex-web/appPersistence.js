@@ -289,23 +289,40 @@ export function createAppPersistenceModule(deps) {
     box.toggleAttribute("hidden", items.length === 0);
     box.setAttribute("aria-live", "polite");
     box.setAttribute("aria-label", items.length ? `${items.length} attachment ready` : "No attachments");
-    for (const file of items) {
+    items.forEach((file, index) => {
       const node = documentRef.createElement("span");
       const kind = String(file?.kind || file?.type || "").trim().toLowerCase().startsWith("image")
         ? "IMG"
         : "FILE";
+      const label = truncateLabel(file?.name || file?.fileName || "attachment");
+      const fullLabel = file?.name || file?.fileName || "attachment";
+      const preview = documentRef.createElement("button");
+      preview.className = "attachmentPillPreview";
+      preview.type = "button";
+      preview.setAttribute("data-attachment-action", "preview");
+      preview.setAttribute("data-attachment-index", String(index));
+      preview.setAttribute("aria-label", `Preview ${fullLabel}`);
       const kindNode = documentRef.createElement("span");
       kindNode.className = "attachmentPillKind";
       kindNode.textContent = kind;
       const nameNode = documentRef.createElement("span");
       nameNode.className = "attachmentPillName";
-      nameNode.textContent = truncateLabel(file?.name || file?.fileName || "attachment");
+      nameNode.textContent = label;
+      preview.appendChild(kindNode);
+      preview.appendChild(nameNode);
+      const remove = documentRef.createElement("button");
+      remove.className = "attachmentPillRemove";
+      remove.type = "button";
+      remove.textContent = "x";
+      remove.setAttribute("data-attachment-action", "remove");
+      remove.setAttribute("data-attachment-index", String(index));
+      remove.setAttribute("aria-label", `Remove ${fullLabel}`);
       node.className = "pill attachmentPill mono";
-      node.title = `${kind} ${file?.name || file?.fileName || "attachment"}`;
-      node.appendChild(kindNode);
-      node.appendChild(nameNode);
+      node.title = `${kind} ${fullLabel}`;
+      node.appendChild(preview);
+      node.appendChild(remove);
       box.appendChild(node);
-    }
+    });
   }
 
   return {

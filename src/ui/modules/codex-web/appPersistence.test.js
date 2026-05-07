@@ -71,7 +71,11 @@ describe("appPersistence", () => {
       className: "",
       textContent: "",
       title: "",
+      attrs: {},
       children: [],
+      setAttribute(key, value) {
+        this.attrs[key] = value;
+      },
       appendChild(node) {
         this.children.push(node);
       },
@@ -104,8 +108,12 @@ describe("appPersistence", () => {
     expect(box.attrs["aria-label"]).toBe("1 attachment ready");
     expect(children).toHaveLength(1);
     expect(children[0].className).toContain("attachmentPill");
-    expect(children[0].children[0].textContent).toBe("IMG");
-    expect(children[0].children[1].textContent).toBe("screen.png");
+    expect(children[0].children[0].className).toBe("attachmentPillPreview");
+    expect(children[0].children[0].attrs["data-attachment-action"]).toBe("preview");
+    expect(children[0].children[0].children[0].textContent).toBe("IMG");
+    expect(children[0].children[0].children[1].textContent).toBe("screen.png");
+    expect(children[0].children[1].className).toBe("attachmentPillRemove");
+    expect(children[0].children[1].attrs["data-attachment-action"]).toBe("remove");
   });
 
   it("restores version info from local cache without calling the API", () => {

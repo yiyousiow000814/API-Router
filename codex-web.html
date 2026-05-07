@@ -5325,6 +5325,26 @@
       color: #18364a;
       box-shadow: 0 5px 14px rgba(13, 18, 32, 0.08);
     }
+    .attachmentPillPreview,
+    .attachmentPillRemove {
+      border: none;
+      appearance: none;
+      -webkit-appearance: none;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+    }
+    .attachmentPillPreview {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      padding: 0;
+      cursor: pointer;
+    }
+    .attachmentPillPreview:hover .attachmentPillName {
+      text-decoration: underline;
+    }
     .attachmentPillKind {
       flex: 0 0 auto;
       border-radius: 999px;
@@ -5340,6 +5360,20 @@
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+    .attachmentPillRemove {
+      display: inline-grid;
+      place-items: center;
+      flex: 0 0 auto;
+      width: 16px;
+      height: 16px;
+      border-radius: 999px;
+      cursor: pointer;
+      color: #476072;
+    }
+    .attachmentPillRemove:hover {
+      background: rgba(13, 18, 32, 0.1);
+      color: #0d1220;
     }
     .sectionTitle {
       font-size: 11px;

@@ -348,17 +348,20 @@ export function createTurnActionsModule(deps) {
     setChatOpening,
     syncPendingTurnUi = () => {},
     updateMobileComposerState = () => {},
+    openImageViewer = () => {},
     clearTransientToolMessages = () => {},
     clearTransientThinkingMessages = () => {},
     hideSlashCommandMenu = () => {},
     setThreadStatusCard = () => {},
     blockInSandbox,
     localStorageRef,
+    windowRef,
     FAST_MODE_DEVICE_DEFAULT_KEY = "web_codex_fast_mode_device_default_v1",
     PERMISSION_PRESET_STORAGE_KEY = "web_codex_permission_preset_by_workspace_v1",
     TextDecoderRef = TextDecoder,
   } = deps;
   const storage = localStorageRef ?? globalThis.localStorage ?? { setItem() {} };
+  const win = windowRef ?? globalThis.window ?? {};
   function setActiveThreadOpenState(nextState, options = {}) {
     return setThreadOpenState(state, nextState, options);
   }
@@ -1492,6 +1495,45 @@ export function createTurnActionsModule(deps) {
     setStatus(`Attachment uploaded: ${data.fileName || file.name}`);
   }
 
+  function refreshPendingAttachmentUi(message = "") {
+    renderAttachmentPills(state.pendingAttachments);
+    updateMobileComposerState();
+    if (message) setStatus(message);
+  }
+
+  function removePendingAttachment(index) {
+    const idx = Number(index);
+    const attachments = Array.isArray(state.pendingAttachments) ? state.pendingAttachments : [];
+    if (!Number.isInteger(idx) || idx < 0 || idx >= attachments.length) return false;
+    const [removed] = attachments.splice(idx, 1);
+    state.pendingAttachments = attachments;
+    const label = String(removed?.fileName || removed?.name || "attachment").trim() || "attachment";
+    refreshPendingAttachmentUi(`Attachment removed: ${label}`);
+    return true;
+  }
+
+  function previewPendingAttachment(index) {
+    const idx = Number(index);
+    const attachments = normalizeTurnAttachments(state.pendingAttachments);
+    const attachment = attachments[idx];
+    if (!attachment) return false;
+    const label = attachment.fileName || "attachment";
+    if (attachment.kind === "image") {
+      const gallery = pendingAttachmentImages(attachments);
+      const currentSrc = `/codex/file?path=${encodeURIComponent(attachment.path)}`;
+      const galleryIndex = Math.max(0, gallery.findIndex((item) => item.src === currentSrc));
+      openImageViewer(currentSrc, label, { images: gallery, index: galleryIndex });
+      return true;
+    }
+    const url = `/codex/file?path=${encodeURIComponent(attachment.path)}`;
+    if (typeof win.open === "function") {
+      win.open(url, "_blank", "noopener");
+      return true;
+    }
+    setStatus(`File ready: ${label}`);
+    return false;
+  }
+
   async function resolveApproval(options = {}) {
     if (blockInSandbox("approval resolve")) return;
     const id = String(options.id || state.selectedPendingApprovalId || byId("approvalIdInput")?.value || "").trim();
@@ -1586,6 +1628,8 @@ export function createTurnActionsModule(deps) {
     sendTurn,
     steerTurn,
     uploadAttachment,
+    removePendingAttachment,
+    previewPendingAttachment,
     updateQueuedTurnEditingDraft,
   };
   }

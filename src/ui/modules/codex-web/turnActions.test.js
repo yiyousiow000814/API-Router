@@ -324,6 +324,132 @@ describe("turnActions", () => {
     expect(mobileComposerUpdates).toBe(1);
   });
 
+  it("removes pending attachments from the send payload state", () => {
+    const renderedPills = [];
+    const statuses = [];
+    let mobileComposerUpdates = 0;
+    const state = {
+      pendingAttachments: [
+        { kind: "image", fileName: "first.png", mimeType: "image/png", path: "C:\\uploads\\first.png" },
+        { kind: "file", fileName: "notes.md", mimeType: "text/markdown", path: "C:\\uploads\\notes.md" },
+      ],
+    };
+    const module = createTurnActionsModule({
+      state,
+      byId: () => null,
+      api: async () => ({}),
+      wsSend: () => false,
+      wsCall: async () => ({}),
+      nextReqId: () => "req-1",
+      connectWs: () => {},
+      syncEventSubscription: () => {},
+      getPromptValue: () => "",
+      getWorkspaceTarget: () => "windows",
+      getStartCwdForWorkspace: () => "",
+      waitPendingThreadResume: async () => {},
+      updateHeaderUi: () => {},
+      addChat: () => {},
+      clearChatMessages: () => {},
+      hideWelcomeCard: () => {},
+      showWelcomeCard: () => {},
+      clearPromptValue: () => {},
+      renderComposerContextLeft: () => {},
+      scrollToBottomReliable: () => {},
+      scheduleChatLiveFollow: () => {},
+      createAssistantStreamingMessage: () => ({}),
+      appendStreamingDelta: () => {},
+      finalizeAssistantMessage: () => {},
+      normalizeTextPayload: (value) => value,
+      maybeNotifyTurnDone: () => {},
+      renderAttachmentPills: (items) => renderedPills.push(items.slice()),
+      refreshThreads: async () => {},
+      refreshHosts: async () => {},
+      refreshPending: async () => {},
+      updateMobileComposerState: () => {
+        mobileComposerUpdates += 1;
+      },
+      setStatus: (message) => statuses.push(message),
+      setActiveThread: () => {},
+      setMainTab: () => {},
+      setMobileTab: () => {},
+      setChatOpening: () => {},
+      blockInSandbox: () => false,
+    });
+
+    expect(module.removePendingAttachment(0)).toBe(true);
+
+    expect(state.pendingAttachments).toEqual([
+      { kind: "file", fileName: "notes.md", mimeType: "text/markdown", path: "C:\\uploads\\notes.md" },
+    ]);
+    expect(renderedPills.at(-1)).toEqual(state.pendingAttachments);
+    expect(mobileComposerUpdates).toBe(1);
+    expect(statuses.at(-1)).toBe("Attachment removed: first.png");
+  });
+
+  it("previews pending images and files", () => {
+    const imageViewerCalls = [];
+    const openedUrls = [];
+    const state = {
+      pendingAttachments: [
+        { kind: "image", fileName: "screen.png", mimeType: "image/png", path: "C:\\uploads\\screen.png" },
+        { kind: "file", fileName: "notes.md", mimeType: "text/markdown", path: "C:\\uploads\\notes.md" },
+      ],
+    };
+    const module = createTurnActionsModule({
+      state,
+      byId: () => null,
+      api: async () => ({}),
+      wsSend: () => false,
+      wsCall: async () => ({}),
+      nextReqId: () => "req-1",
+      connectWs: () => {},
+      syncEventSubscription: () => {},
+      getPromptValue: () => "",
+      getWorkspaceTarget: () => "windows",
+      getStartCwdForWorkspace: () => "",
+      waitPendingThreadResume: async () => {},
+      updateHeaderUi: () => {},
+      addChat: () => {},
+      clearChatMessages: () => {},
+      hideWelcomeCard: () => {},
+      showWelcomeCard: () => {},
+      clearPromptValue: () => {},
+      renderComposerContextLeft: () => {},
+      scrollToBottomReliable: () => {},
+      scheduleChatLiveFollow: () => {},
+      createAssistantStreamingMessage: () => ({}),
+      appendStreamingDelta: () => {},
+      finalizeAssistantMessage: () => {},
+      normalizeTextPayload: (value) => value,
+      maybeNotifyTurnDone: () => {},
+      renderAttachmentPills: () => {},
+      refreshThreads: async () => {},
+      refreshHosts: async () => {},
+      refreshPending: async () => {},
+      openImageViewer: (...args) => imageViewerCalls.push(args),
+      windowRef: {
+        open: (...args) => openedUrls.push(args),
+      },
+      setStatus: () => {},
+      setActiveThread: () => {},
+      setMainTab: () => {},
+      setMobileTab: () => {},
+      setChatOpening: () => {},
+      blockInSandbox: () => false,
+    });
+
+    expect(module.previewPendingAttachment(0)).toBe(true);
+    expect(imageViewerCalls[0][0]).toBe("/codex/file?path=C%3A%5Cuploads%5Cscreen.png");
+    expect(imageViewerCalls[0][1]).toBe("screen.png");
+
+    expect(module.previewPendingAttachment(1)).toBe(true);
+    expect(openedUrls[0]).toEqual([
+      "/codex/file?path=C%3A%5Cuploads%5Cnotes.md",
+      "_blank",
+      "noopener",
+    ]);
+  });
+
   it("sends pending attachments even when the prompt is empty", async () => {
     const apiCalls = [];
     const chatCalls = [];
