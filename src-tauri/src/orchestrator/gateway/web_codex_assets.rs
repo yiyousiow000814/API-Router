@@ -116,6 +116,10 @@ const WEB_CODEX_WORKSPACE_UI_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/workspaceUi.js");
 const WEB_CODEX_WS_CLIENT_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/wsClient.js");
+const WEB_CODEX_PDFJS_MIN_MJS: &str =
+    include_str!("../../../../node_modules/pdfjs-dist/legacy/build/pdf.min.mjs");
+const WEB_CODEX_PDFJS_WORKER_MIN_MJS: &str =
+    include_str!("../../../../node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs");
 const WEB_CODEX_ICON_SVG: &str = include_str!("../../../../src/ui/assets/codex-color.svg");
 const WEB_CODEX_ICON_PNG: &[u8] = include_bytes!("../../../../public/codex-web-icon.png");
 const AO_ICON_PNG: &[u8] = include_bytes!("../../../../public/ao-icon.png");
@@ -197,6 +201,8 @@ fn resolve_web_codex_module_body(module_path: &str) -> Option<&'static str> {
         "codex-web/webDiagnostics.js" => Some(WEB_CODEX_WEB_DIAGNOSTICS_JS),
         "codex-web/workspaceUi.js" => Some(WEB_CODEX_WORKSPACE_UI_JS),
         "codex-web/wsClient.js" => Some(WEB_CODEX_WS_CLIENT_JS),
+        "pdfjs/pdf.min.mjs" => Some(WEB_CODEX_PDFJS_MIN_MJS),
+        "pdfjs/pdf.worker.min.mjs" => Some(WEB_CODEX_PDFJS_WORKER_MIN_MJS),
         _ => None,
     }
 }
@@ -367,6 +373,8 @@ mod tests {
         assert!(resolve_web_codex_module_body("codex-web/uiHelpers.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/workspaceUi.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/wsClient.js").is_some());
+        assert!(resolve_web_codex_module_body("pdfjs/pdf.min.mjs").is_some());
+        assert!(resolve_web_codex_module_body("pdfjs/pdf.worker.min.mjs").is_some());
     }
 
     #[test]

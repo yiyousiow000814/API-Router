@@ -2883,6 +2883,33 @@
       background: rgba(255, 255, 255, 0.9);
       width: fit-content;
     }
+    .msgInlineImageFrame {
+      display: block;
+      width: min(100%, 520px);
+      margin: 8px 0;
+      overflow: hidden;
+      border: 1px solid rgba(13, 18, 32, 0.14);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.82);
+    }
+    .msgInlineImage {
+      display: block;
+      width: 100%;
+      max-height: 520px;
+      object-fit: contain;
+      background: rgba(13, 18, 32, 0.05);
+    }
+    .msgInlineImageCaption {
+      display: block;
+      padding: 6px 8px;
+      color: #3d4b65;
+      font-size: 11px;
+      line-height: 1.2;
+      border-top: 1px solid rgba(13, 18, 32, 0.1);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     .imageViewerBackdrop {
       position: fixed;
       top: 0;
@@ -2933,7 +2960,7 @@
     .imageViewerTitle { font-weight: 600; color: #0d1220; }
     .imageViewerBody {
       min-height: 0;
-      overflow: auto;
+      overflow: hidden;
       background: rgba(13, 18, 32, 0.04);
       display: grid;
       place-items: center;
@@ -2941,8 +2968,13 @@
       touch-action: none;
     }
     .imageViewerImg {
+      display: block;
+      min-width: 0;
+      min-height: 0;
       max-width: 100%;
       max-height: 100%;
+      box-sizing: border-box;
+      object-fit: contain;
       transform-origin: center center;
       border-radius: 12px;
       border: 1px solid rgba(13, 18, 32, 0.12);
@@ -3007,9 +3039,185 @@
     }
     .imageViewerThumb.active { border-color: rgba(40, 199, 217, 0.7); box-shadow: 0 0 0 3px rgba(40, 199, 217, 0.14); }
     .imageViewerThumb img { width: 100%; height: 100%; object-fit: cover; border-radius: 8px; display: block; }
+    .filePreviewBackdrop {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100vh;
+      height: 100dvh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      background: rgba(13, 18, 32, 0.55);
+      -webkit-backdrop-filter: blur(10px);
+      backdrop-filter: blur(10px);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 160ms ease;
+      z-index: var(--z-image-viewer);
+    }
+    .filePreviewBackdrop.show {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .filePreview {
+      width: min(920px, 92vw);
+      height: min(720px, 86vh);
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      overflow: hidden;
+      border: 1px solid rgba(13, 18, 32, 0.14);
+      border-radius: 14px;
+      background: #ffffff;
+      box-shadow: 0 28px 40px rgba(0, 0, 0, 0.35);
+    }
+    .filePreviewStage {
+      min-height: 0;
+      overflow: auto;
+      background: #ffffff;
+      position: relative;
+    }
+    .filePreviewTop {
+      padding: 10px 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border-bottom: 1px solid rgba(13, 18, 32, 0.1);
+      background: rgba(255, 255, 255, 0.92);
+    }
+    .filePreviewTitle {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: #0d1220;
+      font-weight: 600;
+    }
+    .filePreviewFrame {
+      width: 100%;
+      height: 100%;
+      min-width: 0;
+      min-height: 0;
+      border: 0;
+      background: #ffffff;
+    }
+    .filePreviewPdfJs {
+      min-height: 100%;
+      padding: 12px;
+      background: #eef2f7;
+    }
+    .filePreviewPdfControls {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 8px;
+      margin: -12px -12px 12px;
+      border-bottom: 1px solid rgba(13, 18, 32, 0.1);
+      background: rgba(255, 255, 255, 0.94);
+    }
+    .filePreviewPdfBtn {
+      min-height: 30px;
+      padding: 5px 10px;
+      border: 1px solid rgba(13, 18, 32, 0.12);
+      border-radius: 8px;
+      background: #ffffff;
+      color: #24364f;
+      font-size: 12px;
+      font-weight: 750;
+    }
+    .filePreviewPdfBtn:disabled {
+      opacity: 0.45;
+    }
+    .filePreviewPdfPage {
+      min-width: 64px;
+      text-align: center;
+      color: #506079;
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .filePreviewPdfCanvasHost {
+      display: grid;
+      justify-items: center;
+      gap: 12px;
+      min-height: 160px;
+    }
+    .filePreviewPdfCanvasHost canvas {
+      max-width: 100%;
+      height: auto;
+      background: #ffffff;
+      border: 1px solid rgba(13, 18, 32, 0.12);
+      box-shadow: 0 8px 22px rgba(13, 18, 32, 0.14);
+    }
+    .filePreviewText,
+    .filePreviewUnsupported {
+      min-height: 100%;
+      padding: 16px;
+      color: #172235;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .filePreviewText pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace);
+      font-size: 12px;
+      line-height: 1.55;
+      color: #23324a;
+    }
+    .filePreviewTableWrap {
+      width: 100%;
+      overflow: auto;
+      border: 1px solid rgba(13, 18, 32, 0.1);
+      border-radius: 8px;
+    }
+    .filePreviewTable {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      line-height: 1.45;
+      color: #172235;
+    }
+    .filePreviewTable th,
+    .filePreviewTable td {
+      max-width: 260px;
+      padding: 7px 9px;
+      border-right: 1px solid rgba(13, 18, 32, 0.08);
+      border-bottom: 1px solid rgba(13, 18, 32, 0.08);
+      text-align: left;
+      vertical-align: top;
+      overflow-wrap: anywhere;
+    }
+    .filePreviewTable th {
+      position: sticky;
+      top: 0;
+      background: #f6f8fb;
+      color: #24364f;
+      font-weight: 850;
+    }
+    .filePreviewUnsupported {
+      display: grid;
+      align-content: start;
+      gap: 8px;
+    }
+    .filePreviewUnsupportedTitle {
+      font-size: 15px;
+      font-weight: 850;
+      color: #0d1220;
+    }
+    .filePreviewUnsupportedBody {
+      color: #506079;
+    }
     @media (max-width: 560px) {
       .imageViewerBackdrop { padding: 0; }
-      .imageViewer {
+      .filePreviewBackdrop { padding: 0; }
+      .imageViewer,
+      .filePreview {
         width: 100vw;
         height: 100vh;
         height: 100dvh;
@@ -5287,6 +5495,73 @@
       color: #3d4b65;
       background: rgba(255, 255, 255, 0.9);
     }
+    .attachmentPill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      max-width: min(100%, 260px);
+      min-height: 21px;
+      border-color: rgba(40, 199, 217, 0.42);
+      background: rgba(230, 252, 255, 0.92);
+      color: #18364a;
+      box-shadow: 0 5px 14px rgba(13, 18, 32, 0.08);
+    }
+    .attachmentPillPreview,
+    .attachmentPillRemove {
+      border: none;
+      appearance: none;
+      -webkit-appearance: none;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      margin: 0;
+    }
+    .attachmentPillPreview {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      padding: 0;
+      cursor: pointer;
+    }
+    .attachmentPillPreview:hover .attachmentPillName {
+      text-decoration: underline;
+    }
+    .attachmentPillKind {
+      flex: 0 0 auto;
+      border-radius: 999px;
+      padding: 1px 5px;
+      background: rgba(40, 199, 217, 0.18);
+      color: #096173;
+      font-size: 10px;
+      line-height: 1.4;
+      font-weight: 700;
+    }
+    .attachmentPillName {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .attachmentPillRemove {
+      display: inline-grid;
+      place-items: center;
+      flex: 0 0 auto;
+      width: 16px;
+      height: 16px;
+      border-radius: 999px;
+      padding: 0;
+      font-size: 12px;
+      line-height: 16px;
+      text-align: center;
+      cursor: pointer;
+      color: #476072;
+    }
+    .attachmentPillRemove:hover {
+      background: rgba(13, 18, 32, 0.1);
+      color: #0d1220;
+    }
     .sectionTitle {
       font-size: 11px;
       letter-spacing: .06em;
@@ -6165,9 +6440,14 @@
       #chatEmpty {
         display: none;
       }
-      .composer .row.wrap,
-      #attachmentPills {
+      .composer .row.wrap {
         display: none;
+      }
+      #attachmentPills {
+        display: flex;
+        align-items: center;
+        max-height: none;
+        overflow: visible;
       }
       .mobileComposerRow { display: flex; align-items: flex-end; gap: 8px; }
       .composerActionRail { height: 40px; }
@@ -6662,7 +6942,7 @@
       <div class="composer">
         <div class="composerInputSurface">
           <div id="attachmentPills" class="pillRow"></div>
-          <input id="attachInput" type="file" style="display:none;" />
+          <input id="attachInput" type="file" accept="image/png,image/jpeg,image/gif,image/webp,.txt,.md,.markdown,.csv,.tsv,.json,.jsonl,.yaml,.yml,.toml,.xml,.html,.css,.js,.jsx,.ts,.tsx,.py,.rs,.go,.java,.c,.cc,.cpp,.h,.hpp,.cs,.php,.rb,.sh,.ps1,.sql,.log,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx" style="display:none;" />
             <div id="queuedTurnCard" class="queuedTurnCard" style="display:none;">
               <div class="queuedTurnCardHeader">
                 <div id="queuedTurnCardTitle" class="queuedTurnCardTitle"></div>

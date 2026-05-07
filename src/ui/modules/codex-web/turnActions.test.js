@@ -21,6 +21,14 @@ describe("turnActions", () => {
         planModeEnabled: true,
         fastModeEnabled: true,
         permissionPreset: "/permission full-access",
+        attachments: [
+          {
+            kind: "image",
+            fileName: "screen.png",
+            mimeType: "image/png",
+            path: "C:\\uploads\\screen.png",
+          },
+        ],
       })
     ).toEqual({
       threadId: "",
@@ -33,6 +41,14 @@ describe("turnActions", () => {
       serviceTier: "fast",
       approvalPolicy: "never",
       sandboxPolicy: { type: "dangerFullAccess" },
+      attachments: [
+        {
+          kind: "image",
+          fileName: "screen.png",
+          mimeType: "image/png",
+          path: "C:\\uploads\\screen.png",
+        },
+      ],
     });
   });
 
@@ -113,6 +129,427 @@ describe("turnActions", () => {
     expect(buildManagedTerminalUrl("thread/one")).toBe(
       "/codex/threads/thread%2Fone/managed-terminal"
     );
+  });
+
+  it("rejects unsupported attachment types before upload", async () => {
+    const apiCalls = [];
+    const statuses = [];
+    const module = createTurnActionsModule({
+      state: { activeThreadId: "thread-1", pendingAttachments: [] },
+      byId: () => null,
+      api: async (...args) => {
+        apiCalls.push(args);
+        return {};
+      },
+      wsSend: () => false,
+      wsCall: async () => ({}),
+      nextReqId: () => "req-1",
+      connectWs: () => {},
+      syncEventSubscription: () => {},
+      getPromptValue: () => "",
+      getWorkspaceTarget: () => "windows",
+      getStartCwdForWorkspace: () => "",
+      waitPendingThreadResume: async () => {},
+      updateHeaderUi: () => {},
+      addChat: () => {},
+      clearChatMessages: () => {},
+      hideWelcomeCard: () => {},
+      showWelcomeCard: () => {},
+      clearPromptValue: () => {},
+      renderComposerContextLeft: () => {},
+      scrollToBottomReliable: () => {},
+      scheduleChatLiveFollow: () => {},
+      createAssistantStreamingMessage: () => ({}),
+      appendStreamingDelta: () => {},
+      finalizeAssistantMessage: () => {},
+      normalizeTextPayload: (value) => value,
+      maybeNotifyTurnDone: () => {},
+      renderAttachmentPills: () => {},
+      refreshThreads: async () => {},
+      refreshHosts: async () => {},
+      refreshPending: async () => {},
+      setStatus: (value, isError) => statuses.push({ value, isError }),
+      setActiveThread: () => {},
+      setMainTab: () => {},
+      setMobileTab: () => {},
+      setChatOpening: () => {},
+      blockInSandbox: () => false,
+    });
+
+    await expect(module.uploadAttachment({
+      name: "tool.exe",
+      type: "application/x-msdownload",
+      size: 1024,
+      arrayBuffer: async () => new ArrayBuffer(0),
+    })).rejects.toThrow("Unsupported attachment type");
+
+    expect(apiCalls).toEqual([]);
+    expect(statuses.at(-1)).toEqual({
+      value: "Unsupported attachment type: tool.exe",
+      isError: true,
+    });
+  });
+
+  it("rejects attachments larger than 10 MiB before upload", async () => {
+    const apiCalls = [];
+    const module = createTurnActionsModule({
+      state: { activeThreadId: "thread-1", pendingAttachments: [] },
+      byId: () => null,
+      api: async (...args) => {
+        apiCalls.push(args);
+        return {};
+      },
+      wsSend: () => false,
+      wsCall: async () => ({}),
+      nextReqId: () => "req-1",
+      connectWs: () => {},
+      syncEventSubscription: () => {},
+      getPromptValue: () => "",
+      getWorkspaceTarget: () => "windows",
+      getStartCwdForWorkspace: () => "",
+      waitPendingThreadResume: async () => {},
+      updateHeaderUi: () => {},
+      addChat: () => {},
+      clearChatMessages: () => {},
+      hideWelcomeCard: () => {},
+      showWelcomeCard: () => {},
+      clearPromptValue: () => {},
+      renderComposerContextLeft: () => {},
+      scrollToBottomReliable: () => {},
+      scheduleChatLiveFollow: () => {},
+      createAssistantStreamingMessage: () => ({}),
+      appendStreamingDelta: () => {},
+      finalizeAssistantMessage: () => {},
+      normalizeTextPayload: (value) => value,
+      maybeNotifyTurnDone: () => {},
+      renderAttachmentPills: () => {},
+      refreshThreads: async () => {},
+      refreshHosts: async () => {},
+      refreshPending: async () => {},
+      setStatus: () => {},
+      setActiveThread: () => {},
+      setMainTab: () => {},
+      setMobileTab: () => {},
+      setChatOpening: () => {},
+      blockInSandbox: () => false,
+    });
+
+    await expect(module.uploadAttachment({
+      name: "screen.png",
+      type: "image/png",
+      size: 10 * 1024 * 1024 + 1,
+      arrayBuffer: async () => new ArrayBuffer(0),
+    })).rejects.toThrow("exceeds 10 MiB");
+
+    expect(apiCalls).toEqual([]);
+  });
+
+  it("shows uploaded attachments and refreshes mobile composer metrics", async () => {
+    const renderedPills = [];
+    let mobileComposerUpdates = 0;
+    const state = { activeThreadId: "thread-1", pendingAttachments: [] };
+    const module = createTurnActionsModule({
+      state,
+      byId: () => null,
+      api: async (path, options) => {
+        expect(path).toBe("/codex/attachments/upload");
+        expect(options.body).toMatchObject({
+          threadId: "thread-1",
+          fileName: "screen.png",
+          mimeType: "image/png",
+          kind: "image",
+        });
+        return {
+          ok: true,
+          kind: "image",
+          fileName: "screen.png",
+          mimeType: "image/png",
+          path: "C:\\uploads\\screen.png",
+        };
+      },
+      wsSend: () => false,
+      wsCall: async () => ({}),
+      nextReqId: () => "req-1",
+      connectWs: () => {},
+      syncEventSubscription: () => {},
+      getPromptValue: () => "",
+      getWorkspaceTarget: () => "windows",
+      getStartCwdForWorkspace: () => "",
+      waitPendingThreadResume: async () => {},
+      updateHeaderUi: () => {},
+      addChat: () => {},
+      clearChatMessages: () => {},
+      hideWelcomeCard: () => {},
+      showWelcomeCard: () => {},
+      clearPromptValue: () => {},
+      renderComposerContextLeft: () => {},
+      scrollToBottomReliable: () => {},
+      scheduleChatLiveFollow: () => {},
+      createAssistantStreamingMessage: () => ({}),
+      appendStreamingDelta: () => {},
+      finalizeAssistantMessage: () => {},
+      normalizeTextPayload: (value) => value,
+      maybeNotifyTurnDone: () => {},
+      renderAttachmentPills: (items) => renderedPills.push(items),
+      refreshThreads: async () => {},
+      refreshHosts: async () => {},
+      refreshPending: async () => {},
+      updateMobileComposerState: () => {
+        mobileComposerUpdates += 1;
+      },
+      setStatus: () => {},
+      setActiveThread: () => {},
+      setMainTab: () => {},
+      setMobileTab: () => {},
+      setChatOpening: () => {},
+      blockInSandbox: () => false,
+    });
+
+    await module.uploadAttachment({
+      name: "screen.png",
+      type: "image/png",
+      size: 1024,
+      arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+    });
+
+    expect(state.pendingAttachments).toEqual([
+      {
+        kind: "image",
+        fileName: "screen.png",
+        mimeType: "image/png",
+        path: "C:\\uploads\\screen.png",
+      },
+    ]);
+    expect(renderedPills.at(-1)).toEqual(state.pendingAttachments);
+    expect(mobileComposerUpdates).toBe(1);
+  });
+
+  it("removes pending attachments from the send payload state", () => {
+    const renderedPills = [];
+    const statuses = [];
+    let mobileComposerUpdates = 0;
+    const state = {
+      pendingAttachments: [
+        { kind: "image", fileName: "first.png", mimeType: "image/png", path: "C:\\uploads\\first.png" },
+        { kind: "file", fileName: "notes.md", mimeType: "text/markdown", path: "C:\\uploads\\notes.md" },
+      ],
+    };
+    const module = createTurnActionsModule({
+      state,
+      byId: () => null,
+      api: async () => ({}),
+      wsSend: () => false,
+      wsCall: async () => ({}),
+      nextReqId: () => "req-1",
+      connectWs: () => {},
+      syncEventSubscription: () => {},
+      getPromptValue: () => "",
+      getWorkspaceTarget: () => "windows",
+      getStartCwdForWorkspace: () => "",
+      waitPendingThreadResume: async () => {},
+      updateHeaderUi: () => {},
+      addChat: () => {},
+      clearChatMessages: () => {},
+      hideWelcomeCard: () => {},
+      showWelcomeCard: () => {},
+      clearPromptValue: () => {},
+      renderComposerContextLeft: () => {},
+      scrollToBottomReliable: () => {},
+      scheduleChatLiveFollow: () => {},
+      createAssistantStreamingMessage: () => ({}),
+      appendStreamingDelta: () => {},
+      finalizeAssistantMessage: () => {},
+      normalizeTextPayload: (value) => value,
+      maybeNotifyTurnDone: () => {},
+      renderAttachmentPills: (items) => renderedPills.push(items.slice()),
+      refreshThreads: async () => {},
+      refreshHosts: async () => {},
+      refreshPending: async () => {},
+      updateMobileComposerState: () => {
+        mobileComposerUpdates += 1;
+      },
+      setStatus: (message) => statuses.push(message),
+      setActiveThread: () => {},
+      setMainTab: () => {},
+      setMobileTab: () => {},
+      setChatOpening: () => {},
+      blockInSandbox: () => false,
+    });
+
+    expect(module.removePendingAttachment(0)).toBe(true);
+
+    expect(state.pendingAttachments).toEqual([
+      { kind: "file", fileName: "notes.md", mimeType: "text/markdown", path: "C:\\uploads\\notes.md" },
+    ]);
+    expect(renderedPills.at(-1)).toEqual(state.pendingAttachments);
+    expect(mobileComposerUpdates).toBe(1);
+    expect(statuses.at(-1)).toBe("Attachment removed: first.png");
+  });
+
+  it("previews pending images and files in app", () => {
+    const imageViewerCalls = [];
+    const filePreviewCalls = [];
+    const openedUrls = [];
+    const state = {
+      pendingAttachments: [
+        { kind: "image", fileName: "screen.png", mimeType: "image/png", path: "C:\\uploads\\screen.png" },
+        { kind: "file", fileName: "notes.md", mimeType: "text/markdown", path: "C:\\uploads\\notes.md" },
+      ],
+    };
+    const module = createTurnActionsModule({
+      state,
+      byId: () => null,
+      api: async () => ({}),
+      wsSend: () => false,
+      wsCall: async () => ({}),
+      nextReqId: () => "req-1",
+      connectWs: () => {},
+      syncEventSubscription: () => {},
+      getPromptValue: () => "",
+      getWorkspaceTarget: () => "windows",
+      getStartCwdForWorkspace: () => "",
+      waitPendingThreadResume: async () => {},
+      updateHeaderUi: () => {},
+      addChat: () => {},
+      clearChatMessages: () => {},
+      hideWelcomeCard: () => {},
+      showWelcomeCard: () => {},
+      clearPromptValue: () => {},
+      renderComposerContextLeft: () => {},
+      scrollToBottomReliable: () => {},
+      scheduleChatLiveFollow: () => {},
+      createAssistantStreamingMessage: () => ({}),
+      appendStreamingDelta: () => {},
+      finalizeAssistantMessage: () => {},
+      normalizeTextPayload: (value) => value,
+      maybeNotifyTurnDone: () => {},
+      renderAttachmentPills: () => {},
+      refreshThreads: async () => {},
+      refreshHosts: async () => {},
+      refreshPending: async () => {},
+      openImageViewer: (...args) => imageViewerCalls.push(args),
+      openFilePreview: (...args) => filePreviewCalls.push(args),
+      windowRef: {
+        open: (...args) => openedUrls.push(args),
+      },
+      setStatus: () => {},
+      setActiveThread: () => {},
+      setMainTab: () => {},
+      setMobileTab: () => {},
+      setChatOpening: () => {},
+      blockInSandbox: () => false,
+    });
+
+    expect(module.previewPendingAttachment(0)).toBe(true);
+    expect(imageViewerCalls[0][0]).toBe("/codex/file?path=C%3A%5Cuploads%5Cscreen.png");
+    expect(imageViewerCalls[0][1]).toBe("screen.png");
+
+    expect(module.previewPendingAttachment(1)).toBe(true);
+    expect(filePreviewCalls[0]).toEqual([
+      "/codex/file?path=C%3A%5Cuploads%5Cnotes.md",
+      "notes.md",
+      { fileName: "notes.md", mimeType: "text/markdown" },
+    ]);
+    expect(openedUrls).toEqual([]);
+  });
+
+  it("sends pending attachments even when the prompt is empty", async () => {
+    const apiCalls = [];
+    const chatCalls = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadWorkspace: "windows",
+      activeThreadOpenState: { threadId: "thread-1", loaded: true, resumeRequired: false },
+      activeThreadStarted: true,
+      activeThreadMessages: [],
+      pendingThreadResumes: new Map(),
+      pendingAttachments: [
+        {
+          kind: "image",
+          fileName: "screen.png",
+          mimeType: "image/png",
+          path: "C:\\uploads\\screen.png",
+        },
+      ],
+      selectedModel: "",
+      selectedReasoningEffort: "",
+      ws: null,
+      permissionPresetByWorkspace: { windows: "/permission auto" },
+      chatShouldStickToBottom: false,
+    };
+    const module = createTurnActionsModule({
+      state,
+      byId: () => null,
+      api: async (path, options) => {
+        apiCalls.push({ path, options });
+        if (path === "/codex/turns/start") return { threadId: "thread-1", turnId: "turn-1" };
+        throw new Error(`unexpected api call: ${path}`);
+      },
+      wsSend: () => false,
+      wsCall: async () => ({}),
+      nextReqId: () => "req-1",
+      connectWs: () => {},
+      syncEventSubscription: () => {},
+      getPromptValue: () => "",
+      getWorkspaceTarget: () => "windows",
+      getStartCwdForWorkspace: () => "C:\\repo",
+      waitPendingThreadResume: async () => {},
+      updateHeaderUi: () => {},
+      addChat: (role, text, options = {}) => chatCalls.push({ role, text, options }),
+      clearChatMessages: () => {},
+      hideWelcomeCard: () => {},
+      showWelcomeCard: () => {},
+      clearPromptValue: () => {},
+      renderComposerContextLeft: () => {},
+      scrollToBottomReliable: () => {},
+      scheduleChatLiveFollow: () => {},
+      createAssistantStreamingMessage: () => ({}),
+      appendStreamingDelta: () => {},
+      finalizeAssistantMessage: () => {},
+      normalizeTextPayload: (value) => value,
+      maybeNotifyTurnDone: () => {},
+      renderAttachmentPills: () => {},
+      refreshThreads: async () => {},
+      refreshHosts: async () => {},
+      refreshPending: async () => {},
+      refreshWorkspaceRuntimeState: async () => null,
+      setStatus: () => {},
+      setActiveThread: (id) => {
+        state.activeThreadId = id;
+      },
+      setMainTab: () => {},
+      setMobileTab: () => {},
+      setChatOpening: () => {},
+      syncPendingTurnUi: () => {},
+      updateMobileComposerState: () => {},
+      clearTransientToolMessages: () => {},
+      clearTransientThinkingMessages: () => {},
+      clearLiveThreadConnectionStatus: () => {},
+      blockInSandbox: () => false,
+    });
+
+    await module.sendTurn();
+
+    expect(apiCalls).toHaveLength(1);
+    expect(apiCalls[0].options.body.prompt).toBe("");
+    expect(apiCalls[0].options.body.attachments).toEqual([
+      {
+        kind: "image",
+        fileName: "screen.png",
+        mimeType: "image/png",
+        path: "C:\\uploads\\screen.png",
+      },
+    ]);
+    expect(chatCalls[0].options.attachments).toEqual([
+      {
+        src: "/codex/file?path=C%3A%5Cuploads%5Cscreen.png",
+        label: "screen.png",
+        kind: "path",
+        rawPath: "C:\\uploads\\screen.png",
+        fileName: "screen.png",
+      },
+    ]);
+    expect(state.pendingAttachments).toEqual([]);
   });
 
   it("opens a managed terminal surface for the active thread", async () => {

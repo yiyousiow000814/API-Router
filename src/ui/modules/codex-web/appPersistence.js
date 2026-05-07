@@ -285,12 +285,44 @@ export function createAppPersistenceModule(deps) {
     const box = byId("attachmentPills");
     if (!box) return;
     box.innerHTML = "";
-    for (const file of files) {
+    const items = Array.isArray(files) ? files : [];
+    box.toggleAttribute("hidden", items.length === 0);
+    box.setAttribute("aria-live", "polite");
+    box.setAttribute("aria-label", items.length ? `${items.length} attachment ready` : "No attachments");
+    items.forEach((file, index) => {
       const node = documentRef.createElement("span");
-      node.className = "pill mono";
-      node.textContent = truncateLabel(file?.name || "attachment");
+      const kind = String(file?.kind || file?.type || "").trim().toLowerCase().startsWith("image")
+        ? "IMG"
+        : "FILE";
+      const label = truncateLabel(file?.name || file?.fileName || "attachment");
+      const fullLabel = file?.name || file?.fileName || "attachment";
+      const preview = documentRef.createElement("button");
+      preview.className = "attachmentPillPreview";
+      preview.type = "button";
+      preview.setAttribute("data-attachment-action", "preview");
+      preview.setAttribute("data-attachment-index", String(index));
+      preview.setAttribute("aria-label", `Preview ${fullLabel}`);
+      const kindNode = documentRef.createElement("span");
+      kindNode.className = "attachmentPillKind";
+      kindNode.textContent = kind;
+      const nameNode = documentRef.createElement("span");
+      nameNode.className = "attachmentPillName";
+      nameNode.textContent = label;
+      preview.appendChild(kindNode);
+      preview.appendChild(nameNode);
+      const remove = documentRef.createElement("button");
+      remove.className = "attachmentPillRemove";
+      remove.type = "button";
+      remove.textContent = "x";
+      remove.setAttribute("data-attachment-action", "remove");
+      remove.setAttribute("data-attachment-index", String(index));
+      remove.setAttribute("aria-label", `Remove ${fullLabel}`);
+      node.className = "pill attachmentPill mono";
+      node.title = `${kind} ${fullLabel}`;
+      node.appendChild(preview);
+      node.appendChild(remove);
       box.appendChild(node);
-    }
+    });
   }
 
   return {
