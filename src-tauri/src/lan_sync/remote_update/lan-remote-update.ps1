@@ -673,6 +673,12 @@ if ($target.Mode -eq 'local_branch') {
   Invoke-RemoteUpdateCommand -FailureMessage "git checkout --detach failed: $($target.Value)" -Command { git checkout --detach $target.Value }
 }
 
+$currentStep = 'Installing dependencies'
+Set-RemoteUpdateProgress 40
+Write-RemoteUpdateLog "${currentStep}: npm ci"
+Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep 'Running npm ci to reconcile node_modules with package-lock.json') -Phase 'install_dependencies' -Label 'Installing dependencies' -StartedAtUnixMs $startedAtUnixMs
+Invoke-RemoteUpdateCommand -FailureMessage 'npm ci failed' -Command { npm ci }
+
 $env:API_ROUTER_REMOTE_UPDATE_TO_GIT_SHA = Get-CurrentGitSha
 $env:API_ROUTER_REMOTE_UPDATE_CURRENT_GIT_SHA = $env:API_ROUTER_REMOTE_UPDATE_TO_GIT_SHA
 Set-RemoteUpdateProgress 45

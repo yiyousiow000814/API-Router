@@ -90,6 +90,21 @@ function Test-IsRemoteUpdateBuildContext {
   return $false
 }
 
+function Set-RemoteUpdateBuildResourceBudget {
+  if (-not (Test-IsRemoteUpdateBuildContext)) { return }
+  if (-not $StartHidden) { return }
+
+  $defaultJobs = '2'
+  if ([string]::IsNullOrWhiteSpace([string]$env:CARGO_BUILD_JOBS)) {
+    $env:CARGO_BUILD_JOBS = $defaultJobs
+    Write-RemoteUpdateLog "Set remote update CARGO_BUILD_JOBS=$defaultJobs"
+  }
+  if ([string]::IsNullOrWhiteSpace([string]$env:RAYON_NUM_THREADS)) {
+    $env:RAYON_NUM_THREADS = $defaultJobs
+    Write-RemoteUpdateLog "Set remote update RAYON_NUM_THREADS=$defaultJobs"
+  }
+}
+
 function Test-CommandLineContainsPath {
   param(
     [string]$CommandLine,
@@ -1977,6 +1992,14 @@ function Invoke-BuildCommand {
   $startInfo.RedirectStandardError = $true
 
   $process = [System.Diagnostics.Process]::Start($startInfo)
+  if ($StartHidden) {
+    try {
+      $process.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal
+      Write-RemoteUpdateLog "Set hidden build command priority to BelowNormal: pid=$($process.Id)"
+    } catch {
+      Write-RemoteUpdateLog "Failed to lower hidden build command priority: $($_.Exception.Message)"
+    }
+  }
   $stdout = $process.StandardOutput.ReadToEnd()
   $stderr = $process.StandardError.ReadToEnd()
   $process.WaitForExit()
@@ -2058,6 +2081,7 @@ $script:CurrentBuildStepPhase = ''
 $script:CurrentBuildStepLabel = ''
 $script:CurrentBuildStepDetail = ''
 $script:RuntimeRollbackCandidate = $false
+Set-RemoteUpdateBuildResourceBudget
 Enter-BuildMutex
 if ($script:HoldBuildMutexForRecoveryProbe) {
   Exit-BuildMutex
@@ -2148,17 +2172,25 @@ try {
   # Always ensure API Router is running again. This is critical: if it is closed,
   # Codex sessions are stopped.
   try {
-    Enter-BuildStep -Phase 'restart_api_router' -Label 'Restarting API Router' -Detail 'Launching repo root API Router.exe'
-    if ($script:RuntimeRollbackCandidate -and $hadFailure) {
-      throw 'post-install failure after replacing API Router.exe; forcing rollback before starting the new runtime'
-    }
-    $startedRuntimeProcess = Start-ApiRouter -RequireNewProcess:($script:RuntimeRollbackCandidate -and -not $NoCopy)
-    if (-not $NoCopy) {
-      Wait-ApiRouterRuntimeProcessStarted -StartedProcess $startedRuntimeProcess
-      Wait-ApiRouterRuntimeHealthy
-      Record-InstalledRuntimeVersion
-      $env:API_ROUTER_REMOTE_UPDATE_PROGRESS_PERCENT = '100'
-      Update-RemoteUpdateTimelineStep -Phase 'health_check_succeeded' -Label 'Runtime health check passed' -Detail 'API Router.exe is running' -State 'running'
+    if ($hadFailure -and -not $script:RuntimeRollbackCandidate) {
+      Enter-BuildStep -Phase 'runtime_unchanged_after_build_failure' -Label 'Runtime unchanged after build failure' -Detail 'Build failed before replacing API Router.exe; keeping the existing runtime'
+      Write-RemoteUpdateLog 'Build failed before replacing API Router.exe; keeping the existing runtime and skipping restart validation.'
+      if (-not $NoCopy) {
+        Wait-ApiRouterRuntimeProcessStarted -StartedProcess $null -AllowExistingProcess
+      }
+    } else {
+      Enter-BuildStep -Phase 'restart_api_router' -Label 'Restarting API Router' -Detail 'Launching repo root API Router.exe'
+      if ($script:RuntimeRollbackCandidate -and $hadFailure) {
+        throw 'post-install failure after replacing API Router.exe; forcing rollback before starting the new runtime'
+      }
+      $startedRuntimeProcess = Start-ApiRouter -RequireNewProcess:($script:RuntimeRollbackCandidate -and -not $NoCopy)
+      if (-not $NoCopy) {
+        Wait-ApiRouterRuntimeProcessStarted -StartedProcess $startedRuntimeProcess
+        Wait-ApiRouterRuntimeHealthy
+        Record-InstalledRuntimeVersion
+        $env:API_ROUTER_REMOTE_UPDATE_PROGRESS_PERCENT = '100'
+        Update-RemoteUpdateTimelineStep -Phase 'health_check_succeeded' -Label 'Runtime health check passed' -Detail 'API Router.exe is running' -State 'running'
+      }
     }
   } catch {
     $runtimeValidationError = $_

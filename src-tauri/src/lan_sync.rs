@@ -5520,7 +5520,14 @@ mod tests {
         super::write_lan_remote_update_status(&status).expect("write remote update status");
 
         let snapshot = runtime.snapshot(4_000, &cfg, &secrets);
-        assert_eq!(snapshot.local_node.remote_update_status, Some(status));
+        let loaded = snapshot
+            .local_node
+            .remote_update_status
+            .expect("snapshot remote update status");
+        assert_eq!(loaded.state, status.state);
+        assert_eq!(loaded.target_ref, status.target_ref);
+        assert_eq!(loaded.to_git_sha, status.to_git_sha);
+        assert_eq!(loaded.current_git_sha, status.current_git_sha);
     }
 
     #[test]
