@@ -602,6 +602,8 @@ export function createImageViewerModule(deps) {
     const dpr = Math.min(2, Math.max(1, Number(globalThis.devicePixelRatio || 1)));
     const canvas = documentRef.createElement("canvas");
     const context = canvas.getContext?.("2d");
+    const pageWrap = documentRef.createElement("div");
+    pageWrap.className = "filePreviewPdfPageCanvas";
     const pixelWidth = Math.ceil(viewport.width * dpr);
     const pixelHeight = Math.ceil(viewport.height * dpr);
     canvas.width = pixelWidth;
@@ -609,8 +611,11 @@ export function createImageViewerModule(deps) {
     canvas.style.width = `${Math.ceil(viewport.width)}px`;
     canvas.style.height = `${Math.ceil(viewport.height)}px`;
     canvas.style.display = "block";
+    pageWrap.style.width = canvas.style.width;
+    pageWrap.style.height = canvas.style.height;
     host.innerHTML = "";
-    host.appendChild(canvas);
+    pageWrap.appendChild(canvas);
+    host.appendChild(pageWrap);
     const annotationMode = pdfPreviewState.pdfjs?.AnnotationMode?.ENABLE_FORMS || pdfPreviewState.pdfjs?.AnnotationMode?.ENABLE;
     const renderTask = page.render({
       canvasContext: context,
@@ -620,6 +625,21 @@ export function createImageViewerModule(deps) {
     });
     pdfPreviewState.renderTask = renderTask;
     await renderTask.promise;
+    if (requestId !== filePreviewRequestId || !pdfPreviewState?.renderTextLayer || !pdfPreviewState.pdfjs?.TextLayer) return;
+    const textLayerHost = documentRef.createElement("div");
+    textLayerHost.className = "filePreviewPdfTextLayer";
+    pageWrap.appendChild(textLayerHost);
+    try {
+      const textLayer = new pdfPreviewState.pdfjs.TextLayer({
+        textContentSource: page.streamTextContent({
+          includeMarkedContent: true,
+          disableNormalization: true,
+        }),
+        container: textLayerHost,
+        viewport,
+      });
+      await textLayer.render();
+    } catch {}
   }
 
   async function renderPdfJsPreview(src, requestId) {
@@ -634,12 +654,12 @@ export function createImageViewerModule(deps) {
       if (requestId !== filePreviewRequestId) return;
       const loadingTask = pdfjs.getDocument({
         url: src,
-        disableFontFace: onAppleMobile,
-        useSystemFonts: !onAppleMobile,
+        disableFontFace: false,
+        useSystemFonts: true,
       });
       const pdf = await loadingTask.promise;
       if (requestId !== filePreviewRequestId) return;
-      pdfPreviewState = { pdfjs, pdf, pageNum: 1, renderTask: null };
+      pdfPreviewState = { pdfjs, pdf, pageNum: 1, renderTask: null, renderTextLayer: onAppleMobile };
       if (prev) prev.onclick = () => renderPdfJsPage(requestId, (pdfPreviewState?.pageNum || 1) - 1);
       if (next) next.onclick = () => renderPdfJsPage(requestId, (pdfPreviewState?.pageNum || 1) + 1);
       pdfJs.hidden = false;

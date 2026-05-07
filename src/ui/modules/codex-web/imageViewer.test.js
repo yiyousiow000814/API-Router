@@ -392,6 +392,7 @@ describe("imageViewer", () => {
       onclick: null,
     };
     const download = { onclick: null };
+    const streamTextContent = vi.fn(() => ({ stream: true }));
     elements.set("filePreviewBackdrop", backdrop);
     elements.set("filePreviewFrame", frame);
     elements.set("filePreviewTitle", title);
@@ -408,6 +409,7 @@ describe("imageViewer", () => {
     const getPage = vi.fn(async () => ({
       getViewport: ({ scale }) => ({ width: 200 * scale, height: 300 * scale }),
       render,
+      streamTextContent,
     }));
     const getDocument = vi.fn(() => ({
       promise: Promise.resolve({ numPages: 2, getPage }),
@@ -418,6 +420,12 @@ describe("imageViewer", () => {
         ENABLE: 1,
         ENABLE_FORMS: 2,
       },
+      TextLayer: vi.fn(function TextLayer({ container }) {
+        this.container = container;
+        this.render = vi.fn(async () => {
+          container.rendered = true;
+        });
+      }),
       getDocument,
     }));
     const module = createImageViewerModule({
@@ -439,7 +447,14 @@ describe("imageViewer", () => {
               getContext: () => ({ canvasContext: true }),
             };
           }
-          return {};
+          return {
+            className: "",
+            style: {},
+            children: [],
+            appendChild(node) {
+              this.children.push(node);
+            },
+          };
         },
         addEventListener() {},
       },
@@ -459,15 +474,21 @@ describe("imageViewer", () => {
     expect(loadPdfJs).toHaveBeenCalledTimes(1);
     expect(getDocument).toHaveBeenCalledWith({
       url: "/codex/file?path=C%3A%5Cuploads%5Creport.pdf",
-      disableFontFace: true,
-      useSystemFonts: false,
+      disableFontFace: false,
+      useSystemFonts: true,
     });
     expect(getPage).toHaveBeenCalledWith(1);
     expect(render).toHaveBeenCalledWith(expect.objectContaining({ annotationMode: 2 }));
+    expect(streamTextContent).toHaveBeenCalledWith({
+      includeMarkedContent: true,
+      disableNormalization: true,
+    });
     expect(frame.hidden).toBe(true);
     expect(frame.src).toBe("about:blank");
     expect(pdfJs.hidden).toBe(false);
     expect(pdfHost.node).toBeTruthy();
+    expect(pdfHost.node.className).toBe("filePreviewPdfPageCanvas");
+    expect(pdfHost.node.children.some((node) => node.className === "filePreviewPdfTextLayer" && node.rendered)).toBe(true);
     expect(pdfPage.textContent).toBe("1 / 2");
     expect(unsupported.hidden).toBe(true);
     expect(loading.hidden).toBe(true);
