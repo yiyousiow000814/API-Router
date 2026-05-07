@@ -90,6 +90,21 @@ function Test-IsRemoteUpdateBuildContext {
   return $false
 }
 
+function Set-RemoteUpdateBuildResourceBudget {
+  if (-not (Test-IsRemoteUpdateBuildContext)) { return }
+  if (-not $StartHidden) { return }
+
+  $defaultJobs = '2'
+  if ([string]::IsNullOrWhiteSpace([string]$env:CARGO_BUILD_JOBS)) {
+    $env:CARGO_BUILD_JOBS = $defaultJobs
+    Write-RemoteUpdateLog "Set remote update CARGO_BUILD_JOBS=$defaultJobs"
+  }
+  if ([string]::IsNullOrWhiteSpace([string]$env:RAYON_NUM_THREADS)) {
+    $env:RAYON_NUM_THREADS = $defaultJobs
+    Write-RemoteUpdateLog "Set remote update RAYON_NUM_THREADS=$defaultJobs"
+  }
+}
+
 function Test-CommandLineContainsPath {
   param(
     [string]$CommandLine,
@@ -2066,6 +2081,7 @@ $script:CurrentBuildStepPhase = ''
 $script:CurrentBuildStepLabel = ''
 $script:CurrentBuildStepDetail = ''
 $script:RuntimeRollbackCandidate = $false
+Set-RemoteUpdateBuildResourceBudget
 Enter-BuildMutex
 if ($script:HoldBuildMutexForRecoveryProbe) {
   Exit-BuildMutex

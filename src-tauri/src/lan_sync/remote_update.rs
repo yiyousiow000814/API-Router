@@ -4777,6 +4777,10 @@ mod tests {
         assert!(build_script.contains("-FilePath $NodeCli"));
         assert!(build_script.contains("ProcessPriorityClass]::BelowNormal"));
         assert!(build_script.contains("Set hidden build command priority to BelowNormal"));
+        assert!(build_script.contains("function Set-RemoteUpdateBuildResourceBudget"));
+        assert!(build_script.contains("CARGO_BUILD_JOBS=$defaultJobs"));
+        assert!(build_script.contains("RAYON_NUM_THREADS=$defaultJobs"));
+        assert!(build_script.contains("Set-RemoteUpdateBuildResourceBudget"));
         assert!(build_script.contains("function Update-RemoteUpdateTimelineStep"));
         assert!(build_script.contains("function Try-CopyOptionalArtifact"));
         assert!(build_script.contains("-Phase 'build_release_binary'"));
