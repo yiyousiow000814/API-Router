@@ -1,5 +1,16 @@
 import { renderMessageRichHtml } from "./messageRender.js";
 
+const PDFJS_MODULE_URL = "/codex-web/modules/pdfjs/pdf.min.mjs";
+const PDFJS_WORKER_URL = "/codex-web/modules/pdfjs/pdf.worker.min.mjs";
+
+async function defaultLoadPdfJs() {
+  const pdfjs = await import(PDFJS_MODULE_URL);
+  if (pdfjs?.GlobalWorkerOptions) {
+    pdfjs.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
+  }
+  return pdfjs;
+}
+
 export function dataUrlToBlob(dataUrl) {
   const match = /^data:([^;,]+)?(?:;charset=[^;,]+)?(;base64)?,(.*)$/i.exec(
     String(dataUrl || "")
@@ -115,9 +126,12 @@ export function createImageViewerModule(deps) {
     documentRef = document,
     navigatorRef = navigator,
     requestAnimationFrameRef = requestAnimationFrame,
+    loadPdfJs = defaultLoadPdfJs,
   } = deps;
 
   let imageViewerState = null;
+  let filePreviewRequestId = 0;
+  let pdfPreviewState = null;
 
   function isPdfPreviewSrc(src) {
     try {
@@ -446,6 +460,14 @@ export function createImageViewerModule(deps) {
       `</div>` +
       `<div class="filePreviewStage">` +
       `<iframe id="filePreviewFrame" class="filePreviewFrame" title="File preview"></iframe>` +
+      `<div id="filePreviewPdfJs" class="filePreviewPdfJs">` +
+      `<div class="filePreviewPdfControls">` +
+      `<button id="filePreviewPdfPrevBtn" class="filePreviewPdfBtn" type="button">Previous</button>` +
+      `<span id="filePreviewPdfPage" class="filePreviewPdfPage mono"></span>` +
+      `<button id="filePreviewPdfNextBtn" class="filePreviewPdfBtn" type="button">Next</button>` +
+      `</div>` +
+      `<div id="filePreviewPdfCanvasHost" class="filePreviewPdfCanvasHost"></div>` +
+      `</div>` +
       `<div id="filePreviewText" class="filePreviewText"></div>` +
       `<div id="filePreviewUnsupported" class="filePreviewUnsupported"></div>` +
       `<div id="filePreviewLoading" class="filePreviewLoading">Loading preview...</div>` +
@@ -454,11 +476,22 @@ export function createImageViewerModule(deps) {
     documentRef.body.appendChild(backdrop);
 
     const close = () => {
+      filePreviewRequestId += 1;
       const frame = byId("filePreviewFrame");
+      const pdfJs = byId("filePreviewPdfJs");
+      const pdfHost = byId("filePreviewPdfCanvasHost");
       const text = byId("filePreviewText");
       const unsupported = byId("filePreviewUnsupported");
       const loading = byId("filePreviewLoading");
       if (frame) frame.src = "about:blank";
+      if (pdfPreviewState?.renderTask?.cancel) {
+        try {
+          pdfPreviewState.renderTask.cancel();
+        } catch {}
+      }
+      pdfPreviewState = null;
+      if (pdfJs) pdfJs.hidden = true;
+      if (pdfHost) pdfHost.innerHTML = "";
       if (text) text.innerHTML = "";
       if (unsupported) unsupported.innerHTML = "";
       if (loading) loading.hidden = true;
@@ -479,12 +512,95 @@ export function createImageViewerModule(deps) {
     }
   }
 
+  function showUnsupportedFilePreview(titleText = "Preview unavailable", bodyText = "This file can be downloaded, but it cannot be rendered in the browser preview.") {
+    const unsupported = byId("filePreviewUnsupported");
+    const loading = byId("filePreviewLoading");
+    if (!unsupported) return;
+    unsupported.innerHTML =
+      `<div class="filePreviewUnsupportedTitle">${escapeHtmlText(titleText)}</div>` +
+      `<div class="filePreviewUnsupportedBody">${escapeHtmlText(bodyText)}</div>`;
+    unsupported.hidden = false;
+    if (loading) loading.hidden = true;
+  }
+
+  async function renderPdfJsPage(requestId, pageNum) {
+    if (!pdfPreviewState || requestId !== filePreviewRequestId) return;
+    const host = byId("filePreviewPdfCanvasHost");
+    const pageLabel = byId("filePreviewPdfPage");
+    const prev = byId("filePreviewPdfPrevBtn");
+    const next = byId("filePreviewPdfNextBtn");
+    if (!host) return;
+
+    if (pdfPreviewState.renderTask?.cancel) {
+      try {
+        pdfPreviewState.renderTask.cancel();
+      } catch {}
+    }
+    const pdf = pdfPreviewState.pdf;
+    const safePageNum = clampNumber(pageNum, 1, pdf.numPages || 1);
+    pdfPreviewState.pageNum = safePageNum;
+    if (pageLabel) pageLabel.textContent = `${safePageNum} / ${pdf.numPages || 1}`;
+    if (prev) prev.disabled = safePageNum <= 1;
+    if (next) next.disabled = safePageNum >= (pdf.numPages || 1);
+
+    const page = await pdf.getPage(safePageNum);
+    if (requestId !== filePreviewRequestId) return;
+    const baseViewport = page.getViewport({ scale: 1 });
+    const availableWidth = Math.max(240, Number(host.clientWidth || 360) - 24);
+    const scale = Math.min(2, Math.max(0.6, availableWidth / Math.max(1, baseViewport.width)));
+    const viewport = page.getViewport({ scale });
+    const dpr = Math.min(2, Math.max(1, Number(globalThis.devicePixelRatio || 1)));
+    const canvas = documentRef.createElement("canvas");
+    const context = canvas.getContext?.("2d");
+    canvas.width = Math.ceil(viewport.width * dpr);
+    canvas.height = Math.ceil(viewport.height * dpr);
+    canvas.style.width = `${Math.ceil(viewport.width)}px`;
+    canvas.style.height = `${Math.ceil(viewport.height)}px`;
+    host.innerHTML = "";
+    host.appendChild(canvas);
+    const renderViewport = dpr === 1 ? viewport : page.getViewport({ scale: scale * dpr });
+    const renderTask = page.render({ canvasContext: context, viewport: renderViewport });
+    pdfPreviewState.renderTask = renderTask;
+    await renderTask.promise;
+  }
+
+  async function renderPdfJsPreview(src, requestId) {
+    const pdfJs = byId("filePreviewPdfJs");
+    const loading = byId("filePreviewLoading");
+    const prev = byId("filePreviewPdfPrevBtn");
+    const next = byId("filePreviewPdfNextBtn");
+    if (!pdfJs) return;
+    try {
+      const pdfjs = await loadPdfJs();
+      if (requestId !== filePreviewRequestId) return;
+      const loadingTask = pdfjs.getDocument({ url: src });
+      const pdf = await loadingTask.promise;
+      if (requestId !== filePreviewRequestId) return;
+      pdfPreviewState = { pdf, pageNum: 1, renderTask: null };
+      if (prev) prev.onclick = () => renderPdfJsPage(requestId, (pdfPreviewState?.pageNum || 1) - 1);
+      if (next) next.onclick = () => renderPdfJsPage(requestId, (pdfPreviewState?.pageNum || 1) + 1);
+      pdfJs.hidden = false;
+      if (loading) loading.hidden = true;
+      await renderPdfJsPage(requestId, 1);
+    } catch {
+      if (requestId !== filePreviewRequestId) return;
+      showUnsupportedFilePreview(
+        "PDF preview unavailable",
+        "This PDF can be downloaded, but it could not be rendered in the in-app preview."
+      );
+    }
+  }
+
   function openFilePreview(src, label, options = {}) {
     ensureFilePreview();
+    const requestId = filePreviewRequestId + 1;
+    filePreviewRequestId = requestId;
     const backdrop = byId("filePreviewBackdrop");
     const frame = byId("filePreviewFrame");
     const title = byId("filePreviewTitle");
     const download = byId("filePreviewDownloadBtn");
+    const pdfJs = byId("filePreviewPdfJs");
+    const pdfHost = byId("filePreviewPdfCanvasHost");
     const text = byId("filePreviewText");
     const unsupported = byId("filePreviewUnsupported");
     const loading = byId("filePreviewLoading");
@@ -498,16 +614,20 @@ export function createImageViewerModule(deps) {
     if (title) title.textContent = safeLabel;
     frame.src = "about:blank";
     frame.hidden = true;
+    if (pdfPreviewState?.renderTask?.cancel) {
+      try {
+        pdfPreviewState.renderTask.cancel();
+      } catch {}
+    }
+    pdfPreviewState = null;
+    if (pdfJs) pdfJs.hidden = true;
+    if (pdfHost) pdfHost.innerHTML = "";
     text.hidden = true;
     unsupported.hidden = true;
     loading.hidden = false;
     if (isPdfPreviewSrc(safeSrc) || /\.pdf$/i.test(safeFileName) || safeMimeType === "application/pdf") {
       if (isAppleMobilePreview()) {
-        unsupported.innerHTML =
-          `<div class="filePreviewUnsupportedTitle">PDF preview unavailable on iPhone</div>` +
-          `<div class="filePreviewUnsupportedBody">iOS can show a blank embedded PDF here. Download the file to view it with the system PDF viewer.</div>`;
-        unsupported.hidden = false;
-        loading.hidden = true;
+        void renderPdfJsPreview(safeSrc, requestId);
       } else {
         frame.hidden = false;
         loading.hidden = true;
@@ -531,21 +651,14 @@ export function createImageViewerModule(deps) {
           }
           text.hidden = false;
         } catch {
-          unsupported.innerHTML =
-            `<div class="filePreviewUnsupportedTitle">Preview unavailable</div>` +
-            `<div class="filePreviewUnsupportedBody">This file can be downloaded, but it cannot be rendered in the browser preview.</div>`;
-          unsupported.hidden = false;
+          showUnsupportedFilePreview();
         } finally {
           loading.hidden = true;
         }
       };
       void renderText();
     } else {
-      unsupported.innerHTML =
-        `<div class="filePreviewUnsupportedTitle">Preview unavailable</div>` +
-        `<div class="filePreviewUnsupportedBody">This file can be downloaded, but it cannot be rendered in the browser preview.</div>`;
-      unsupported.hidden = false;
-      loading.hidden = true;
+      showUnsupportedFilePreview();
     }
     if (download) {
       download.onclick = () => {

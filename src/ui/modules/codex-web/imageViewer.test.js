@@ -263,7 +263,7 @@ describe("imageViewer", () => {
     expect(loading.hidden).toBe(true);
   });
 
-  it("shows an in-app unavailable state for pdf previews on iPhone", () => {
+  it("renders iPhone pdf previews with PDF.js instead of a frame", async () => {
     const elements = new Map();
     const backdrop = {
       classList: {
@@ -277,6 +277,23 @@ describe("imageViewer", () => {
     const text = { hidden: false, innerHTML: "" };
     const unsupported = { hidden: false, innerHTML: "" };
     const loading = { hidden: false };
+    const pdfJs = { hidden: false };
+    const pdfHost = {
+      innerHTML: "",
+      clientWidth: 360,
+      appendChild(node) {
+        this.node = node;
+      },
+    };
+    const pdfPage = { textContent: "" };
+    const pdfPrev = {
+      disabled: false,
+      onclick: null,
+    };
+    const pdfNext = {
+      disabled: false,
+      onclick: null,
+    };
     const download = { onclick: null };
     elements.set("filePreviewBackdrop", backdrop);
     elements.set("filePreviewFrame", frame);
@@ -284,7 +301,24 @@ describe("imageViewer", () => {
     elements.set("filePreviewText", text);
     elements.set("filePreviewUnsupported", unsupported);
     elements.set("filePreviewLoading", loading);
+    elements.set("filePreviewPdfJs", pdfJs);
+    elements.set("filePreviewPdfCanvasHost", pdfHost);
+    elements.set("filePreviewPdfPage", pdfPage);
+    elements.set("filePreviewPdfPrevBtn", pdfPrev);
+    elements.set("filePreviewPdfNextBtn", pdfNext);
     elements.set("filePreviewDownloadBtn", download);
+    const render = vi.fn(() => ({ promise: Promise.resolve() }));
+    const getPage = vi.fn(async () => ({
+      getViewport: ({ scale }) => ({ width: 200 * scale, height: 300 * scale }),
+      render,
+    }));
+    const getDocument = vi.fn(() => ({
+      promise: Promise.resolve({ numPages: 2, getPage }),
+    }));
+    const loadPdfJs = vi.fn(async () => ({
+      GlobalWorkerOptions: {},
+      getDocument,
+    }));
     const module = createImageViewerModule({
       byId: (id) => elements.get(id) || null,
       state: {
@@ -297,7 +331,13 @@ describe("imageViewer", () => {
       updateScrollToBottomBtn: () => {},
       documentRef: {
         body: { appendChild() {} },
-        createElement() {
+        createElement(tag) {
+          if (tag === "canvas") {
+            return {
+              style: {},
+              getContext: () => ({ canvasContext: true }),
+            };
+          }
           return {};
         },
         addEventListener() {},
@@ -306,14 +346,25 @@ describe("imageViewer", () => {
         userAgent:
           "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148",
       },
+      loadPdfJs,
       requestAnimationFrameRef: (callback) => callback(),
     });
 
     expect(module.openFilePreview("/codex/file?path=C%3A%5Cuploads%5Creport.pdf", "report.pdf", { fileName: "report.pdf", mimeType: "application/pdf" })).toBe(true);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(loadPdfJs).toHaveBeenCalledTimes(1);
+    expect(getDocument).toHaveBeenCalledWith({ url: "/codex/file?path=C%3A%5Cuploads%5Creport.pdf" });
+    expect(getPage).toHaveBeenCalledWith(1);
+    expect(render).toHaveBeenCalled();
     expect(frame.hidden).toBe(true);
     expect(frame.src).toBe("about:blank");
-    expect(unsupported.hidden).toBe(false);
-    expect(unsupported.innerHTML).toContain("PDF");
+    expect(pdfJs.hidden).toBe(false);
+    expect(pdfHost.node).toBeTruthy();
+    expect(pdfPage.textContent).toBe("1 / 2");
+    expect(unsupported.hidden).toBe(true);
     expect(loading.hidden).toBe(true);
   });
 

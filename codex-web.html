@@ -3102,6 +3102,57 @@
       border: 0;
       background: #ffffff;
     }
+    .filePreviewPdfJs {
+      min-height: 100%;
+      padding: 12px;
+      background: #eef2f7;
+    }
+    .filePreviewPdfControls {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 8px;
+      margin: -12px -12px 12px;
+      border-bottom: 1px solid rgba(13, 18, 32, 0.1);
+      background: rgba(255, 255, 255, 0.94);
+    }
+    .filePreviewPdfBtn {
+      min-height: 30px;
+      padding: 5px 10px;
+      border: 1px solid rgba(13, 18, 32, 0.12);
+      border-radius: 8px;
+      background: #ffffff;
+      color: #24364f;
+      font-size: 12px;
+      font-weight: 750;
+    }
+    .filePreviewPdfBtn:disabled {
+      opacity: 0.45;
+    }
+    .filePreviewPdfPage {
+      min-width: 64px;
+      text-align: center;
+      color: #506079;
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .filePreviewPdfCanvasHost {
+      display: grid;
+      justify-items: center;
+      gap: 12px;
+      min-height: 160px;
+    }
+    .filePreviewPdfCanvasHost canvas {
+      max-width: 100%;
+      height: auto;
+      background: #ffffff;
+      border: 1px solid rgba(13, 18, 32, 0.12);
+      box-shadow: 0 8px 22px rgba(13, 18, 32, 0.14);
+    }
     .filePreviewText,
     .filePreviewUnsupported {
       min-height: 100%;
