@@ -3119,6 +3119,36 @@
       line-height: 1.55;
       color: #23324a;
     }
+    .filePreviewTableWrap {
+      width: 100%;
+      overflow: auto;
+      border: 1px solid rgba(13, 18, 32, 0.1);
+      border-radius: 8px;
+    }
+    .filePreviewTable {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      line-height: 1.45;
+      color: #172235;
+    }
+    .filePreviewTable th,
+    .filePreviewTable td {
+      max-width: 260px;
+      padding: 7px 9px;
+      border-right: 1px solid rgba(13, 18, 32, 0.08);
+      border-bottom: 1px solid rgba(13, 18, 32, 0.08);
+      text-align: left;
+      vertical-align: top;
+      overflow-wrap: anywhere;
+    }
+    .filePreviewTable th {
+      position: sticky;
+      top: 0;
+      background: #f6f8fb;
+      color: #24364f;
+      font-weight: 850;
+    }
     .filePreviewUnsupported {
       display: grid;
       align-content: start;

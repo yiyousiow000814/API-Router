@@ -262,4 +262,119 @@ describe("imageViewer", () => {
     expect(unsupported.innerHTML).toContain("Preview unavailable");
     expect(loading.hidden).toBe(true);
   });
+
+  it("shows an in-app unavailable state for pdf previews on iPhone", () => {
+    const elements = new Map();
+    const backdrop = {
+      classList: {
+        add() {},
+        remove() {},
+      },
+      innerHTML: "",
+    };
+    const frame = { src: "" };
+    const title = { textContent: "" };
+    const text = { hidden: false, innerHTML: "" };
+    const unsupported = { hidden: false, innerHTML: "" };
+    const loading = { hidden: false };
+    const download = { onclick: null };
+    elements.set("filePreviewBackdrop", backdrop);
+    elements.set("filePreviewFrame", frame);
+    elements.set("filePreviewTitle", title);
+    elements.set("filePreviewText", text);
+    elements.set("filePreviewUnsupported", unsupported);
+    elements.set("filePreviewLoading", loading);
+    elements.set("filePreviewDownloadBtn", download);
+    const module = createImageViewerModule({
+      byId: (id) => elements.get(id) || null,
+      state: {
+        chatSmoothScrollUntil: 0,
+        chatShouldStickToBottom: true,
+      },
+      escapeHtml: (value) => String(value || ""),
+      wireBlurBackdropShield: () => {},
+      scrollChatToBottom: () => {},
+      updateScrollToBottomBtn: () => {},
+      documentRef: {
+        body: { appendChild() {} },
+        createElement() {
+          return {};
+        },
+        addEventListener() {},
+      },
+      navigatorRef: {
+        userAgent:
+          "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148",
+      },
+      requestAnimationFrameRef: (callback) => callback(),
+    });
+
+    expect(module.openFilePreview("/codex/file?path=C%3A%5Cuploads%5Creport.pdf", "report.pdf", { fileName: "report.pdf", mimeType: "application/pdf" })).toBe(true);
+    expect(frame.hidden).toBe(true);
+    expect(frame.src).toBe("about:blank");
+    expect(unsupported.hidden).toBe(false);
+    expect(unsupported.innerHTML).toContain("PDF");
+    expect(loading.hidden).toBe(true);
+  });
+
+  it("renders csv file previews as a table", async () => {
+    const elements = new Map();
+    const backdrop = {
+      classList: {
+        add() {},
+        remove() {},
+      },
+      innerHTML: "",
+    };
+    const frame = { src: "" };
+    const title = { textContent: "" };
+    const text = { hidden: false, innerHTML: "" };
+    const unsupported = { hidden: false, innerHTML: "" };
+    const loading = { hidden: false };
+    const download = { onclick: null };
+    elements.set("filePreviewBackdrop", backdrop);
+    elements.set("filePreviewFrame", frame);
+    elements.set("filePreviewTitle", title);
+    elements.set("filePreviewText", text);
+    elements.set("filePreviewUnsupported", unsupported);
+    elements.set("filePreviewLoading", loading);
+    elements.set("filePreviewDownloadBtn", download);
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      text: async () => "name,age\nAlice,2\nBob,3",
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const module = createImageViewerModule({
+      byId: (id) => elements.get(id) || null,
+      state: {
+        chatSmoothScrollUntil: 0,
+        chatShouldStickToBottom: true,
+      },
+      escapeHtml: (value) => String(value || ""),
+      wireBlurBackdropShield: () => {},
+      scrollChatToBottom: () => {},
+      updateScrollToBottomBtn: () => {},
+      documentRef: {
+        body: { appendChild() {} },
+        createElement() {
+          return {};
+        },
+        addEventListener() {},
+      },
+      navigatorRef: {},
+      requestAnimationFrameRef: (callback) => callback(),
+    });
+
+    expect(module.openFilePreview("/codex/file?path=C%3A%5Cuploads%5Cdata.csv", "data.csv", { fileName: "data.csv", mimeType: "text/csv" })).toBe(true);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(text.hidden).toBe(false);
+    expect(text.innerHTML).toContain("<table");
+    expect(text.innerHTML).toContain("<th>name</th>");
+    expect(text.innerHTML).toContain("<td>Alice</td>");
+    expect(frame.hidden).toBe(true);
+    expect(unsupported.hidden).toBe(true);
+    vi.unstubAllGlobals();
+  });
 });

@@ -35,6 +35,67 @@ function fileExtension(value) {
   return dot >= 0 ? text.slice(dot) : "";
 }
 
+function escapeHtmlText(value) {
+  return String(value || "").replace(/[&<>"]/g, (ch) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;" }[ch]
+  ));
+}
+
+function parseDelimitedRows(value, delimiter = ",") {
+  const rows = [];
+  let row = [];
+  let cell = "";
+  let quoted = false;
+  const source = String(value || "");
+  for (let idx = 0; idx < source.length; idx += 1) {
+    const ch = source[idx];
+    if (quoted) {
+      if (ch === "\"" && source[idx + 1] === "\"") {
+        cell += "\"";
+        idx += 1;
+      } else if (ch === "\"") {
+        quoted = false;
+      } else {
+        cell += ch;
+      }
+      continue;
+    }
+    if (ch === "\"") {
+      quoted = true;
+      continue;
+    }
+    if (ch === delimiter) {
+      row.push(cell);
+      cell = "";
+      continue;
+    }
+    if (ch === "\n") {
+      row.push(cell);
+      rows.push(row);
+      row = [];
+      cell = "";
+      continue;
+    }
+    if (ch !== "\r") cell += ch;
+  }
+  row.push(cell);
+  rows.push(row);
+  return rows.filter((cells) => cells.some((item) => String(item || "").trim()));
+}
+
+function renderDelimitedTable(value, delimiter = ",") {
+  const rows = parseDelimitedRows(value, delimiter).slice(0, 250);
+  if (!rows.length) return "<pre></pre>";
+  const width = Math.max(...rows.map((row) => row.length));
+  const normalizeRow = (row) => Array.from({ length: width }, (_, idx) => row[idx] || "");
+  const [head, ...body] = rows.map(normalizeRow);
+  const headerHtml = head.map((cell) => `<th>${escapeHtmlText(cell)}</th>`).join("");
+  const bodyHtml = body
+    .map((row) => `<tr>${row.map((cell) => `<td>${escapeHtmlText(cell)}</td>`).join("")}</tr>`)
+    .join("");
+  return `<div class="filePreviewTableWrap"><table class="filePreviewTable"><thead><tr>${headerHtml}</tr></thead><tbody>${bodyHtml}</tbody></table></div>`;
+}
+
 function buildBrokenAttachmentCardHtml(label, overlayHtml = "", escapeHtmlRef = (value) => String(value || "")) {
   return (
     `<div class="msgAttachmentChip mono">[image]</div>` +
@@ -68,6 +129,11 @@ export function createImageViewerModule(deps) {
     }
   }
 
+  function isAppleMobilePreview() {
+    const ua = String(navigatorRef?.userAgent || "").toLowerCase();
+    return /iphone|ipad|ipod/.test(ua);
+  }
+
   function isMarkdownPreviewFile(fileName, mimeType) {
     const ext = fileExtension(fileName);
     const mime = String(mimeType || "").trim().toLowerCase();
@@ -97,6 +163,12 @@ export function createImageViewerModule(deps) {
       mime === "application/json" ||
       mime === "application/xml"
     );
+  }
+
+  function isDelimitedPreviewFile(fileName, mimeType) {
+    const ext = fileExtension(fileName);
+    const mime = String(mimeType || "").trim().toLowerCase();
+    return ext === ".csv" || ext === ".tsv" || mime === "text/csv" || mime === "text/tab-separated-values";
   }
 
   function setViewerTransform({ scale, tx, ty }) {
@@ -430,19 +502,32 @@ export function createImageViewerModule(deps) {
     unsupported.hidden = true;
     loading.hidden = false;
     if (isPdfPreviewSrc(safeSrc) || /\.pdf$/i.test(safeFileName) || safeMimeType === "application/pdf") {
-      frame.hidden = false;
-      loading.hidden = true;
-      frame.src = `${safeSrc}#view=FitH&zoom=page-width`;
+      if (isAppleMobilePreview()) {
+        unsupported.innerHTML =
+          `<div class="filePreviewUnsupportedTitle">PDF preview unavailable on iPhone</div>` +
+          `<div class="filePreviewUnsupportedBody">iOS can show a blank embedded PDF here. Download the file to view it with the system PDF viewer.</div>`;
+        unsupported.hidden = false;
+        loading.hidden = true;
+      } else {
+        frame.hidden = false;
+        loading.hidden = true;
+        frame.src = `${safeSrc}#view=FitH&zoom=page-width`;
+      }
     } else if (isTextPreviewFile(safeFileName, safeMimeType)) {
       const renderText = async () => {
         try {
           const response = await fetch(safeSrc, { credentials: "same-origin" });
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
           const textValue = await response.text();
-          if (isMarkdownPreviewFile(safeFileName, safeMimeType)) {
+          if (isDelimitedPreviewFile(safeFileName, safeMimeType)) {
+            text.innerHTML = renderDelimitedTable(
+              textValue,
+              fileExtension(safeFileName) === ".tsv" || safeMimeType === "text/tab-separated-values" ? "\t" : ","
+            );
+          } else if (isMarkdownPreviewFile(safeFileName, safeMimeType)) {
             text.innerHTML = renderMessageRichHtml(textValue);
           } else {
-            text.innerHTML = `<pre>${String(textValue || "").replace(/[&<>]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[ch]))}</pre>`;
+            text.innerHTML = `<pre>${escapeHtmlText(textValue)}</pre>`;
           }
           text.hidden = false;
         } catch {
