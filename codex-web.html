@@ -5320,6 +5320,7 @@
       gap: 6px;
       min-width: 0;
       max-width: min(100%, 260px);
+      min-height: 21px;
       border-color: rgba(40, 199, 217, 0.42);
       background: rgba(230, 252, 255, 0.92);
       color: #18364a;
@@ -5333,6 +5334,7 @@
       background: transparent;
       color: inherit;
       font: inherit;
+      margin: 0;
     }
     .attachmentPillPreview {
       display: inline-flex;
@@ -5368,6 +5370,10 @@
       width: 16px;
       height: 16px;
       border-radius: 999px;
+      padding: 0;
+      font-size: 12px;
+      line-height: 16px;
+      text-align: center;
       cursor: pointer;
       color: #476072;
     }
@@ -6258,9 +6264,9 @@
       }
       #attachmentPills {
         display: flex;
-        max-height: 76px;
-        overflow-y: auto;
-        scrollbar-width: thin;
+        align-items: center;
+        max-height: none;
+        overflow: visible;
       }
       .mobileComposerRow { display: flex; align-items: flex-end; gap: 8px; }
       .composerActionRail { height: 40px; }
