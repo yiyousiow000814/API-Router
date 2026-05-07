@@ -457,7 +457,11 @@ describe("imageViewer", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(loadPdfJs).toHaveBeenCalledTimes(1);
-    expect(getDocument).toHaveBeenCalledWith({ url: "/codex/file?path=C%3A%5Cuploads%5Creport.pdf" });
+    expect(getDocument).toHaveBeenCalledWith({
+      url: "/codex/file?path=C%3A%5Cuploads%5Creport.pdf",
+      disableFontFace: true,
+      useSystemFonts: false,
+    });
     expect(getPage).toHaveBeenCalledWith(1);
     expect(render).toHaveBeenCalledWith(expect.objectContaining({ annotationMode: 2 }));
     expect(frame.hidden).toBe(true);

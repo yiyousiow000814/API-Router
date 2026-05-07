@@ -629,9 +629,14 @@ export function createImageViewerModule(deps) {
     const next = byId("filePreviewPdfNextBtn");
     if (!pdfJs) return;
     try {
+      const onAppleMobile = isAppleMobilePreview();
       const pdfjs = await loadPdfJs();
       if (requestId !== filePreviewRequestId) return;
-      const loadingTask = pdfjs.getDocument({ url: src });
+      const loadingTask = pdfjs.getDocument({
+        url: src,
+        disableFontFace: onAppleMobile,
+        useSystemFonts: !onAppleMobile,
+      });
       const pdf = await loadingTask.promise;
       if (requestId !== filePreviewRequestId) return;
       pdfPreviewState = { pdfjs, pdf, pageNum: 1, renderTask: null };
