@@ -351,9 +351,9 @@ describe("imageViewer", () => {
     });
 
     expect(module.openFilePreview("/codex/file?path=C%3A%5Cuploads%5Creport.pdf", "report.pdf", { fileName: "report.pdf", mimeType: "application/pdf" })).toBe(true);
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(loadPdfJs).toHaveBeenCalledTimes(1);
     expect(getDocument).toHaveBeenCalledWith({ url: "/codex/file?path=C%3A%5Cuploads%5Creport.pdf" });

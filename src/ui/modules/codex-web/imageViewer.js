@@ -107,6 +107,10 @@ function renderDelimitedTable(value, delimiter = ",") {
   return `<div class="filePreviewTableWrap"><table class="filePreviewTable"><thead><tr>${headerHtml}</tr></thead><tbody>${bodyHtml}</tbody></table></div>`;
 }
 
+function nextAnimationFrame(requestAnimationFrameRef) {
+  return new Promise((resolve) => requestAnimationFrameRef(() => resolve()));
+}
+
 function buildBrokenAttachmentCardHtml(label, overlayHtml = "", escapeHtmlRef = (value) => String(value || "")) {
   return (
     `<div class="msgAttachmentChip mono">[image]</div>` +
@@ -545,21 +549,27 @@ export function createImageViewerModule(deps) {
 
     const page = await pdf.getPage(safePageNum);
     if (requestId !== filePreviewRequestId) return;
+    await nextAnimationFrame(requestAnimationFrameRef);
     const baseViewport = page.getViewport({ scale: 1 });
-    const availableWidth = Math.max(240, Number(host.clientWidth || 360) - 24);
+    const availableWidth = Math.max(240, Number(host.clientWidth || host.parentElement?.clientWidth || 360) - 24);
     const scale = Math.min(2, Math.max(0.6, availableWidth / Math.max(1, baseViewport.width)));
     const viewport = page.getViewport({ scale });
     const dpr = Math.min(2, Math.max(1, Number(globalThis.devicePixelRatio || 1)));
     const canvas = documentRef.createElement("canvas");
     const context = canvas.getContext?.("2d");
-    canvas.width = Math.ceil(viewport.width * dpr);
-    canvas.height = Math.ceil(viewport.height * dpr);
+    const pixelWidth = Math.ceil(viewport.width * dpr);
+    const pixelHeight = Math.ceil(viewport.height * dpr);
+    canvas.width = pixelWidth;
+    canvas.height = pixelHeight;
     canvas.style.width = `${Math.ceil(viewport.width)}px`;
     canvas.style.height = `${Math.ceil(viewport.height)}px`;
     host.innerHTML = "";
     host.appendChild(canvas);
-    const renderViewport = dpr === 1 ? viewport : page.getViewport({ scale: scale * dpr });
-    const renderTask = page.render({ canvasContext: context, viewport: renderViewport });
+    const renderTask = page.render({
+      canvasContext: context,
+      viewport,
+      transform: dpr === 1 ? null : [dpr, 0, 0, dpr, 0, 0],
+    });
     pdfPreviewState.renderTask = renderTask;
     await renderTask.promise;
   }
