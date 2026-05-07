@@ -3075,6 +3075,7 @@
     .filePreviewStage {
       min-height: 0;
       overflow: auto;
+      -webkit-overflow-scrolling: touch;
       background: #ffffff;
       position: relative;
     }
@@ -3104,8 +3105,10 @@
     }
     .filePreviewPdfJs {
       min-height: 100%;
+      width: 100%;
       padding: 12px;
       background: #eef2f7;
+      box-sizing: border-box;
     }
     .filePreviewPdfControls {
       position: sticky;
@@ -3145,8 +3148,10 @@
       justify-items: center;
       gap: 12px;
       min-height: 160px;
+      width: 100%;
     }
     .filePreviewPdfCanvasHost canvas {
+      display: block;
       max-width: 100%;
       height: auto;
       background: #ffffff;

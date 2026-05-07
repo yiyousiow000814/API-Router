@@ -144,6 +144,103 @@ describe("imageViewer", () => {
     expect(loading.hidden).toBe(true);
   });
 
+  it("closes file previews when browser history goes back", () => {
+    const elements = new Map();
+    const classes = new Set();
+    const backdrop = {
+      classList: {
+        add(name) {
+          classes.add(name);
+        },
+        remove(name) {
+          classes.delete(name);
+        },
+        contains(name) {
+          return classes.has(name);
+        },
+      },
+      appendChild() {},
+      innerHTML: "",
+      ownerDocument: null,
+    };
+    const frame = { src: "" };
+    const title = { textContent: "" };
+    const text = { hidden: false, innerHTML: "" };
+    const unsupported = { hidden: false, innerHTML: "" };
+    const loading = { hidden: false };
+    const download = { onclick: null };
+    const backBtn = { onclick: null };
+    const pdfJs = { hidden: false };
+    const pdfHost = { innerHTML: "" };
+    const history = {
+      state: { route: "chat" },
+      pushState: vi.fn((nextState) => {
+        history.state = nextState;
+      }),
+      replaceState: vi.fn((nextState) => {
+        history.state = nextState;
+      }),
+      back: vi.fn(() => {
+        history.state = { route: "chat" };
+        popstateHandler?.({ state: history.state });
+      }),
+    };
+    let popstateHandler = null;
+    const module = createImageViewerModule({
+      byId: (id) => elements.get(id) || null,
+      state: {
+        chatSmoothScrollUntil: 0,
+        chatShouldStickToBottom: true,
+      },
+      escapeHtml: (value) => String(value || ""),
+      wireBlurBackdropShield: () => {},
+      scrollChatToBottom: () => {},
+      updateScrollToBottomBtn: () => {},
+      documentRef: {
+        body: {
+          appendChild() {
+            elements.set("filePreviewBackdrop", backdrop);
+            elements.set("filePreviewFrame", frame);
+            elements.set("filePreviewTitle", title);
+            elements.set("filePreviewText", text);
+            elements.set("filePreviewUnsupported", unsupported);
+            elements.set("filePreviewLoading", loading);
+            elements.set("filePreviewDownloadBtn", download);
+            elements.set("filePreviewBackBtn", backBtn);
+            elements.set("filePreviewPdfJs", pdfJs);
+            elements.set("filePreviewPdfCanvasHost", pdfHost);
+          },
+        },
+        createElement() {
+          return backdrop;
+        },
+        addEventListener() {},
+      },
+      windowRef: {
+        location: { href: "http://localhost/codex-web/" },
+        history,
+        addEventListener(type, handler) {
+          if (type === "popstate") popstateHandler = handler;
+        },
+      },
+      navigatorRef: {},
+      requestAnimationFrameRef: (callback) => callback(),
+    });
+
+    expect(module.openFilePreview("/codex/file?path=C%3A%5Cuploads%5Creport.pdf", "report.pdf", { fileName: "report.pdf", mimeType: "application/pdf" })).toBe(true);
+
+    expect(history.pushState).toHaveBeenCalledTimes(1);
+    expect(history.state.webCodexPreview).toMatchObject({ kind: "file" });
+    expect(backdrop.classList.contains("show")).toBe(true);
+
+    history.state = { route: "chat" };
+    popstateHandler?.({ state: history.state });
+
+    expect(backdrop.classList.contains("show")).toBe(false);
+    expect(frame.src).toBe("about:blank");
+    expect(history.back).not.toHaveBeenCalled();
+  });
+
   it("renders markdown file previews without using a frame", async () => {
     const elements = new Map();
     const backdrop = {
@@ -317,6 +414,10 @@ describe("imageViewer", () => {
     }));
     const loadPdfJs = vi.fn(async () => ({
       GlobalWorkerOptions: {},
+      AnnotationMode: {
+        ENABLE: 1,
+        ENABLE_FORMS: 2,
+      },
       getDocument,
     }));
     const module = createImageViewerModule({
@@ -358,7 +459,7 @@ describe("imageViewer", () => {
     expect(loadPdfJs).toHaveBeenCalledTimes(1);
     expect(getDocument).toHaveBeenCalledWith({ url: "/codex/file?path=C%3A%5Cuploads%5Creport.pdf" });
     expect(getPage).toHaveBeenCalledWith(1);
-    expect(render).toHaveBeenCalled();
+    expect(render).toHaveBeenCalledWith(expect.objectContaining({ annotationMode: 2 }));
     expect(frame.hidden).toBe(true);
     expect(frame.src).toBe("about:blank");
     expect(pdfJs.hidden).toBe(false);

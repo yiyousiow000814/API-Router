@@ -128,6 +128,7 @@ export function createImageViewerModule(deps) {
     scrollChatToBottom,
     updateScrollToBottomBtn,
     documentRef = document,
+    windowRef = globalThis.window,
     navigatorRef = navigator,
     requestAnimationFrameRef = requestAnimationFrame,
     loadPdfJs = defaultLoadPdfJs,
@@ -135,6 +136,8 @@ export function createImageViewerModule(deps) {
 
   let imageViewerState = null;
   let filePreviewRequestId = 0;
+  let filePreviewHistoryToken = 0;
+  let filePreviewHistoryWired = false;
   let pdfPreviewState = null;
 
   function isPdfPreviewSrc(src) {
@@ -479,7 +482,7 @@ export function createImageViewerModule(deps) {
       `</div>`;
     documentRef.body.appendChild(backdrop);
 
-    const close = () => {
+    const close = ({ fromHistory = false } = {}) => {
       filePreviewRequestId += 1;
       const frame = byId("filePreviewFrame");
       const pdfJs = byId("filePreviewPdfJs");
@@ -487,6 +490,14 @@ export function createImageViewerModule(deps) {
       const text = byId("filePreviewText");
       const unsupported = byId("filePreviewUnsupported");
       const loading = byId("filePreviewLoading");
+      const history = windowRef?.history;
+      const shouldPopHistory =
+        !fromHistory &&
+        filePreviewHistoryToken > 0 &&
+        history?.state &&
+        typeof history.state === "object" &&
+        history.state.webCodexPreview?.kind === "file" &&
+        history.state.webCodexPreview?.token === filePreviewHistoryToken;
       if (frame) frame.src = "about:blank";
       if (pdfPreviewState?.renderTask?.cancel) {
         try {
@@ -500,6 +511,9 @@ export function createImageViewerModule(deps) {
       if (unsupported) unsupported.innerHTML = "";
       if (loading) loading.hidden = true;
       backdrop.classList.remove("show");
+      if (shouldPopHistory && history?.back) {
+        history.back();
+      }
     };
     wireBlurBackdropShield(backdrop, {
       onClose: close,
@@ -508,12 +522,43 @@ export function createImageViewerModule(deps) {
     });
     const backBtn = byId("filePreviewBackBtn");
     if (backBtn) backBtn.onclick = close;
+    if (!filePreviewHistoryWired && windowRef?.addEventListener) {
+      filePreviewHistoryWired = true;
+      windowRef.addEventListener("popstate", () => {
+        if (backdrop.classList.contains("show")) {
+          close({ fromHistory: true });
+        }
+      });
+    }
     if (!documentRef.__webCodexFilePreviewEscWired) {
       documentRef.__webCodexFilePreviewEscWired = true;
       documentRef.addEventListener("keydown", (event) => {
         if (event.key === "Escape" && backdrop.classList.contains("show")) close();
       });
     }
+  }
+
+  function syncFilePreviewHistory(backdrop) {
+    const history = windowRef?.history;
+    const location = windowRef?.location;
+    if (!history?.pushState || !location) return;
+    const state = history.state && typeof history.state === "object" ? history.state : {};
+    const nextToken = filePreviewHistoryToken + 1;
+    const nextState = {
+      ...state,
+      webCodexPreview: {
+        kind: "file",
+        token: nextToken,
+      },
+    };
+    try {
+      if (backdrop?.classList?.contains("show") && filePreviewHistoryToken > 0) {
+        history.replaceState(nextState, "", location.href);
+      } else {
+        history.pushState(nextState, "", location.href);
+      }
+      filePreviewHistoryToken = nextToken;
+    } catch {}
   }
 
   function showUnsupportedFilePreview(titleText = "Preview unavailable", bodyText = "This file can be downloaded, but it cannot be rendered in the browser preview.") {
@@ -563,11 +608,14 @@ export function createImageViewerModule(deps) {
     canvas.height = pixelHeight;
     canvas.style.width = `${Math.ceil(viewport.width)}px`;
     canvas.style.height = `${Math.ceil(viewport.height)}px`;
+    canvas.style.display = "block";
     host.innerHTML = "";
     host.appendChild(canvas);
+    const annotationMode = pdfPreviewState.pdfjs?.AnnotationMode?.ENABLE_FORMS || pdfPreviewState.pdfjs?.AnnotationMode?.ENABLE;
     const renderTask = page.render({
       canvasContext: context,
       viewport,
+      annotationMode,
       transform: dpr === 1 ? null : [dpr, 0, 0, dpr, 0, 0],
     });
     pdfPreviewState.renderTask = renderTask;
@@ -586,7 +634,7 @@ export function createImageViewerModule(deps) {
       const loadingTask = pdfjs.getDocument({ url: src });
       const pdf = await loadingTask.promise;
       if (requestId !== filePreviewRequestId) return;
-      pdfPreviewState = { pdf, pageNum: 1, renderTask: null };
+      pdfPreviewState = { pdfjs, pdf, pageNum: 1, renderTask: null };
       if (prev) prev.onclick = () => renderPdfJsPage(requestId, (pdfPreviewState?.pageNum || 1) - 1);
       if (next) next.onclick = () => renderPdfJsPage(requestId, (pdfPreviewState?.pageNum || 1) + 1);
       pdfJs.hidden = false;
@@ -630,6 +678,7 @@ export function createImageViewerModule(deps) {
       } catch {}
     }
     pdfPreviewState = null;
+    syncFilePreviewHistory(backdrop);
     if (pdfJs) pdfJs.hidden = true;
     if (pdfHost) pdfHost.innerHTML = "";
     text.hidden = true;
