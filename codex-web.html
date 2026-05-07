@@ -2960,7 +2960,7 @@
     .imageViewerTitle { font-weight: 600; color: #0d1220; }
     .imageViewerBody {
       min-height: 0;
-      overflow: auto;
+      overflow: hidden;
       background: rgba(13, 18, 32, 0.04);
       display: grid;
       place-items: center;
@@ -2968,8 +2968,13 @@
       touch-action: none;
     }
     .imageViewerImg {
+      display: block;
+      min-width: 0;
+      min-height: 0;
       max-width: 100%;
       max-height: 100%;
+      box-sizing: border-box;
+      object-fit: contain;
       transform-origin: center center;
       border-radius: 12px;
       border: 1px solid rgba(13, 18, 32, 0.12);
@@ -3034,9 +3039,68 @@
     }
     .imageViewerThumb.active { border-color: rgba(40, 199, 217, 0.7); box-shadow: 0 0 0 3px rgba(40, 199, 217, 0.14); }
     .imageViewerThumb img { width: 100%; height: 100%; object-fit: cover; border-radius: 8px; display: block; }
+    .filePreviewBackdrop {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100vh;
+      height: 100dvh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      background: rgba(13, 18, 32, 0.55);
+      -webkit-backdrop-filter: blur(10px);
+      backdrop-filter: blur(10px);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 160ms ease;
+      z-index: var(--z-image-viewer);
+    }
+    .filePreviewBackdrop.show {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .filePreview {
+      width: min(920px, 92vw);
+      height: min(720px, 86vh);
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      overflow: hidden;
+      border: 1px solid rgba(13, 18, 32, 0.14);
+      border-radius: 14px;
+      background: #ffffff;
+      box-shadow: 0 28px 40px rgba(0, 0, 0, 0.35);
+    }
+    .filePreviewTop {
+      padding: 10px 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border-bottom: 1px solid rgba(13, 18, 32, 0.1);
+      background: rgba(255, 255, 255, 0.92);
+    }
+    .filePreviewTitle {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: #0d1220;
+      font-weight: 600;
+    }
+    .filePreviewFrame {
+      width: 100%;
+      height: 100%;
+      min-width: 0;
+      min-height: 0;
+      border: 0;
+      background: #ffffff;
+    }
     @media (max-width: 560px) {
       .imageViewerBackdrop { padding: 0; }
-      .imageViewer {
+      .filePreviewBackdrop { padding: 0; }
+      .imageViewer,
+      .filePreview {
         width: 100vw;
         height: 100vh;
         height: 100dvh;

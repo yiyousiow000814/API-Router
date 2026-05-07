@@ -386,8 +386,9 @@ describe("turnActions", () => {
     expect(statuses.at(-1)).toBe("Attachment removed: first.png");
   });
 
-  it("previews pending images and files", () => {
+  it("previews pending images and files in app", () => {
     const imageViewerCalls = [];
+    const filePreviewCalls = [];
     const openedUrls = [];
     const state = {
       pendingAttachments: [
@@ -427,6 +428,7 @@ describe("turnActions", () => {
       refreshHosts: async () => {},
       refreshPending: async () => {},
       openImageViewer: (...args) => imageViewerCalls.push(args),
+      openFilePreview: (...args) => filePreviewCalls.push(args),
       windowRef: {
         open: (...args) => openedUrls.push(args),
       },
@@ -443,11 +445,11 @@ describe("turnActions", () => {
     expect(imageViewerCalls[0][1]).toBe("screen.png");
 
     expect(module.previewPendingAttachment(1)).toBe(true);
-    expect(openedUrls[0]).toEqual([
+    expect(filePreviewCalls[0]).toEqual([
       "/codex/file?path=C%3A%5Cuploads%5Cnotes.md",
-      "_blank",
-      "noopener",
+      "notes.md",
     ]);
+    expect(openedUrls).toEqual([]);
   });
 
   it("sends pending attachments even when the prompt is empty", async () => {

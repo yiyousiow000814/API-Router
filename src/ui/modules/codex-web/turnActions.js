@@ -349,19 +349,18 @@ export function createTurnActionsModule(deps) {
     syncPendingTurnUi = () => {},
     updateMobileComposerState = () => {},
     openImageViewer = () => {},
+    openFilePreview = () => false,
     clearTransientToolMessages = () => {},
     clearTransientThinkingMessages = () => {},
     hideSlashCommandMenu = () => {},
     setThreadStatusCard = () => {},
     blockInSandbox,
     localStorageRef,
-    windowRef,
     FAST_MODE_DEVICE_DEFAULT_KEY = "web_codex_fast_mode_device_default_v1",
     PERMISSION_PRESET_STORAGE_KEY = "web_codex_permission_preset_by_workspace_v1",
     TextDecoderRef = TextDecoder,
   } = deps;
   const storage = localStorageRef ?? globalThis.localStorage ?? { setItem() {} };
-  const win = windowRef ?? globalThis.window ?? {};
   function setActiveThreadOpenState(nextState, options = {}) {
     return setThreadOpenState(state, nextState, options);
   }
@@ -1526,12 +1525,10 @@ export function createTurnActionsModule(deps) {
       return true;
     }
     const url = `/codex/file?path=${encodeURIComponent(attachment.path)}`;
-    if (typeof win.open === "function") {
-      win.open(url, "_blank", "noopener");
-      return true;
-    }
+    const opened = openFilePreview(url, label);
+    if (opened !== false) return true;
     setStatus(`File ready: ${label}`);
-    return false;
+    return true;
   }
 
   async function resolveApproval(options = {}) {

@@ -306,6 +306,74 @@ export function createImageViewerModule(deps) {
     }
   }
 
+  function ensureFilePreview() {
+    if (byId("filePreviewBackdrop")) return;
+    const backdrop = documentRef.createElement("div");
+    backdrop.id = "filePreviewBackdrop";
+    backdrop.className = "filePreviewBackdrop";
+    backdrop.innerHTML =
+      `<div class="filePreview" role="dialog" aria-modal="true" aria-label="File preview">` +
+      `<div class="filePreviewTop">` +
+      `<button id="filePreviewBackBtn" class="imageViewerIconBtn" type="button" aria-label="Back">` +
+      `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"></path></svg>` +
+      `</button>` +
+      `<div id="filePreviewTitle" class="filePreviewTitle mono"></div>` +
+      `<div class="grow"></div>` +
+      `<button id="filePreviewDownloadBtn" class="imageViewerIconBtn" type="button" aria-label="Download">` +
+      `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v10"></path><path d="M8.5 10.5L12 14l3.5-3.5"></path><path d="M5 20h14"></path></svg>` +
+      `</button>` +
+      `</div>` +
+      `<iframe id="filePreviewFrame" class="filePreviewFrame" title="File preview"></iframe>` +
+      `</div>`;
+    documentRef.body.appendChild(backdrop);
+
+    const close = () => {
+      const frame = byId("filePreviewFrame");
+      if (frame) frame.src = "about:blank";
+      backdrop.classList.remove("show");
+    };
+    wireBlurBackdropShield(backdrop, {
+      onClose: close,
+      modalSelector: ".filePreview",
+      suppressMs: 420,
+    });
+    const backBtn = byId("filePreviewBackBtn");
+    if (backBtn) backBtn.onclick = close;
+    if (!documentRef.__webCodexFilePreviewEscWired) {
+      documentRef.__webCodexFilePreviewEscWired = true;
+      documentRef.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && backdrop.classList.contains("show")) close();
+      });
+    }
+  }
+
+  function openFilePreview(src, label) {
+    ensureFilePreview();
+    const backdrop = byId("filePreviewBackdrop");
+    const frame = byId("filePreviewFrame");
+    const title = byId("filePreviewTitle");
+    const download = byId("filePreviewDownloadBtn");
+    if (!backdrop || !frame) return false;
+
+    const safeSrc = String(src || "").trim();
+    const safeLabel = String(label || "").trim() || "attachment";
+    if (!safeSrc) return false;
+    if (title) title.textContent = safeLabel;
+    frame.src = safeSrc;
+    if (download) {
+      download.onclick = () => {
+        const a = documentRef.createElement("a");
+        a.href = safeSrc;
+        a.download = safeLabel.replace(/[^\w.-]+/g, "_") || "attachment";
+        documentRef.body.appendChild(a);
+        a.click();
+        a.remove();
+      };
+    }
+    backdrop.classList.add("show");
+    return true;
+  }
+
   function openImageViewer(src, label, options = {}) {
     ensureImageViewer();
     const backdrop = byId("imageViewerBackdrop");
@@ -483,6 +551,7 @@ export function createImageViewerModule(deps) {
   return {
     ensureImageViewer,
     openImageViewer,
+    openFilePreview,
     wireMessageAttachments,
   };
 }

@@ -322,6 +322,7 @@ export function createCodexWebComposition(deps) {
     setComposerActionMenuOpen: deps.setComposerActionMenuOpen,
     updateMobileComposerState: deps.updateMobileComposerState,
     openImageViewer: imageViewer.openImageViewer,
+    openFilePreview: imageViewer.openFilePreview,
     clearTransientToolMessages: deps.clearTransientToolMessages,
     clearTransientThinkingMessages: deps.clearTransientThinkingMessages,
     hideSlashCommandMenu: deps.hideSlashCommandMenu,
