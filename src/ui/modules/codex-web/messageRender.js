@@ -13,6 +13,10 @@ export function isHttpUrl(value) {
   return /^https?:\/\//i.test(String(value || "").trim());
 }
 
+function isPreviewableImagePath(value) {
+  return /\.(?:png|jpe?g|gif|webp|svg)(?:[?#].*)?$/i.test(String(value || "").trim());
+}
+
 const FILE_REF_SEGMENT_PATTERN = String.raw`(?:[A-Za-z0-9_.-]+[\\/])*[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,8}`;
 const FILE_REF_PREFIX_PATTERN = String.raw`(?:%[A-Za-z0-9_]+%|[A-Za-z]:|\\\\[^\\\s]+|\.{1,2}|~|\/)`;
 const FILE_REF_WHOLE_PATTERN = new RegExp(
@@ -372,13 +376,77 @@ function findNextMarkdownLink(source, fromIndex = 0) {
   return null;
 }
 
+function findNextMarkdownImage(source, fromIndex = 0) {
+  const text = String(source || "");
+  for (let start = Math.max(0, Number(fromIndex) || 0); start < text.length - 1; start += 1) {
+    if (text[start] !== "!" || text[start + 1] !== "[") continue;
+    if (isMarkdownEscapedAt(text, start)) continue;
+    let labelEnd = -1;
+    for (let cursor = start + 2; cursor < text.length; cursor += 1) {
+      const char = text[cursor];
+      if (char === "\n") break;
+      if (char !== "]") continue;
+      if (isMarkdownEscapedAt(text, cursor)) continue;
+      if (text[cursor + 1] !== "(") continue;
+      labelEnd = cursor;
+      break;
+    }
+    if (labelEnd < 0) continue;
+    for (let cursor = labelEnd + 2; cursor < text.length; cursor += 1) {
+      const char = text[cursor];
+      if (char === "\n") break;
+      if (char !== ")") continue;
+      if (isMarkdownEscapedAt(text, cursor)) continue;
+      return {
+        start,
+        end: cursor + 1,
+        label: text.slice(start + 2, labelEnd),
+        href: text.slice(labelEnd + 2, cursor),
+      };
+    }
+    start = labelEnd;
+  }
+  return null;
+}
+
+function renderMarkdownImage(label, href) {
+  const rawHref = String(href || "").trim();
+  if (!rawHref) return escapeHtml(`![${label || ""}](${href || ""})`);
+  let src = rawHref;
+  if (!/^data:image\//i.test(src) && !/^blob:/i.test(src) && !isHttpUrl(src)) {
+    if (!looksLikeFileRef(src) || !isPreviewableImagePath(src)) {
+      return renderPlainTextSegment(`![${label || ""}](${href || ""})`);
+    }
+    src = `/codex/file?path=${encodeURIComponent(src)}`;
+  }
+  if (!/^data:image\//i.test(src) && !/^blob:/i.test(src) && !isHttpUrl(src) && !/^\/codex\/file\b/i.test(src)) {
+    return renderPlainTextSegment(`![${label || ""}](${href || ""})`);
+  }
+  const displayLabel = String(label || "").trim() || fileRefDisplayLabel(rawHref) || "image";
+  return (
+    `<span class="msgInlineImageFrame">` +
+      `<img class="msgInlineImage" src="${escapeHtml(src)}" alt="${escapeHtml(displayLabel)}" loading="lazy" />` +
+      `<span class="msgInlineImageCaption mono">${escapeHtml(displayLabel)}</span>` +
+    `</span>`
+  );
+}
+
 export function renderInlineMessageText(text) {
   const source = String(text || "");
   let cursor = 0;
   let html = "";
   while (cursor < source.length) {
+    const image = findNextMarkdownImage(source, cursor);
     const link = findNextMarkdownLink(source, cursor);
     const span = findNextInlineCodeSpan(source, cursor);
+    if (image && (!link || image.start <= link.start) && (!span || image.start <= span.start)) {
+      if (image.start > cursor) {
+        html += renderPlainTextSegment(source.slice(cursor, image.start));
+      }
+      html += renderMarkdownImage(image.label, image.href);
+      cursor = image.end;
+      continue;
+    }
     if (link && (!span || link.start <= span.start)) {
       if (link.start > cursor) {
         html += renderPlainTextSegment(source.slice(cursor, link.start));

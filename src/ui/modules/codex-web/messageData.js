@@ -92,7 +92,7 @@ export function normalizeDisplayedUserText(text) {
   const source = String(text || "").trim();
   if (!source) return "";
   const startsWithCodexContext =
-    /^#\s*(?:Review findings|Selected text)\s*:/i.test(source);
+    /^#\s*(?:Review findings|Selected text|Files mentioned by the user)\s*:/i.test(source);
   if (!startsWithCodexContext) return source;
 
   const marker = /^#{1,6}\s*My request for Codex\s*:\s*$/gim;

@@ -1122,7 +1122,14 @@ export function createMockCodexTransport(deps) {
       };
     }
     if (url === "/codex/attachments/upload" && method === "POST") {
-      return { ok: true, fileName: options.body?.fileName || "attachment.txt" };
+      const fileName = options.body?.fileName || "attachment.txt";
+      return {
+        ok: true,
+        fileName,
+        mimeType: options.body?.mimeType || "text/plain",
+        kind: options.body?.kind || "file",
+        path: `C:\\mock\\web-codex-attachments\\${fileName}`,
+      };
     }
     throw new Error(`Mock transport has no route for ${method} ${url}`);
   }

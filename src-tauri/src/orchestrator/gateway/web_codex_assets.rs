@@ -116,6 +116,20 @@ const WEB_CODEX_WORKSPACE_UI_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/workspaceUi.js");
 const WEB_CODEX_WS_CLIENT_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/wsClient.js");
+const WEB_CODEX_PDFJS_MIN_MJS: &str =
+    include_str!("../../../../node_modules/pdfjs-dist/legacy/build/pdf.min.mjs");
+const WEB_CODEX_PDFJS_WORKER_MIN_MJS: &str =
+    include_str!("../../../../node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs");
+const WEB_CODEX_PDFJS_JBIG2_WASM: &[u8] =
+    include_bytes!("../../../../node_modules/pdfjs-dist/wasm/jbig2.wasm");
+const WEB_CODEX_PDFJS_OPENJPEG_WASM: &[u8] =
+    include_bytes!("../../../../node_modules/pdfjs-dist/wasm/openjpeg.wasm");
+const WEB_CODEX_PDFJS_QCMS_BG_WASM: &[u8] =
+    include_bytes!("../../../../node_modules/pdfjs-dist/wasm/qcms_bg.wasm");
+const WEB_CODEX_PDFJS_JBIG2_FALLBACK_JS: &str =
+    include_str!("../../../../node_modules/pdfjs-dist/wasm/jbig2_nowasm_fallback.js");
+const WEB_CODEX_PDFJS_OPENJPEG_FALLBACK_JS: &str =
+    include_str!("../../../../node_modules/pdfjs-dist/wasm/openjpeg_nowasm_fallback.js");
 const WEB_CODEX_ICON_SVG: &str = include_str!("../../../../src/ui/assets/codex-color.svg");
 const WEB_CODEX_ICON_PNG: &[u8] = include_bytes!("../../../../public/codex-web-icon.png");
 const AO_ICON_PNG: &[u8] = include_bytes!("../../../../public/ao-icon.png");
@@ -137,67 +151,116 @@ const WEB_CODEX_MANIFEST: &str = r##"{
   ]
 }"##;
 
-fn resolve_web_codex_module_body(module_path: &str) -> Option<&'static str> {
-    match module_path {
-        "codex-web/actionBindings.js" => Some(WEB_CODEX_ACTION_BINDINGS_JS),
-        "codex-web/appPersistence.js" => Some(WEB_CODEX_APP_PERSISTENCE_JS),
-        "codex-web/appState.js" => Some(WEB_CODEX_APP_STATE_JS),
-        "codex-web/bootstrapApp.js" => Some(WEB_CODEX_BOOTSTRAP_APP_JS),
-        "codex-web/branchOptions.js" => Some(WEB_CODEX_BRANCH_OPTIONS_JS),
-        "codex-web/branchPickerState.js" => Some(WEB_CODEX_BRANCH_PICKER_STATE_JS),
-        "codex-web/chatTimeline.js" => Some(WEB_CODEX_CHAT_TIMELINE_JS),
-        "codex-web/chatViewport.js" => Some(WEB_CODEX_CHAT_VIEWPORT_JS),
-        "codex-web/composerUi.js" => Some(WEB_CODEX_COMPOSER_UI_JS),
-        "codex-web/composition.js" => Some(WEB_CODEX_COMPOSITION_JS),
-        "codex-web/connectionFlows.js" => Some(WEB_CODEX_CONNECTION_FLOWS_JS),
-        "codex-web/contextLeft.js" => Some(WEB_CODEX_CONTEXT_LEFT_JS),
-        "codex-web/debugTools.js" => Some(WEB_CODEX_DEBUG_TOOLS_JS),
-        "codex-web/folderPicker.js" => Some(WEB_CODEX_FOLDER_PICKER_JS),
-        "codex-web/headerUi.js" => Some(WEB_CODEX_HEADER_UI_JS),
-        "codex-web/historyApplyFlow.js" => Some(WEB_CODEX_HISTORY_APPLY_FLOW_JS),
-        "codex-web/historyApplyState.js" => Some(WEB_CODEX_HISTORY_APPLY_STATE_JS),
-        "codex-web/historyCommentary.js" => Some(WEB_CODEX_HISTORY_COMMENTARY_JS),
-        "codex-web/historyLiveCommentaryState.js" => {
-            Some(WEB_CODEX_HISTORY_LIVE_COMMENTARY_STATE_JS)
+enum WebCodexModuleAsset {
+    Text {
+        body: &'static str,
+        content_type: &'static str,
+    },
+    Bytes {
+        body: &'static [u8],
+        content_type: &'static str,
+    },
+}
+
+impl WebCodexModuleAsset {
+    fn javascript(body: &'static str) -> Self {
+        Self::Text {
+            body,
+            content_type: "application/javascript; charset=utf-8",
         }
-        "codex-web/historyLoadFlow.js" => Some(WEB_CODEX_HISTORY_LOAD_FLOW_JS),
-        "codex-web/historyLoader.js" => Some(WEB_CODEX_HISTORY_LOADER_JS),
-        "codex-web/historyMessageMapping.js" => Some(WEB_CODEX_HISTORY_MESSAGE_MAPPING_JS),
-        "codex-web/historyOlderChunk.js" => Some(WEB_CODEX_HISTORY_OLDER_CHUNK_JS),
-        "codex-web/historyPageState.js" => Some(WEB_CODEX_HISTORY_PAGE_STATE_JS),
-        "codex-web/historyPreparation.js" => Some(WEB_CODEX_HISTORY_PREPARATION_JS),
-        "codex-web/historyRenderApply.js" => Some(WEB_CODEX_HISTORY_RENDER_APPLY_JS),
-        "codex-web/historyRenderStrategy.js" => Some(WEB_CODEX_HISTORY_RENDER_STRATEGY_JS),
-        "codex-web/historyWindowControl.js" => Some(WEB_CODEX_HISTORY_WINDOW_CONTROL_JS),
-        "codex-web/imageViewer.js" => Some(WEB_CODEX_IMAGE_VIEWER_JS),
-        "codex-web/liveNotifications.js" => Some(WEB_CODEX_LIVE_NOTIFICATIONS_JS),
-        "codex-web/messageData.js" => Some(WEB_CODEX_MESSAGE_DATA_JS),
-        "codex-web/mockTransport.js" => Some(WEB_CODEX_MOCK_TRANSPORT_JS),
-        "codex-web/messageRender.js" => Some(WEB_CODEX_MESSAGE_RENDER_JS),
-        "codex-web/mobileViewport.js" => Some(WEB_CODEX_MOBILE_VIEWPORT_JS),
-        "codex-web/mobileShell.js" => Some(WEB_CODEX_MOBILE_SHELL_JS),
-        "codex-web/modelPicker.js" => Some(WEB_CODEX_MODEL_PICKER_JS),
-        "codex-web/notificationRouting.js" => Some(WEB_CODEX_NOTIFICATION_ROUTING_JS),
-        "codex-web/pendingThreadResume.js" => Some(WEB_CODEX_PENDING_THREAD_RESUME_JS),
-        "codex-web/promptState.js" => Some(WEB_CODEX_PROMPT_STATE_JS),
-        "codex-web/proposedPlan.js" => Some(WEB_CODEX_PROPOSED_PLAN_JS),
-        "codex-web/runtimeState.js" => Some(WEB_CODEX_RUNTIME_STATE_JS),
-        "codex-web/runtimePlan.js" => Some(WEB_CODEX_RUNTIME_PLAN_JS),
-        "codex-web/runtimeUserInput.js" => Some(WEB_CODEX_RUNTIME_USER_INPUT_JS),
-        "codex-web/slashCommands.js" => Some(WEB_CODEX_SLASH_COMMANDS_JS),
-        "codex-web/threadListRefresh.js" => Some(WEB_CODEX_THREAD_LIST_REFRESH_JS),
-        "codex-web/threadLive.js" => Some(WEB_CODEX_THREAD_LIVE_JS),
-        "codex-web/threadMeta.js" => Some(WEB_CODEX_THREAD_META_JS),
-        "codex-web/threadGitMetaState.js" => Some(WEB_CODEX_THREAD_GIT_META_STATE_JS),
-        "codex-web/threadListView.js" => Some(WEB_CODEX_THREAD_LIST_VIEW_JS),
-        "codex-web/threadOpenState.js" => Some(WEB_CODEX_THREAD_OPEN_STATE_JS),
-        "codex-web/transportMode.js" => Some(WEB_CODEX_TRANSPORT_MODE_JS),
-        "codex-web/turnActions.js" => Some(WEB_CODEX_TURN_ACTIONS_JS),
-        "codex-web/uiHelpers.js" => Some(WEB_CODEX_UI_HELPERS_JS),
-        "codex-web/webDiagnostics.js" => Some(WEB_CODEX_WEB_DIAGNOSTICS_JS),
-        "codex-web/workspaceUi.js" => Some(WEB_CODEX_WORKSPACE_UI_JS),
-        "codex-web/wsClient.js" => Some(WEB_CODEX_WS_CLIENT_JS),
-        _ => None,
+    }
+}
+
+fn resolve_web_codex_module_asset(module_path: &str) -> Option<WebCodexModuleAsset> {
+    let body = match module_path {
+        "codex-web/actionBindings.js" => WEB_CODEX_ACTION_BINDINGS_JS,
+        "codex-web/appPersistence.js" => WEB_CODEX_APP_PERSISTENCE_JS,
+        "codex-web/appState.js" => WEB_CODEX_APP_STATE_JS,
+        "codex-web/bootstrapApp.js" => WEB_CODEX_BOOTSTRAP_APP_JS,
+        "codex-web/branchOptions.js" => WEB_CODEX_BRANCH_OPTIONS_JS,
+        "codex-web/branchPickerState.js" => WEB_CODEX_BRANCH_PICKER_STATE_JS,
+        "codex-web/chatTimeline.js" => WEB_CODEX_CHAT_TIMELINE_JS,
+        "codex-web/chatViewport.js" => WEB_CODEX_CHAT_VIEWPORT_JS,
+        "codex-web/composerUi.js" => WEB_CODEX_COMPOSER_UI_JS,
+        "codex-web/composition.js" => WEB_CODEX_COMPOSITION_JS,
+        "codex-web/connectionFlows.js" => WEB_CODEX_CONNECTION_FLOWS_JS,
+        "codex-web/contextLeft.js" => WEB_CODEX_CONTEXT_LEFT_JS,
+        "codex-web/debugTools.js" => WEB_CODEX_DEBUG_TOOLS_JS,
+        "codex-web/folderPicker.js" => WEB_CODEX_FOLDER_PICKER_JS,
+        "codex-web/headerUi.js" => WEB_CODEX_HEADER_UI_JS,
+        "codex-web/historyApplyFlow.js" => WEB_CODEX_HISTORY_APPLY_FLOW_JS,
+        "codex-web/historyApplyState.js" => WEB_CODEX_HISTORY_APPLY_STATE_JS,
+        "codex-web/historyCommentary.js" => WEB_CODEX_HISTORY_COMMENTARY_JS,
+        "codex-web/historyLiveCommentaryState.js" => WEB_CODEX_HISTORY_LIVE_COMMENTARY_STATE_JS,
+        "codex-web/historyLoadFlow.js" => WEB_CODEX_HISTORY_LOAD_FLOW_JS,
+        "codex-web/historyLoader.js" => WEB_CODEX_HISTORY_LOADER_JS,
+        "codex-web/historyMessageMapping.js" => WEB_CODEX_HISTORY_MESSAGE_MAPPING_JS,
+        "codex-web/historyOlderChunk.js" => WEB_CODEX_HISTORY_OLDER_CHUNK_JS,
+        "codex-web/historyPageState.js" => WEB_CODEX_HISTORY_PAGE_STATE_JS,
+        "codex-web/historyPreparation.js" => WEB_CODEX_HISTORY_PREPARATION_JS,
+        "codex-web/historyRenderApply.js" => WEB_CODEX_HISTORY_RENDER_APPLY_JS,
+        "codex-web/historyRenderStrategy.js" => WEB_CODEX_HISTORY_RENDER_STRATEGY_JS,
+        "codex-web/historyWindowControl.js" => WEB_CODEX_HISTORY_WINDOW_CONTROL_JS,
+        "codex-web/imageViewer.js" => WEB_CODEX_IMAGE_VIEWER_JS,
+        "codex-web/liveNotifications.js" => WEB_CODEX_LIVE_NOTIFICATIONS_JS,
+        "codex-web/messageData.js" => WEB_CODEX_MESSAGE_DATA_JS,
+        "codex-web/mockTransport.js" => WEB_CODEX_MOCK_TRANSPORT_JS,
+        "codex-web/messageRender.js" => WEB_CODEX_MESSAGE_RENDER_JS,
+        "codex-web/mobileViewport.js" => WEB_CODEX_MOBILE_VIEWPORT_JS,
+        "codex-web/mobileShell.js" => WEB_CODEX_MOBILE_SHELL_JS,
+        "codex-web/modelPicker.js" => WEB_CODEX_MODEL_PICKER_JS,
+        "codex-web/notificationRouting.js" => WEB_CODEX_NOTIFICATION_ROUTING_JS,
+        "codex-web/pendingThreadResume.js" => WEB_CODEX_PENDING_THREAD_RESUME_JS,
+        "codex-web/promptState.js" => WEB_CODEX_PROMPT_STATE_JS,
+        "codex-web/proposedPlan.js" => WEB_CODEX_PROPOSED_PLAN_JS,
+        "codex-web/runtimeState.js" => WEB_CODEX_RUNTIME_STATE_JS,
+        "codex-web/runtimePlan.js" => WEB_CODEX_RUNTIME_PLAN_JS,
+        "codex-web/runtimeUserInput.js" => WEB_CODEX_RUNTIME_USER_INPUT_JS,
+        "codex-web/slashCommands.js" => WEB_CODEX_SLASH_COMMANDS_JS,
+        "codex-web/threadListRefresh.js" => WEB_CODEX_THREAD_LIST_REFRESH_JS,
+        "codex-web/threadLive.js" => WEB_CODEX_THREAD_LIVE_JS,
+        "codex-web/threadMeta.js" => WEB_CODEX_THREAD_META_JS,
+        "codex-web/threadGitMetaState.js" => WEB_CODEX_THREAD_GIT_META_STATE_JS,
+        "codex-web/threadListView.js" => WEB_CODEX_THREAD_LIST_VIEW_JS,
+        "codex-web/threadOpenState.js" => WEB_CODEX_THREAD_OPEN_STATE_JS,
+        "codex-web/transportMode.js" => WEB_CODEX_TRANSPORT_MODE_JS,
+        "codex-web/turnActions.js" => WEB_CODEX_TURN_ACTIONS_JS,
+        "codex-web/uiHelpers.js" => WEB_CODEX_UI_HELPERS_JS,
+        "codex-web/webDiagnostics.js" => WEB_CODEX_WEB_DIAGNOSTICS_JS,
+        "codex-web/workspaceUi.js" => WEB_CODEX_WORKSPACE_UI_JS,
+        "codex-web/wsClient.js" => WEB_CODEX_WS_CLIENT_JS,
+        "pdfjs/pdf.min.mjs" => WEB_CODEX_PDFJS_MIN_MJS,
+        "pdfjs/pdf.worker.min.mjs" => WEB_CODEX_PDFJS_WORKER_MIN_MJS,
+        "pdfjs/wasm/jbig2_nowasm_fallback.js" => WEB_CODEX_PDFJS_JBIG2_FALLBACK_JS,
+        "pdfjs/wasm/openjpeg_nowasm_fallback.js" => WEB_CODEX_PDFJS_OPENJPEG_FALLBACK_JS,
+        "pdfjs/wasm/jbig2.wasm" => {
+            return Some(WebCodexModuleAsset::Bytes {
+                body: WEB_CODEX_PDFJS_JBIG2_WASM,
+                content_type: "application/wasm",
+            });
+        }
+        "pdfjs/wasm/openjpeg.wasm" => {
+            return Some(WebCodexModuleAsset::Bytes {
+                body: WEB_CODEX_PDFJS_OPENJPEG_WASM,
+                content_type: "application/wasm",
+            });
+        }
+        "pdfjs/wasm/qcms_bg.wasm" => {
+            return Some(WebCodexModuleAsset::Bytes {
+                body: WEB_CODEX_PDFJS_QCMS_BG_WASM,
+                content_type: "application/wasm",
+            });
+        }
+        _ => return None,
+    };
+    Some(WebCodexModuleAsset::javascript(body))
+}
+
+#[cfg(test)]
+fn resolve_web_codex_module_body(module_path: &str) -> Option<&'static str> {
+    match resolve_web_codex_module_asset(module_path)? {
+        WebCodexModuleAsset::Text { body, .. } => Some(body),
+        WebCodexModuleAsset::Bytes { .. } => None,
     }
 }
 
@@ -234,21 +297,29 @@ pub(super) async fn codex_web_app_js() -> Response {
 }
 
 pub(super) async fn codex_web_module_js(AxumPath(module_path): AxumPath<String>) -> Response {
-    let Some(body) = resolve_web_codex_module_body(module_path.as_str()) else {
+    let Some(asset) = resolve_web_codex_module_asset(module_path.as_str()) else {
         return api_error(StatusCode::NOT_FOUND, "codex web module not found");
     };
-    (
-        StatusCode::OK,
-        [
-            (
-                header::CONTENT_TYPE,
-                "application/javascript; charset=utf-8",
-            ),
-            (header::CACHE_CONTROL, "no-store"),
-        ],
-        body,
-    )
-        .into_response()
+    match asset {
+        WebCodexModuleAsset::Text { body, content_type } => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, content_type),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            body,
+        )
+            .into_response(),
+        WebCodexModuleAsset::Bytes { body, content_type } => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, content_type),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            body,
+        )
+            .into_response(),
+    }
 }
 
 pub(super) async fn codex_web_icon_svg() -> Response {
@@ -311,6 +382,7 @@ pub(super) async fn codex_web_logo_png() -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::to_bytes;
 
     #[test]
     fn resolves_known_web_codex_modules() {
@@ -367,6 +439,13 @@ mod tests {
         assert!(resolve_web_codex_module_body("codex-web/uiHelpers.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/workspaceUi.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/wsClient.js").is_some());
+        assert!(resolve_web_codex_module_body("pdfjs/pdf.min.mjs").is_some());
+        assert!(resolve_web_codex_module_body("pdfjs/pdf.worker.min.mjs").is_some());
+        assert!(resolve_web_codex_module_body("pdfjs/wasm/jbig2_nowasm_fallback.js").is_some());
+        assert!(resolve_web_codex_module_body("pdfjs/wasm/openjpeg_nowasm_fallback.js").is_some());
+        assert!(resolve_web_codex_module_body("pdfjs/wasm/jbig2.wasm").is_none());
+        assert!(resolve_web_codex_module_body("pdfjs/wasm/openjpeg.wasm").is_none());
+        assert!(resolve_web_codex_module_body("pdfjs/wasm/qcms_bg.wasm").is_none());
     }
 
     #[test]
@@ -387,6 +466,19 @@ mod tests {
             module_js.headers().get(header::CACHE_CONTROL).unwrap(),
             "no-store"
         );
+    }
+
+    #[tokio::test]
+    async fn serves_pdfjs_wasm_assets_with_wasm_content_type() {
+        let response = codex_web_module_js(AxumPath("pdfjs/wasm/jbig2.wasm".to_string())).await;
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            "application/wasm"
+        );
+        let bytes = to_bytes(response.into_body(), 1_000_000)
+            .await
+            .expect("wasm body");
+        assert!(!bytes.is_empty());
     }
 
     #[test]

@@ -84,6 +84,8 @@ export function createActionBindingsModule(deps) {
     setPendingUserInputDraftAnswer = () => false,
     setPendingUserInputQuestionCompleted = () => false,
     uploadAttachment,
+    removePendingAttachment = () => false,
+    previewPendingAttachment = () => false,
     executeSlashCommand = async () => null,
     cancelQueuedTurnEditing = () => {},
     clearQueuedTurn = () => {},
@@ -750,10 +752,31 @@ export function createActionBindingsModule(deps) {
       }
     }
     bindInput("attachInput", "change", (event) => {
-      uploadAttachment(event.target?.files?.[0]).catch((e) =>
-        setStatus(resolveActionErrorMessage(e), true)
-      );
+      uploadAttachment(event.target?.files?.[0])
+        .catch((e) => setStatus(resolveActionErrorMessage(e), true))
+        .finally(() => {
+          if (event?.target) event.target.value = "";
+        });
     });
+    {
+      const attachmentPills = byId("attachmentPills");
+      if (attachmentPills && !attachmentPills.__webCodexAttachmentActionsBound) {
+        attachmentPills.__webCodexAttachmentActionsBound = true;
+        attachmentPills.addEventListener("click", (event) => {
+          const target = event.target?.closest?.("[data-attachment-action]");
+          if (!target || !attachmentPills.contains(target)) return;
+          event.preventDefault();
+          event.stopPropagation();
+          const action = String(target.getAttribute("data-attachment-action") || "").trim();
+          const index = Number(target.getAttribute("data-attachment-index"));
+          if (action === "remove") {
+            removePendingAttachment(index);
+          } else if (action === "preview") {
+            previewPendingAttachment(index);
+          }
+        });
+      }
+    }
     bindClick("mobileAttachBtn", () => byId("attachInput")?.click());
     bindResponsiveClick("mobileSendBtn", () => {
       const promptValue = String(byId("mobilePromptInput")?.value || "").trim();

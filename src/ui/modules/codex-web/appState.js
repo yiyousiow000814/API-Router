@@ -133,6 +133,7 @@ export function createInitialState() {
     activeThreadPendingAssistantMessage: "",
     activeThreadPendingTurnBaselineTurnCount: 0,
     activeThreadPendingTurnBaselineUserCount: 0,
+    pendingAttachments: [],
     activeThreadQueuedTurns: [],
     queuedTurnsExpanded: true,
     queuedTurnEditingId: "",
