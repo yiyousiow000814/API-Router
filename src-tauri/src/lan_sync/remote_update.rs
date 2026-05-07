@@ -645,7 +645,7 @@ fn remote_update_shell_cleanup_should_run(status: &LanRemoteUpdateStatusSnapshot
     status.shell_cleanup_completed_at_unix_ms.is_none()
 }
 
-fn remote_update_status_current_sha_matches(
+fn remote_update_status_matches_current_target_ref(
     status: &LanRemoteUpdateStatusSnapshot,
     current_target_ref: &str,
 ) -> bool {
@@ -653,17 +653,11 @@ fn remote_update_status_current_sha_matches(
         .current_git_sha
         .as_deref()
         .is_some_and(|sha| sha.trim() == current_target_ref)
-}
-
-fn remote_update_status_matches_current_target_ref(
-    status: &LanRemoteUpdateStatusSnapshot,
-    current_target_ref: &str,
-) -> bool {
-    status.target_ref.trim() == current_target_ref
-        || status
-            .to_git_sha
-            .as_deref()
-            .is_some_and(|sha| sha.trim() == current_target_ref)
+        && (status.target_ref.trim() == current_target_ref
+            || status
+                .to_git_sha
+                .as_deref()
+                .is_some_and(|sha| sha.trim() == current_target_ref))
 }
 
 #[cfg(target_os = "windows")]
@@ -952,8 +946,7 @@ fn normalize_remote_update_status(
         }
     }
     if state == "failed"
-        && current_target_ref != status_target_ref
-        && remote_update_status_current_sha_matches(&status, current_target_ref)
+        && !remote_update_status_matches_current_target_ref(&status, current_target_ref)
     {
         if status.reason_code.is_none()
             && status
@@ -4627,7 +4620,6 @@ mod tests {
         assert!(build_script.contains("function Enter-BuildMutex"));
         assert!(build_script.contains("another API Router build/update is already running"));
         assert!(build_script.contains("function Test-IsRemoteUpdateBuildContext"));
-        assert!(build_script.contains("function Stop-StaleRemoteUpdateBuildProcesses"));
         assert!(build_script.contains("function Get-StaleRepoBuildProcesses"));
         assert!(build_script.contains("function Get-ProcessTreeIds"));
         assert!(build_script.contains("function Invoke-CimProcessQueryWithTimeout"));
@@ -4638,7 +4630,7 @@ mod tests {
         assert!(build_script.contains("API_ROUTER_REMOTE_UPDATE_REQUEST_ID"));
         assert!(build_script.contains("ParentProcessId"));
         assert!(build_script.contains("remote update build mutex is still held"));
-        assert!(build_script.contains("Stopping stale remote update build process tree"));
+        assert!(build_script.contains("Stopping stale build process tree"));
         assert!(build_script.contains("Stop-Process -Id $processId -Force"));
         assert!(!build_script
             .contains("$allProcesses = @(Get-CimInstance Win32_Process -ErrorAction Stop)"));
@@ -4788,6 +4780,12 @@ mod tests {
         assert!(build_script.contains("-Phase 'build_release_binary'"));
         assert!(build_script.contains("Enter-BuildStep -Phase 'install_release_binary'"));
         assert!(build_script.contains("Enter-BuildStep -Phase 'restart_api_router'"));
+        assert!(
+            build_script.contains("Enter-BuildStep -Phase 'runtime_unchanged_after_build_failure'")
+        );
+        assert!(build_script.contains(
+            "Build failed before replacing API Router.exe; keeping the existing runtime and skipping restart validation."
+        ));
         assert!(build_script.contains("Installed canonical runtime executable"));
         assert!(build_script.contains("Optional TEST EXE"));
         assert!(build_script.contains("API Router restart after build failed"));
@@ -4802,10 +4800,13 @@ mod tests {
         assert!(build_script.contains("$UsesArtifactPathOverrides"));
         assert!(!build_script.contains("Restore-PreviousRuntime\r\n          Start-ApiRouter"));
         assert!(!build_script.contains("Restore-PreviousRuntime\n          Start-ApiRouter"));
-        let health_pos = build_script
-            .find("Wait-ApiRouterRuntimeHealthy\n      Record-InstalledRuntimeVersion")
-            .expect("build script waits for runtime health");
-        assert!(health_pos > 0);
+        assert!(
+            build_script
+                .contains("Wait-ApiRouterRuntimeHealthy\r\n        Record-InstalledRuntimeVersion")
+                || build_script.contains(
+                    "Wait-ApiRouterRuntimeHealthy\n        Record-InstalledRuntimeVersion"
+                )
+        );
         assert!(build_script.contains("Reset-LastExitCode"));
         assert!(build_script.contains("exit 0"));
 
@@ -4843,7 +4844,7 @@ mod tests {
     }
 
     #[test]
-    fn normalize_remote_update_status_marks_failed_status_succeeded_when_target_already_matches() {
+    fn normalize_remote_update_status_marks_failed_status_succeeded_when_installed_sha_matches() {
         let Some(target_ref) = normalized_local_build_target_ref() else {
             return;
         };
@@ -4897,6 +4898,60 @@ mod tests {
     }
 
     #[test]
+    fn normalize_remote_update_status_keeps_failed_branch_update_failed_when_installed_sha_differs()
+    {
+        let Some(current_ref) = normalized_local_build_target_ref() else {
+            return;
+        };
+        let requested_sha = current_ref.clone();
+        let installed_sha = "5b3e03f0e9f7198c4a7e582b49eee82017a78d9e";
+        assert_ne!(installed_sha, requested_sha);
+        let status = LanRemoteUpdateStatusSnapshot {
+            state: "failed".to_string(),
+            target_ref: "fix/remote-update-cleanup".to_string(),
+            from_git_sha: Some("3717d369dd9fcee732336f711836c319102bc50a".to_string()),
+            to_git_sha: Some(requested_sha.to_string()),
+            current_git_sha: Some(installed_sha.to_string()),
+            previous_git_sha: Some("570fb2f2ad432ed9da047e0598f1f7cc9d948c7e".to_string()),
+            progress_percent: Some(100),
+            rollback_available: false,
+            request_id: Some("ru_failed_branch".to_string()),
+            reason_code: Some("worker_exited_early".to_string()),
+            requester_node_id: Some("node-remote".to_string()),
+            requester_node_name: Some("Desk Remote".to_string()),
+            worker_script: Some("worker.ps1".to_string()),
+            worker_pid: Some(195804),
+            worker_exit_code: Some(1),
+            detail: Some("Building EXE: tools/build/build-root-exe.ps1 failed".to_string()),
+            accepted_at_unix_ms: 10,
+            started_at_unix_ms: Some(20),
+            finished_at_unix_ms: Some(30),
+            updated_at_unix_ms: 30,
+            shell_cleanup_completed_at_unix_ms: None,
+            timeline: vec![LanRemoteUpdateTimelineEntry {
+                unix_ms: 30,
+                phase: "failed".to_string(),
+                label: "Building EXE failed".to_string(),
+                detail: Some("tools/build/build-root-exe.ps1 failed".to_string()),
+                source: "worker".to_string(),
+                state: "failed".to_string(),
+            }],
+        };
+
+        let normalized = normalize_remote_update_status(status);
+        assert_eq!(normalized.state, "failed");
+        assert_eq!(normalized.current_git_sha.as_deref(), Some(installed_sha));
+        assert_eq!(
+            normalized.to_git_sha.as_deref(),
+            Some(requested_sha.as_str())
+        );
+        assert!(!normalized
+            .timeline
+            .iter()
+            .any(|entry| entry.phase == "normalized_succeeded"));
+    }
+
+    #[test]
     fn remote_update_status_matches_current_target_ref_does_not_use_current_git_sha() {
         let requested_ref = "3717d369dd9fcee732336f711836c319102bc50a".to_string();
         let installed_ref = "5b3e03f0e9f7198c4a7e582b49eee82017a78d9e".to_string();
@@ -4932,7 +4987,7 @@ mod tests {
             }],
         };
 
-        assert!(super::remote_update_status_matches_current_target_ref(
+        assert!(!super::remote_update_status_matches_current_target_ref(
             &status,
             &requested_ref,
         ));
@@ -5033,7 +5088,7 @@ mod tests {
             target_ref: target_ref.clone(),
             from_git_sha: Some("6b28b6e".to_string()),
             to_git_sha: Some(target_ref.clone()),
-            current_git_sha: Some("6b28b6e".to_string()),
+            current_git_sha: Some(target_ref.clone()),
             previous_git_sha: Some("6b28b6e".to_string()),
             progress_percent: Some(45),
             rollback_available: true,
