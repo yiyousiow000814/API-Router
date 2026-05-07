@@ -481,7 +481,7 @@ fn switch_to_gateway_home_impl(
     );
     let next_auth = auth_with_openai_key(gateway_token.trim());
     write_swapped_files(runtime.config_path, cli_home, &next_auth, &next_cfg)?;
-    sync_web_codex_runtime_auth(runtime.config_path, cli_home, &next_auth)
+    sync_web_codex_runtime_files(runtime.config_path, cli_home, &next_auth, &next_cfg)
 }
 
 fn is_wsl_unc_home(cli_home: &Path) -> bool {
@@ -694,10 +694,11 @@ fn write_swapped_files(
     Ok(())
 }
 
-fn sync_web_codex_runtime_auth(
+fn sync_web_codex_runtime_files(
     config_path: &Path,
     cli_home: &Path,
     next_auth: &serde_json::Value,
+    next_cfg_text: &str,
 ) -> Result<(), String> {
     let auth_text = serde_json::to_string_pretty(next_auth).map_err(|e| e.to_string())?;
     for home in web_codex_runtime_auth_home_candidates(config_path, cli_home) {
@@ -705,6 +706,12 @@ fn sync_web_codex_runtime_auth(
         if let Some(parent) = auth_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
+        std::fs::write(home.join("config.toml"), next_cfg_text).map_err(|e| {
+            format!(
+                "write web codex runtime config failed for {}: {e}",
+                home.join("config.toml").display()
+            )
+        })?;
         std::fs::write(&auth_path, &auth_text).map_err(|e| {
             format!(
                 "write web codex runtime auth failed for {}: {e}",
@@ -1059,7 +1066,7 @@ fn sync_active_provider_target_for_key_impl(
             auth_with_openai_key(key.trim())
         };
         write_swapped_files(&state.config_path, h, &next_auth, &next_cfg)?;
-        sync_web_codex_runtime_auth(&state.config_path, h, &next_auth)?;
+        sync_web_codex_runtime_files(&state.config_path, h, &next_auth, &next_cfg)?;
     }
 
     Ok(())
