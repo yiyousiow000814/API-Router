@@ -15,6 +15,7 @@ import {
   isRemoteDebugStatusRelevantToCurrentBuild,
   keepSourceMenuOpenAfterAction,
   remoteUpdateDebugPollNodeIds,
+  remoteUpdateDebugPollNodeIdsForSources,
   remoteDebugStatusRelevance,
   remoteUpdateActionState,
   remoteUpdateDetailText,
@@ -82,6 +83,75 @@ describe('ConfigModal', () => {
     expect(remoteUpdateDebugPollNodeIds(['node-a', 'node-a', ''], [' ', 'node-b', 'node-b'])).toEqual([
       'node-b',
     ])
+  })
+
+  it('polls only active or suspicious peer debug targets', () => {
+    const config = buildConfig()
+    const healthyPeer = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-healthy',
+      node_name: 'Desk Healthy',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      build_matches_local: true,
+      version_sync_required: false,
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+      build_identity: {
+        app_version: '0.4.0',
+        build_git_sha: 'abc12345',
+        build_git_short_sha: 'abc12345',
+        build_git_commit_unix_ms: 1775312828000,
+      },
+      remote_update_status: {
+        state: 'succeeded',
+        target_ref: 'abc12345',
+        to_git_sha: 'abc12345',
+        current_git_sha: 'abc12345',
+        detail: 'Completed update.',
+        finished_at_unix_ms: 1775312828000,
+        updated_at_unix_ms: 1775312828000,
+      },
+    }
+    const runningPeer = {
+      ...healthyPeer,
+      node_id: 'node-running',
+      node_name: 'Desk Running',
+      build_matches_local: false,
+      version_sync_required: true,
+      remote_update_status: {
+        state: 'running',
+        target_ref: 'abc12345',
+        to_git_sha: 'abc12345',
+        current_git_sha: 'old-build',
+        detail: 'Building EXE',
+        started_at_unix_ms: 1775312830000,
+        updated_at_unix_ms: 1775312831000,
+      },
+    }
+    const failedPeer = {
+      ...healthyPeer,
+      node_id: 'node-failed',
+      node_name: 'Desk Failed',
+      build_matches_local: false,
+      version_sync_required: true,
+      remote_update_status: {
+        state: 'failed',
+        target_ref: 'abc12345',
+        to_git_sha: 'abc12345',
+        current_git_sha: 'old-build',
+        detail: 'tools/build/build-root-exe.ps1 failed',
+        finished_at_unix_ms: 1775312832000,
+        updated_at_unix_ms: 1775312832000,
+      },
+    }
+
+    expect(
+      remoteUpdateDebugPollNodeIdsForSources([healthyPeer, runningPeer, failedPeer], 'abc12345', ['node-pending']),
+    ).toEqual(['node-pending', 'node-running', 'node-failed'])
   })
 
   it('combines capability and contract versions into one diagnostics list', () => {
@@ -1129,6 +1199,52 @@ describe('ConfigModal', () => {
       actionDetail: 'Peer matches this build',
       spinning: false,
     })
+  })
+
+  it('does not call a succeeded remote update updated when the peer build still differs', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      build_matches_local: false,
+      version_sync_required: true,
+      version_sync_reason: 'Desk B requires update.',
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+      build_identity: {
+        app_version: '0.4.0',
+        build_git_sha: '5b3e03f0e9f7198c4a7e582b49eee82017a78d9e',
+        build_git_short_sha: '5b3e03f0',
+        build_git_commit_unix_ms: 1777913845000,
+      },
+      remote_update_status: {
+        state: 'succeeded',
+        target_ref: '3717d369dd9fcee732336f711836c319102bc50a',
+        to_git_sha: '3717d369dd9fcee732336f711836c319102bc50a',
+        current_git_sha: '5b3e03f0e9f7198c4a7e582b49eee82017a78d9e',
+        detail: 'Current build already matches the queued target.',
+        finished_at_unix_ms: 1778138835812,
+        updated_at_unix_ms: 1778138837956,
+      },
+    }
+
+    expect(remoteUpdateActionState(source, undefined, '3717d369dd9fcee732336f711836c319102bc50a')).toEqual({
+      actionLabel: 'Build changed',
+      actionDetail: 'Peer build does not match the completed update',
+      spinning: false,
+    })
+    expect(
+      diagnosticsRemoteUpdateDisplay(source, undefined, '3717d369dd9fcee732336f711836c319102bc50a').label,
+    ).toBe('Build changed')
+    expect(remoteUpdateDetailText(source, '3717d369dd9fcee732336f711836c319102bc50a')).toContain(
+      'Peer build still differs',
+    )
   })
 
   it('shows expired-before-start stage after a queued update never launched', () => {

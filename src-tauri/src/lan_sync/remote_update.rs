@@ -664,7 +664,6 @@ fn remote_update_status_matches_current_target_ref(
             .to_git_sha
             .as_deref()
             .is_some_and(|sha| sha.trim() == current_target_ref)
-        || remote_update_status_current_sha_matches(status, current_target_ref)
 }
 
 #[cfg(target_os = "windows")]
@@ -4823,6 +4822,7 @@ mod tests {
         assert!(remote_update_worker_script.contains("$stderrTask.Wait(5000)"));
         assert!(remote_update_worker_script
             .contains("Hidden process output stream did not close after process exit"));
+        assert!(remote_update_worker_script.contains("npm ci"));
         assert!(remote_update_worker_script
             .contains("Write-RemoteUpdateStatus -State 'succeeded' -TargetRef $TargetRef"));
         assert!(remote_update_worker_script.contains("exit 0"));
@@ -4894,6 +4894,52 @@ mod tests {
             .iter()
             .any(|entry| entry.phase == "normalized_succeeded"
                 && entry.label == "Status normalized to succeeded"));
+    }
+
+    #[test]
+    fn remote_update_status_matches_current_target_ref_does_not_use_current_git_sha() {
+        let requested_ref = "3717d369dd9fcee732336f711836c319102bc50a".to_string();
+        let installed_ref = "5b3e03f0e9f7198c4a7e582b49eee82017a78d9e".to_string();
+        let status = LanRemoteUpdateStatusSnapshot {
+            state: "succeeded".to_string(),
+            target_ref: requested_ref.clone(),
+            from_git_sha: Some("6b28b6e".to_string()),
+            to_git_sha: Some(requested_ref.clone()),
+            current_git_sha: Some(installed_ref.clone()),
+            previous_git_sha: Some("6b28b6e".to_string()),
+            progress_percent: Some(100),
+            rollback_available: true,
+            request_id: Some("ru_success".to_string()),
+            reason_code: None,
+            requester_node_id: Some("node-remote".to_string()),
+            requester_node_name: Some("Desk Remote".to_string()),
+            worker_script: Some("worker.ps1".to_string()),
+            worker_pid: Some(4242),
+            worker_exit_code: Some(0),
+            detail: Some("Completed: Remote self-update completed successfully.".to_string()),
+            accepted_at_unix_ms: 10,
+            started_at_unix_ms: Some(20),
+            finished_at_unix_ms: Some(30),
+            updated_at_unix_ms: 30,
+            shell_cleanup_completed_at_unix_ms: None,
+            timeline: vec![LanRemoteUpdateTimelineEntry {
+                unix_ms: 30,
+                phase: "completed".to_string(),
+                label: "Remote update completed".to_string(),
+                detail: Some("Remote self-update completed successfully.".to_string()),
+                source: "worker".to_string(),
+                state: "succeeded".to_string(),
+            }],
+        };
+
+        assert!(super::remote_update_status_matches_current_target_ref(
+            &status,
+            &requested_ref,
+        ));
+        assert!(!super::remote_update_status_matches_current_target_ref(
+            &status,
+            &installed_ref,
+        ));
     }
 
     #[test]

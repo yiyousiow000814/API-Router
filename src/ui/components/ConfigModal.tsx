@@ -76,6 +76,22 @@ export function remoteUpdateDebugPollNodeIds(
   return out
 }
 
+export function remoteUpdateDebugPollNodeIdsForSources(
+  sources: ConfigSource[],
+  localBuildSha?: string | null,
+  pendingPeerNodeIds: string[] = [],
+): string[] {
+  const activeOrSuspiciousPeerNodeIds = sources
+    .filter(
+      (source) =>
+        source.kind === 'peer' &&
+        source.online !== false &&
+        (remoteUpdateIsActivelyRunning(source, localBuildSha) || remoteUpdateIndicatesIssue(source, localBuildSha)),
+    )
+    .map((source) => source.node_id)
+  return remoteUpdateDebugPollNodeIds([...pendingPeerNodeIds, ...activeOrSuspiciousPeerNodeIds], [])
+}
+
 function normalizePinInput(value: string): string {
   return value.replace(/\D+/g, '').slice(0, 6)
 }
@@ -124,7 +140,7 @@ export function compactUpdateStatusLabel(
   if (source.remote_update_status?.state?.trim() === 'accepted' || source.remote_update_status?.state?.trim() === 'running') {
     return remoteUpdateLiveStageLabel(source.remote_update_status) ?? 'Updating'
   }
-  const liveRemoteState = remoteUpdateStateLabel(source, localBuildSha)
+  const liveRemoteState = remoteUpdateStateLabelForSource(source, localBuildSha)
   if (liveRemoteState) return liveRemoteState
   if (source.kind === 'peer' && source.online === false) return 'Peer offline'
   if (!source.version_sync_required) return 'No update needed'
@@ -252,23 +268,6 @@ function primaryVersionMismatchText(rows: DiagnosticVersionRow[]): string | null
   return `${mismatch.feature} v${mismatch.localVersion} vs v${mismatch.peerVersion}`
 }
 
-function remoteUpdateStateLabel(source: ConfigSource, localBuildSha?: string | null): string | null {
-  if (!isRemoteUpdateStatusRelevantToCurrentBuild(source, localBuildSha)) return null
-  const state = source.remote_update_status?.state?.trim()
-  const reasonCode = source.remote_update_status?.reason_code?.trim()
-  if (!state) return null
-  if (state === 'accepted' || state === 'running') {
-    return remoteUpdateLiveStageLabel(source.remote_update_status) ?? (state === 'accepted' ? 'Queued' : 'Updating')
-  }
-  if (state === 'failed') return 'Update failed'
-  if (state === 'rolled_back') return 'Rolled back'
-  if (state === 'succeeded') return 'Updated'
-  if (state === 'superseded' && reasonCode === 'peer_build_changed_before_start') return 'Expired before start'
-  if (state === 'superseded' && reasonCode === 'peer_build_changed_after_start') return 'Build changed'
-  if (state === 'superseded') return 'Replaced'
-  return state
-}
-
 function normalizedBuildSha(value: string | undefined | null): string {
   const normalized = value?.trim().toLowerCase() || ''
   if (!normalized || normalized === 'unknown') return ''
@@ -308,6 +307,52 @@ function remoteUpdateTargetMatchesBuild(
   const candidates = remoteUpdateRelevantRefCandidates(source.remote_update_status)
   if (candidates.length === 0) return null
   return candidates.some((candidate) => normalizedBuild.startsWith(candidate) || candidate.startsWith(normalizedBuild))
+}
+
+function remoteUpdateSucceededBuildMismatch(source: ConfigSource): boolean {
+  return source.kind === 'peer' && source.build_matches_local === false
+}
+
+type RemoteUpdateDisplayContext = {
+  status: RemoteUpdateStatusSnapshot
+  state: string
+  reasonCode: string
+  buildMismatch: boolean
+}
+
+function remoteUpdateDisplayContext(
+  source: ConfigSource,
+  localBuildSha?: string | null,
+): RemoteUpdateDisplayContext | null {
+  if (!isRemoteUpdateStatusRelevantToCurrentBuild(source, localBuildSha)) return null
+  const status = source.remote_update_status
+  const state = status?.state?.trim()
+  if (!status || !state) return null
+  return {
+    status,
+    state,
+    reasonCode: status.reason_code?.trim() || '',
+    buildMismatch: remoteUpdateSucceededBuildMismatch(source),
+  }
+}
+
+function remoteUpdateStateLabel(context: RemoteUpdateDisplayContext | null): string | null {
+  if (!context) return null
+  const { status, state, reasonCode, buildMismatch } = context
+  if (state === 'accepted' || state === 'running') {
+    return remoteUpdateLiveStageLabel(status) ?? (state === 'accepted' ? 'Queued' : 'Updating')
+  }
+  if (state === 'failed') return 'Update failed'
+  if (state === 'rolled_back') return 'Rolled back'
+  if (state === 'succeeded') return buildMismatch ? 'Build changed' : 'Updated'
+  if (state === 'superseded' && reasonCode === 'peer_build_changed_before_start') return 'Expired before start'
+  if (state === 'superseded' && reasonCode === 'peer_build_changed_after_start') return 'Build changed'
+  if (state === 'superseded') return 'Replaced'
+  return state
+}
+
+function remoteUpdateStateLabelForSource(source: ConfigSource, localBuildSha?: string | null): string | null {
+  return remoteUpdateStateLabel(remoteUpdateDisplayContext(source, localBuildSha))
 }
 
 export function isRemoteUpdateStatusRelevantToCurrentBuild(
@@ -852,39 +897,44 @@ export function remoteDebugStatusRelevance(
 }
 
 export function remoteUpdateDetailText(source: ConfigSource, localBuildSha?: string | null): string {
-  if (!isRemoteUpdateStatusRelevantToCurrentBuild(source, localBuildSha)) return ''
-  const status = source.remote_update_status
-  if (!status) return ''
+  const context = remoteUpdateDisplayContext(source, localBuildSha)
+  if (!context) return ''
+  const { status, state, reasonCode, buildMismatch } = context
   const requester = status.requester_node_name?.trim() || status.requester_node_id?.trim() || 'remote peer'
   const progress =
     typeof status.progress_percent === 'number' && Number.isFinite(status.progress_percent)
       ? `${Math.max(0, Math.min(100, status.progress_percent))}%`
       : ''
   const detail = [progress, remoteUpdateProgressDetail(source)].filter(Boolean).join(' · ')
-  if (status.state === 'accepted') {
+  if (state === 'accepted') {
     return detail || `Accepted update request from ${requester}.`
   }
-  if (status.state === 'running') {
+  if (state === 'running') {
     return detail || `Running remote update requested by ${requester}.`
   }
-  if (status.state === 'failed') {
+  if (state === 'failed') {
     return detail || `Remote update requested by ${requester} failed.`
   }
-  if (status.state === 'succeeded') {
+  if (state === 'succeeded') {
+    if (buildMismatch) {
+      return detail
+        ? `${detail} Peer build still differs.`
+        : 'Remote update completed, but peer build still differs.'
+    }
     const fromTo = status.from_git_sha || status.to_git_sha
       ? `${formatReadableCommitRefs(status.from_git_sha || 'unknown')} -> ${formatReadableCommitRefs(status.to_git_sha || status.target_ref)}`
       : formatReadableCommitRefs(status.target_ref)
     return detail || `Remote update to ${fromTo} completed.`
   }
-  if (status.state === 'rolled_back') {
+  if (state === 'rolled_back') {
     const previous = status.previous_git_sha?.trim()
     return detail || `Remote update rolled back${previous ? ` to ${formatReadableCommitRefs(previous)}` : ''}.`
   }
-  if (status.state === 'superseded') {
-    if (status.reason_code === 'peer_build_changed_before_start') {
+  if (state === 'superseded') {
+    if (reasonCode === 'peer_build_changed_before_start') {
       return detail || 'Queued remote update expired before the worker started.'
     }
-    if (status.reason_code === 'peer_build_changed_after_start') {
+    if (reasonCode === 'peer_build_changed_after_start') {
       return detail || 'Peer build changed while the remote update was running.'
     }
     return detail || 'Previous remote update was replaced by a newer installed build.'
@@ -893,9 +943,9 @@ export function remoteUpdateDetailText(source: ConfigSource, localBuildSha?: str
 }
 
 function remoteUpdateTimestampLabel(source: ConfigSource, localBuildSha?: string | null): string {
-  if (!isRemoteUpdateStatusRelevantToCurrentBuild(source, localBuildSha)) return ''
-  const status = source.remote_update_status
-  if (!status) return ''
+  const context = remoteUpdateDisplayContext(source, localBuildSha)
+  if (!context) return ''
+  const { status } = context
   const unixMs =
     status.finished_at_unix_ms ??
     status.started_at_unix_ms ??
@@ -905,8 +955,9 @@ function remoteUpdateTimestampLabel(source: ConfigSource, localBuildSha?: string
 }
 
 function remoteUpdateTimelineEntries(source: ConfigSource, localBuildSha?: string | null) {
-  if (!isRemoteUpdateStatusRelevantToCurrentBuild(source, localBuildSha)) return []
-  return [...(source.remote_update_status?.timeline ?? [])]
+  const context = remoteUpdateDisplayContext(source, localBuildSha)
+  if (!context) return []
+  return [...(context.status.timeline ?? [])]
     .filter((entry) => (entry.label?.trim() || entry.detail?.trim() || entry.phase?.trim()))
     .map((entry) => ({
       ...entry,
@@ -963,7 +1014,7 @@ export function diagnosticsRemoteUpdateDisplay(
   const liveState = source.remote_update_status?.state?.trim()
   if (liveState === 'accepted' || liveState === 'running') {
     return {
-      label: remoteUpdateStateLabel(source, localBuildSha) ?? (liveState === 'accepted' ? 'Queued' : 'Updating'),
+      label: remoteUpdateStateLabelForSource(source, localBuildSha) ?? (liveState === 'accepted' ? 'Queued' : 'Updating'),
       detail: remoteUpdateDetailText(source, localBuildSha),
       time: remoteUpdateTimestampLabel(source, localBuildSha),
       timeline: remoteUpdateTimelineEntries(source, localBuildSha),
@@ -983,7 +1034,7 @@ export function diagnosticsRemoteUpdateDisplay(
   }
   return {
     label: shouldShowDiagnosticsRemoteUpdateStatus(source, localBuildSha)
-      ? remoteUpdateStateLabel(source, localBuildSha)
+      ? remoteUpdateStateLabelForSource(source, localBuildSha)
       : null,
     detail: remoteUpdateDetailText(source, localBuildSha),
     time: remoteUpdateTimestampLabel(source, localBuildSha),
@@ -992,15 +1043,13 @@ export function diagnosticsRemoteUpdateDisplay(
 }
 
 function remoteUpdateMenuDetailText(source: ConfigSource, localBuildSha?: string | null): string {
-  if (!isRemoteUpdateStatusRelevantToCurrentBuild(source, localBuildSha)) return 'Sync to this build'
-  const status = source.remote_update_status
-  if (!status) return 'Sync to this build'
-  const state = status.state?.trim()
-  const reasonCode = status.reason_code?.trim()
+  const context = remoteUpdateDisplayContext(source, localBuildSha)
+  if (!context) return 'Sync to this build'
+  const { state, reasonCode, buildMismatch } = context
   if (state === 'accepted') return 'Queued remote update'
   if (state === 'running') return 'Remote update in progress'
   if (state === 'failed') return 'Last remote update failed'
-  if (state === 'succeeded') return 'Peer matches this build'
+  if (state === 'succeeded') return buildMismatch ? 'Peer build still differs' : 'Peer matches this build'
   if (state === 'superseded' && reasonCode === 'peer_build_changed_before_start') {
     return 'Queued update expired before the worker started'
   }
@@ -1012,14 +1061,14 @@ function remoteUpdateMenuDetailText(source: ConfigSource, localBuildSha?: string
 }
 
 function remoteUpdateIndicatesIssue(source: ConfigSource, localBuildSha?: string | null): boolean {
-  if (!isRemoteUpdateStatusRelevantToCurrentBuild(source, localBuildSha)) return false
-  const state = source.remote_update_status?.state?.trim()
+  const state = remoteUpdateDisplayContext(source, localBuildSha)?.state
+  if (!state) return false
   return state === 'failed' || state === 'superseded'
 }
 
 function remoteUpdateIsActivelyRunning(source: ConfigSource, localBuildSha?: string | null): boolean {
-  if (!isRemoteUpdateStatusRelevantToCurrentBuild(source, localBuildSha)) return false
-  const state = source.remote_update_status?.state?.trim()
+  const state = remoteUpdateDisplayContext(source, localBuildSha)?.state
+  if (!state) return false
   return state === 'accepted' || state === 'running'
 }
 
@@ -1032,9 +1081,8 @@ export function remoteUpdateActionState(
   actionDetail: string | null
   spinning: boolean
 } {
-  const remoteState = isRemoteUpdateStatusRelevantToCurrentBuild(source, localBuildSha)
-    ? source.remote_update_status?.state?.trim()
-    : ''
+  const context = remoteUpdateDisplayContext(source, localBuildSha)
+  const remoteState = context?.state ?? ''
   const remoteStatusCurrentForPending = isRemoteUpdateStatusCurrentForPending(source, pendingStage)
   if (pendingStage?.stage === 'rolling_back') {
     return {
@@ -1084,6 +1132,13 @@ export function remoteUpdateActionState(
     }
   }
   if (remoteState === 'succeeded') {
+    if (context?.buildMismatch) {
+      return {
+        actionLabel: 'Build changed',
+        actionDetail: 'Peer build does not match the completed update',
+        spinning: false,
+      }
+    }
     return {
       actionLabel: 'Updated',
       actionDetail: 'Peer matches this build',
@@ -1091,7 +1146,7 @@ export function remoteUpdateActionState(
     }
   }
   if (remoteState === 'superseded') {
-    const issueLabel = remoteUpdateStateLabel(source, localBuildSha)
+    const issueLabel = remoteUpdateStateLabelForSource(source, localBuildSha)
     return {
       actionLabel: issueLabel || 'Update issue',
       actionDetail: remoteUpdateMenuDetailText(source, localBuildSha),
@@ -1122,7 +1177,7 @@ export function remoteUpdateMenuActionLabel(
     return actionState.actionLabel
   }
   if (source.kind === 'peer' && source.online === false) return 'Offline'
-  const remoteStateLabel = remoteUpdateStateLabel(source, localBuildSha)
+  const remoteStateLabel = remoteUpdateStateLabelForSource(source, localBuildSha)
   if (remoteStateLabel) return remoteStateLabel
   return actionState.actionLabel
 }
@@ -1134,9 +1189,7 @@ export function shouldShowRemoteUpdateMenuDetail(
 ): boolean {
   if (!actionState?.actionDetail?.trim()) return false
   if (actionState.spinning) return true
-  const remoteState = isRemoteUpdateStatusRelevantToCurrentBuild(source, localBuildSha)
-    ? source.remote_update_status?.state?.trim()
-    : ''
+  const remoteState = remoteUpdateDisplayContext(source, localBuildSha)?.state ?? ''
   return remoteState === 'failed' || remoteState === 'superseded'
 }
 
@@ -1300,12 +1353,14 @@ export function ConfigModal({
           Boolean(source.same_version_update_blocked_reason?.trim())) ||
         remoteUpdateIndicatesIssue(source, localBuildSha)),
   )
-  const onlinePeerSources = peerSources.filter((source) => source.online !== false)
-  const onlinePeerNodeIds = onlinePeerSources.map((source) => source.node_id)
   const pendingPeerNodeIds = peerSources
     .filter((source) => source.online !== false && Boolean(remoteUpdatePendingByNode[source.node_id]))
     .map((source) => source.node_id)
-  const peerDebugPollNodeIds = remoteUpdateDebugPollNodeIds(onlinePeerNodeIds, pendingPeerNodeIds)
+  const peerDebugPollNodeIds = remoteUpdateDebugPollNodeIdsForSources(
+    effectivePeerSources,
+    localBuildSha,
+    pendingPeerNodeIds,
+  )
   const peerDebugNodeIdsKey = peerDebugPollNodeIds.join('|')
   const hasPendingPeerDebug = pendingPeerNodeIds.length > 0
 
@@ -1787,7 +1842,7 @@ export function ConfigModal({
                   {(() => {
                     const localRemoteUpdateStatusLabel =
                       localSource && shouldShowDiagnosticsRemoteUpdateStatus(localSource, localBuildSha)
-                        ? remoteUpdateStateLabel(localSource, localBuildSha)
+                        ? remoteUpdateStateLabelForSource(localSource, localBuildSha)
                         : null
                     const localVersionRows = diagnosticVersionRows(localSource)
                     const localVersionSummary = versionSummaryText(localVersionRows)
