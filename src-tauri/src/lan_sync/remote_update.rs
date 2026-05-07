@@ -649,15 +649,11 @@ fn remote_update_status_matches_current_target_ref(
     status: &LanRemoteUpdateStatusSnapshot,
     current_target_ref: &str,
 ) -> bool {
-    status
-        .current_git_sha
-        .as_deref()
-        .is_some_and(|sha| sha.trim() == current_target_ref)
-        && (status.target_ref.trim() == current_target_ref
-            || status
-                .to_git_sha
-                .as_deref()
-                .is_some_and(|sha| sha.trim() == current_target_ref))
+    status.target_ref.trim() == current_target_ref
+        || status
+            .to_git_sha
+            .as_deref()
+            .is_some_and(|sha| sha.trim() == current_target_ref)
 }
 
 #[cfg(target_os = "windows")]
@@ -4909,15 +4905,14 @@ mod tests {
         let Some(current_ref) = normalized_local_build_target_ref() else {
             return;
         };
-        let requested_sha = current_ref.clone();
-        let installed_sha = "5b3e03f0e9f7198c4a7e582b49eee82017a78d9e";
-        assert_ne!(installed_sha, requested_sha);
+        let requested_sha = "3717d369dd9fcee732336f711836c319102bc50a";
+        assert_ne!(current_ref, requested_sha);
         let status = LanRemoteUpdateStatusSnapshot {
             state: "failed".to_string(),
             target_ref: "fix/remote-update-cleanup".to_string(),
-            from_git_sha: Some("3717d369dd9fcee732336f711836c319102bc50a".to_string()),
+            from_git_sha: Some(current_ref.clone()),
             to_git_sha: Some(requested_sha.to_string()),
-            current_git_sha: Some(installed_sha.to_string()),
+            current_git_sha: Some(current_ref.clone()),
             previous_git_sha: Some("570fb2f2ad432ed9da047e0598f1f7cc9d948c7e".to_string()),
             progress_percent: Some(100),
             rollback_available: false,
@@ -4946,11 +4941,11 @@ mod tests {
 
         let normalized = normalize_remote_update_status(status);
         assert_eq!(normalized.state, "failed");
-        assert_eq!(normalized.current_git_sha.as_deref(), Some(installed_sha));
         assert_eq!(
-            normalized.to_git_sha.as_deref(),
-            Some(requested_sha.as_str())
+            normalized.current_git_sha.as_deref(),
+            Some(current_ref.as_str())
         );
+        assert_eq!(normalized.to_git_sha.as_deref(), Some(requested_sha));
         assert!(!normalized
             .timeline
             .iter()
@@ -4993,7 +4988,7 @@ mod tests {
             }],
         };
 
-        assert!(!super::remote_update_status_matches_current_target_ref(
+        assert!(super::remote_update_status_matches_current_target_ref(
             &status,
             &requested_ref,
         ));
