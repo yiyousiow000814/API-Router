@@ -162,7 +162,6 @@ pub(super) fn import_rollout_file_into_codex_home(
                 return Ok(true);
             }
         }
-        std::fs::remove_file(&dst_file).map_err(|e| e.to_string())?;
     }
     std::fs::copy(src_file, &dst_file).map_err(|e| e.to_string())?;
     Ok(true)

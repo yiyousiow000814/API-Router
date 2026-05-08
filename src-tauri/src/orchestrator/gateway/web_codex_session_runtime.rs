@@ -71,10 +71,36 @@ struct WorkspaceThreadRuntimeRecord {
 }
 
 fn current_unix_secs() -> i64 {
+    #[cfg(test)]
+    {
+        let guard = lock_test_current_unix_secs_override();
+        if let Some(value) = *guard {
+            return value;
+        }
+    }
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|v| v.as_secs() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+fn test_current_unix_secs_override() -> &'static Mutex<Option<i64>> {
+    static OVERRIDE: OnceLock<Mutex<Option<i64>>> = OnceLock::new();
+    OVERRIDE.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(test)]
+fn lock_test_current_unix_secs_override() -> std::sync::MutexGuard<'static, Option<i64>> {
+    match test_current_unix_secs_override().lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn _set_test_current_unix_secs(value: Option<i64>) {
+    *lock_test_current_unix_secs_override() = value;
 }
 
 fn workspace_label(workspace_target: Option<WorkspaceTarget>) -> &'static str {
@@ -82,6 +108,14 @@ fn workspace_label(workspace_target: Option<WorkspaceTarget>) -> &'static str {
         Some(WorkspaceTarget::Windows) => "windows",
         Some(WorkspaceTarget::Wsl2) => "wsl2",
         None => "all",
+    }
+}
+
+fn workspace_target_rank(workspace_target: Option<WorkspaceTarget>) -> u8 {
+    match workspace_target {
+        None => 0,
+        Some(WorkspaceTarget::Windows) => 1,
+        Some(WorkspaceTarget::Wsl2) => 2,
     }
 }
 
@@ -353,6 +387,31 @@ pub(crate) fn workspace_thread_runtime_snapshot(
 pub(crate) fn locate_workspace_thread_runtime(
     thread_id: &str,
 ) -> Option<WorkspaceThreadRuntimeLocation> {
+    locate_workspace_thread_runtime_impl(thread_id, None)
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn locate_workspace_thread_runtime_for_target(
+    thread_id: &str,
+    workspace_target: WorkspaceTarget,
+) -> Option<WorkspaceThreadRuntimeLocation> {
+    locate_workspace_thread_runtime_impl(thread_id, Some(workspace_target))
+}
+
+fn runtime_location_rank(location: &WorkspaceThreadRuntimeLocation) -> (i64, bool, bool, &str, u8) {
+    (
+        location.updated_at_unix_secs,
+        location.workspace_target.is_some(),
+        location.home_override.is_some(),
+        location.home_override.as_deref().unwrap_or_default(),
+        workspace_target_rank(location.workspace_target),
+    )
+}
+
+fn locate_workspace_thread_runtime_impl(
+    thread_id: &str,
+    workspace_target_filter: Option<WorkspaceTarget>,
+) -> Option<WorkspaceThreadRuntimeLocation> {
     let normalized_thread_id = thread_id.trim();
     if normalized_thread_id.is_empty() {
         return None;
@@ -360,6 +419,11 @@ pub(crate) fn locate_workspace_thread_runtime(
     let guard = lock_registry();
     guard
         .values()
+        .filter(|entry| {
+            workspace_target_filter
+                .map(|target| entry.workspace_target == Some(target))
+                .unwrap_or(true)
+        })
         .filter_map(|entry| {
             let thread = entry.threads.get(normalized_thread_id)?;
             Some(WorkspaceThreadRuntimeLocation {
@@ -368,12 +432,7 @@ pub(crate) fn locate_workspace_thread_runtime(
                 updated_at_unix_secs: thread.updated_at_unix_secs,
             })
         })
-        .max_by_key(|location| {
-            (
-                location.updated_at_unix_secs,
-                location.workspace_target.is_some(),
-            )
-        })
+        .max_by(|a, b| runtime_location_rank(a).cmp(&runtime_location_rank(b)))
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -397,10 +456,10 @@ pub(crate) fn _clear_workspace_runtime_registry_for_test() {
 #[cfg(test)]
 mod tests {
     use super::{
-        _clear_workspace_runtime_registry_for_test, consume_workspace_thread_retry_attempt,
-        ensure_workspace_runtime_registered, locate_workspace_thread_runtime,
-        mark_workspace_runtime_connected, mark_workspace_runtime_replay,
-        upsert_workspace_thread_runtime, workspace_runtime_snapshot,
+        _clear_workspace_runtime_registry_for_test, _set_test_current_unix_secs,
+        consume_workspace_thread_retry_attempt, ensure_workspace_runtime_registered,
+        locate_workspace_thread_runtime, mark_workspace_runtime_connected,
+        mark_workspace_runtime_replay, upsert_workspace_thread_runtime, workspace_runtime_snapshot,
         workspace_thread_retry_budget_can_retry, workspace_thread_runtime_count,
         workspace_thread_runtime_snapshot, WorkspaceThreadRuntimeUpdate,
     };
@@ -467,6 +526,45 @@ mod tests {
         assert_eq!(
             location.home_override.as_deref(),
             Some("/home/yiyou/.api-router/codex-web-home")
+        );
+    }
+
+    #[test]
+    fn locate_workspace_thread_runtime_breaks_same_second_ties_deterministically() {
+        let _guard = lock_tests();
+        _clear_workspace_runtime_registry_for_test();
+        struct TimeOverrideGuard;
+        impl Drop for TimeOverrideGuard {
+            fn drop(&mut self) {
+                _set_test_current_unix_secs(None);
+            }
+        }
+        let _time_guard = TimeOverrideGuard;
+        _set_test_current_unix_secs(Some(1_700_000_000));
+
+        for suffix in ["a", "m", "z"] {
+            let home = format!("/home/yiyou/runtime-{suffix}");
+            upsert_workspace_thread_runtime(
+                Some(WorkspaceTarget::Wsl2),
+                Some(home.as_str()),
+                WorkspaceThreadRuntimeUpdate {
+                    thread_id: "thread-1",
+                    cwd: None,
+                    rollout_path: None,
+                    status: Some("running"),
+                    last_event_id: None,
+                    last_turn_id: Some("turn-1"),
+                    clear_last_turn_id: false,
+                },
+            );
+        }
+
+        let location =
+            locate_workspace_thread_runtime("thread-1").expect("thread runtime location");
+        assert_eq!(location.workspace_target, Some(WorkspaceTarget::Wsl2));
+        assert_eq!(
+            location.home_override.as_deref(),
+            Some("/home/yiyou/runtime-z")
         );
     }
 

@@ -7,7 +7,9 @@ use crate::orchestrator::gateway::web_codex_git::{
 };
 use crate::orchestrator::gateway::web_codex_home::parse_workspace_target;
 use crate::orchestrator::gateway::web_codex_session_manager::CodexSessionManager;
-use crate::orchestrator::gateway::web_codex_session_runtime::locate_workspace_thread_runtime;
+use crate::orchestrator::gateway::web_codex_session_runtime::{
+    locate_workspace_thread_runtime, locate_workspace_thread_runtime_for_target,
+};
 use crate::orchestrator::gateway::web_codex_storage::{codex_attachments_dir, sanitize_name};
 use axum::extract::{Path as AxumPath, Query};
 use base64::Engine;
@@ -353,6 +355,12 @@ fn turn_interrupt_session_manager(
     thread_id: &str,
 ) -> CodexSessionManager {
     if let Some(workspace_target) = req.workspace.as_deref().and_then(parse_workspace_target) {
+        if let Some(location) =
+            locate_workspace_thread_runtime_for_target(thread_id, workspace_target)
+        {
+            return CodexSessionManager::new(location.workspace_target)
+                .with_home_override(location.home_override);
+        }
         return CodexSessionManager::new(Some(workspace_target));
     }
     if let Some(location) = locate_workspace_thread_runtime(thread_id) {
@@ -1578,6 +1586,67 @@ mod tests {
         assert_eq!(
             manager.home_override(),
             Some("/home/yiyou/.api-router/codex-web-home")
+        );
+    }
+
+    #[test]
+    fn turn_interrupt_session_manager_keeps_runtime_home_when_workspace_is_present() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        crate::orchestrator::gateway::_clear_workspace_runtime_registry_for_test();
+        struct TimeOverrideGuard;
+        impl Drop for TimeOverrideGuard {
+            fn drop(&mut self) {
+                crate::orchestrator::gateway::web_codex_session_runtime::_set_test_current_unix_secs(
+                    None,
+                );
+            }
+        }
+        let _time_guard = TimeOverrideGuard;
+        crate::orchestrator::gateway::web_codex_session_runtime::_set_test_current_unix_secs(Some(
+            1_700_000_000,
+        ));
+        crate::orchestrator::gateway::web_codex_session_runtime::upsert_workspace_thread_runtime(
+            Some(crate::orchestrator::gateway::web_codex_home::WorkspaceTarget::Wsl2),
+            Some("/home/yiyou/.api-router/thread-runtime-home"),
+            crate::orchestrator::gateway::web_codex_session_runtime::WorkspaceThreadRuntimeUpdate {
+                thread_id: "thread-1",
+                cwd: Some("/home/yiyou/repo"),
+                rollout_path: None,
+                status: Some("running"),
+                last_event_id: None,
+                last_turn_id: Some("turn-1"),
+                clear_last_turn_id: false,
+            },
+        );
+        crate::orchestrator::gateway::web_codex_session_runtime::_set_test_current_unix_secs(Some(
+            1_700_000_001,
+        ));
+        crate::orchestrator::gateway::web_codex_session_runtime::upsert_workspace_thread_runtime(
+            Some(crate::orchestrator::gateway::web_codex_home::WorkspaceTarget::Windows),
+            Some("C:\\Users\\yiyou\\.api-router\\codex-web-home"),
+            crate::orchestrator::gateway::web_codex_session_runtime::WorkspaceThreadRuntimeUpdate {
+                thread_id: "thread-1",
+                cwd: Some("C:\\Users\\yiyou\\repo"),
+                rollout_path: None,
+                status: Some("running"),
+                last_event_id: None,
+                last_turn_id: Some("turn-1"),
+                clear_last_turn_id: false,
+            },
+        );
+
+        let req = TurnInterruptRequest {
+            thread_id: "thread-1".to_string(),
+            workspace: Some("wsl2".to_string()),
+        };
+        let manager = turn_interrupt_session_manager(&req, "thread-1");
+        assert_eq!(
+            manager.workspace_target(),
+            Some(crate::orchestrator::gateway::web_codex_home::WorkspaceTarget::Wsl2)
+        );
+        assert_eq!(
+            manager.home_override(),
+            Some("/home/yiyou/.api-router/thread-runtime-home")
         );
     }
 
