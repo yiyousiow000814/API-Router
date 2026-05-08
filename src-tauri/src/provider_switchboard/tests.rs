@@ -161,6 +161,30 @@ mod tests {
     }
 
     #[test]
+    fn build_gateway_provider_cfg_uses_wsl_gateway_host_for_wsl_home() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+
+        let state = crate::app_state::build_state(config_path.clone(), data_dir).expect("state");
+        let base_cfg = "model = \"gpt-5.2\"\n";
+        let win_home = tmp.path().join("cli-home");
+        let wsl_home = PathBuf::from(r"\\wsl.localhost\Ubuntu\home\tester\.api-router\codex-web-home");
+
+        let win_cfg = build_gateway_provider_cfg(&config_path, &state.gateway, &win_home, base_cfg);
+        let wsl_cfg = build_gateway_provider_cfg(&config_path, &state.gateway, &wsl_home, base_cfg);
+        let wsl_gateway_host =
+            crate::platform::wsl_gateway_host::resolve_wsl_gateway_host(Some(&config_path));
+
+        assert!(win_cfg.contains("base_url = \"http://127.0.0.1:4000/v1\""));
+        assert!(wsl_cfg.contains(&format!(
+            "base_url = \"http://{wsl_gateway_host}:4000/v1\""
+        )));
+        assert!(!wsl_cfg.contains("base_url = \"http://127.0.0.1:4000/v1\""));
+    }
+
+    #[test]
     fn switch_to_gateway_home_restores_missing_cli_auth_before_backup() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let config_path = tmp.path().join("user-data").join("config.toml");
@@ -832,6 +856,58 @@ mod tests {
     }
 
     #[test]
+    fn sync_gateway_target_for_rotated_token_rewrites_stale_web_codex_runtime_config() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+
+        let state = crate::app_state::build_state(config_path.clone(), data_dir).expect("state");
+        state
+            .secrets
+            .set_gateway_token("ao_new_gateway_token")
+            .expect("set gateway token");
+
+        let runtime_home = config_path.parent().unwrap().join("codex-home");
+        std::fs::create_dir_all(&runtime_home).unwrap();
+        std::fs::write(
+            runtime_home.join("config.toml"),
+            "model_provider = \"api_router\"\nmodel = \"gpt-5.3-codex\"\n",
+        )
+        .unwrap();
+
+        let cli_home = tmp.path().join("cli-home");
+        std::fs::create_dir_all(&cli_home).unwrap();
+        std::fs::write(cli_auth_path(&cli_home), r#"{"OPENAI_API_KEY":"ao_old"}"#).unwrap();
+        std::fs::write(
+            cli_cfg_path(&cli_home),
+            "model_provider = \"api_router\"\nmodel = \"gpt-5.3-codex\"\n",
+        )
+        .unwrap();
+
+        let sw_path = switchboard_state_path_from_config_path(&state.config_path);
+        std::fs::create_dir_all(sw_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            sw_path,
+            serde_json::to_string_pretty(&json!({
+              "target": "gateway",
+              "provider": serde_json::Value::Null,
+              "cli_homes": [cli_home.to_string_lossy().to_string()]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        sync_gateway_target_for_rotated_token_impl(&state, None).expect("sync gateway token");
+
+        let runtime_cfg =
+            std::fs::read_to_string(runtime_home.join("config.toml")).expect("read runtime config");
+        assert!(runtime_cfg.contains("model_provider = \"api_router\""));
+        assert!(runtime_cfg.contains("[model_providers.\"api_router\"]"));
+        assert!(runtime_cfg.contains("base_url = \"http://127.0.0.1:4000/v1\""));
+    }
+
+    #[test]
     fn sync_gateway_target_for_rotated_token_rewrites_gateway_target_even_when_auth_matches() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let config_path = tmp.path().join("user-data").join("config.toml");
@@ -982,6 +1058,103 @@ mod tests {
         assert_eq!(homes.len(), 2);
         assert!(homes.iter().any(|path| dedup_key(path) == dedup_key(&win_home)));
         assert!(homes.iter().any(|path| dedup_key(path) == dedup_key(&wsl_home)));
+    }
+
+    #[test]
+    fn augment_gateway_sync_homes_includes_web_codex_runtime_auth_home() {
+        let _test_guard = crate::codex_app_server::lock_test_globals();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        std::fs::create_dir_all(config_path.parent().expect("config parent")).unwrap();
+
+        let cli_home = tmp.path().join("cli-home");
+        let runtime_home = tmp.path().join("web-codex-runtime-home");
+        for home in [&cli_home, &runtime_home] {
+            std::fs::create_dir_all(home).unwrap();
+            std::fs::write(cli_auth_path(home), r#"{"OPENAI_API_KEY":"ao_old"}"#).unwrap();
+            std::fs::write(
+                cli_cfg_path(home),
+                "model_provider = \"api_router\"\nmodel = \"gpt-5.3-codex\"\n",
+            )
+            .unwrap();
+        }
+
+        unsafe {
+            std::env::set_var(
+                "API_ROUTER_WEB_CODEX_CODEX_HOME",
+                runtime_home.to_string_lossy().to_string(),
+            );
+        }
+
+        let homes = augment_gateway_sync_homes(&config_path, vec![cli_home.clone()]);
+
+        unsafe {
+            std::env::remove_var("API_ROUTER_WEB_CODEX_CODEX_HOME");
+        }
+
+        assert!(homes.iter().any(|path| dedup_key(path) == dedup_key(&cli_home)));
+        assert!(homes
+            .iter()
+            .any(|path| dedup_key(path) == dedup_key(&runtime_home)));
+    }
+
+    #[test]
+    fn sync_gateway_target_for_rotated_token_allows_more_than_two_runtime_homes() {
+        let _test_guard = crate::codex_app_server::lock_test_globals();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().expect("config parent")).unwrap();
+
+        let state = crate::app_state::build_state(config_path.clone(), data_dir).expect("state");
+        state
+            .secrets
+            .set_gateway_token("ao_many_runtime_homes")
+            .expect("set gateway token");
+
+        let cli_home = tmp.path().join("cli-home");
+        let extra_runtime_home = tmp.path().join("extra-runtime-home");
+        let app_runtime_home = config_path.parent().unwrap().join("codex-home");
+        for home in [&cli_home, &extra_runtime_home, &app_runtime_home] {
+            std::fs::create_dir_all(home).unwrap();
+            std::fs::write(cli_auth_path(home), r#"{"OPENAI_API_KEY":"ao_old"}"#).unwrap();
+            std::fs::write(
+                cli_cfg_path(home),
+                "model_provider = \"api_router\"\nmodel = \"gpt-5.3-codex\"\n",
+            )
+            .unwrap();
+        }
+        save_switchboard_state_to_config_path(&config_path, std::slice::from_ref(&cli_home), "gateway", None)
+            .expect("save switchboard state");
+
+        unsafe {
+            std::env::set_var(
+                "API_ROUTER_WEB_CODEX_CODEX_HOME",
+                extra_runtime_home.to_string_lossy().to_string(),
+            );
+        }
+
+        let report = sync_gateway_target_for_rotated_token_with_report(&state, None)
+            .expect("sync gateway token");
+
+        unsafe {
+            std::env::remove_var("API_ROUTER_WEB_CODEX_CODEX_HOME");
+        }
+
+        assert!(report.failed_targets.is_empty());
+        assert!(report.refreshed_homes.len() >= 3);
+        assert!(report
+            .refreshed_homes
+            .iter()
+            .any(|path| dedup_key(Path::new(path)) == dedup_key(&cli_home)));
+        assert!(report
+            .refreshed_homes
+            .iter()
+            .any(|path| dedup_key(Path::new(path)) == dedup_key(&extra_runtime_home)));
+        assert!(report
+            .refreshed_homes
+            .iter()
+            .any(|path| dedup_key(Path::new(path)) == dedup_key(&app_runtime_home)));
     }
 
     #[test]

@@ -149,16 +149,21 @@ pub(super) fn import_rollout_file_into_codex_home(
         let dst_meta = std::fs::metadata(&dst_file).ok();
         if let (Some(src_meta), Some(dst_meta)) = (src_meta, dst_meta) {
             let same_len = src_meta.len() == dst_meta.len();
+            let same_content = if same_len {
+                std::fs::read(src_file).ok() == std::fs::read(&dst_file).ok()
+            } else {
+                false
+            };
             let up_to_date = match (src_meta.modified().ok(), dst_meta.modified().ok()) {
                 (Some(src_modified), Some(dst_modified)) => dst_modified >= src_modified,
                 _ => same_len,
             };
-            if same_len && up_to_date {
+            if same_content && up_to_date {
                 return Ok(true);
             }
         }
     }
-    std::fs::copy(src_file, dst_file).map_err(|e| e.to_string())?;
+    std::fs::copy(src_file, &dst_file).map_err(|e| e.to_string())?;
     Ok(true)
 }
 
@@ -409,5 +414,37 @@ mod tests {
             std::env::remove_var("USERPROFILE");
             std::env::remove_var("API_ROUTER_USER_DATA_DIR");
         }
+    }
+
+    #[test]
+    fn import_rollout_file_overwrites_stale_imported_copy() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target_home = temp.path().join("target-home");
+        let source_file = temp
+            .path()
+            .join("019c7766-db34-7c43-a808-b2e8f356c907.jsonl");
+        let dest_file = target_home
+            .join("sessions")
+            .join("imported")
+            .join("019c7766-db34-7c43-a808-b2e8f356c907.jsonl");
+
+        std::fs::create_dir_all(dest_file.parent().expect("dest parent")).expect("create dest dir");
+        std::fs::write(&source_file, "{\"thread_id\":\"fresh\",\"seq\":2}\n")
+            .expect("write source");
+        std::fs::write(&dest_file, "{\"thread_id\":\"stale\",\"seq\":1}\n")
+            .expect("write stale dest");
+
+        let imported = import_rollout_file_into_codex_home(
+            Some(target_home.to_string_lossy().as_ref()),
+            "019c7766-db34-7c43-a808-b2e8f356c907",
+            Path::new(&source_file),
+        )
+        .expect("import");
+
+        assert!(imported);
+        assert_eq!(
+            std::fs::read_to_string(&dest_file).expect("read imported file"),
+            "{\"thread_id\":\"fresh\",\"seq\":2}\n"
+        );
     }
 }

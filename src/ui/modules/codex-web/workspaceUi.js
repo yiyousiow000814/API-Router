@@ -194,8 +194,6 @@ export function createWorkspaceUiModule(deps) {
     const rolloutPath = String(thread?.path || "").trim();
     if (rolloutPath) state.activeThreadRolloutPath = rolloutPath;
     state.activeThreadIsWorktree = thread?.isWorktree === true;
-    const attachTransport = String(state.threadAttachTransportById?.get?.(String(currentThreadId || "")) || "").trim();
-    state.activeThreadAttachTransport = attachTransport;
     setThreadOpenState(state, resolveThreadOpenState({
       threadId: currentThreadId,
       threadStatusType: thread?.status?.type || "",

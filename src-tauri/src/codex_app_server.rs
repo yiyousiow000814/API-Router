@@ -1755,41 +1755,6 @@ fn rollout_turn_notification(
     })
 }
 
-pub async fn push_terminal_interrupt_notifications(codex_home: Option<&str>, thread_id: &str) {
-    let normalized_thread_id = thread_id.trim();
-    if normalized_thread_id.is_empty() {
-        return;
-    }
-    let payload = serde_json::Map::from_iter([
-        (
-            "threadId".to_string(),
-            Value::String(normalized_thread_id.to_string()),
-        ),
-        (
-            "thread_id".to_string(),
-            Value::String(normalized_thread_id.to_string()),
-        ),
-        (
-            "status".to_string(),
-            Value::String("interrupted".to_string()),
-        ),
-        (
-            "source".to_string(),
-            Value::String("terminal_session_interrupt".to_string()),
-        ),
-    ]);
-    push_notification(
-        codex_home,
-        rollout_turn_notification("turn/cancelled", normalized_thread_id, &payload),
-    )
-    .await;
-    push_notification(
-        codex_home,
-        rollout_status_notification(normalized_thread_id, "interrupted"),
-    )
-    .await;
-}
-
 fn resolve_default_codex_home() -> Option<PathBuf> {
     std::env::var("CODEX_HOME")
         .ok()

@@ -15,9 +15,6 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-const MANAGED_TERMINAL_DISCOVERY_TIMEOUT_MS: u64 = 4_000;
-const MANAGED_TERMINAL_DISCOVERY_POLL_MS: u64 = 100;
-
 fn runtime_trace_cache() -> &'static Mutex<HashMap<String, String>> {
     static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
@@ -190,13 +187,6 @@ fn clear_runtime_trace_cache_for_test() {
 pub(super) struct CodexSessionManager {
     workspace_target: Option<WorkspaceTarget>,
     home: Option<String>,
-    terminal_bridge: Option<TerminalBridgeContext>,
-}
-
-#[derive(Clone, Debug)]
-struct TerminalBridgeContext {
-    server_port: u16,
-    gateway_token: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -236,20 +226,7 @@ impl CodexSessionManager {
         Self {
             workspace_target,
             home,
-            terminal_bridge: None,
         }
-    }
-
-    pub(super) fn with_terminal_bridge(
-        mut self,
-        server_port: u16,
-        gateway_token: Option<String>,
-    ) -> Self {
-        self.terminal_bridge = Some(TerminalBridgeContext {
-            server_port,
-            gateway_token,
-        });
-        self
     }
 
     pub(super) fn with_home_override(mut self, home_override: Option<String>) -> Self {
@@ -475,58 +452,6 @@ impl CodexSessionManager {
     }
 
     pub(super) async fn thread_start(&self, params: Value) -> Result<ThreadStartOutcome, String> {
-        if let (Some(bridge), Some(cwd)) = (
-            self.terminal_bridge.as_ref(),
-            thread_start_requested_cwd(&params),
-        ) {
-            let attached = crate::platform::codex_terminal_session::try_attach_live_session(
-                bridge.server_port,
-                bridge.gateway_token.as_deref(),
-                self.workspace_target,
-                &cwd,
-            )
-            .await?;
-            if let Some(attached) = attached {
-                let rollout_path = if let Some(path) = attached.rollout_path.clone() {
-                    Some(path)
-                } else if let Some(target) = self.workspace_target {
-                    crate::orchestrator::gateway::web_codex_threads::known_rollout_path_for_thread(
-                        target,
-                        &attached.thread_id,
-                    )
-                    .await
-                } else {
-                    None
-                };
-                let runtime_response = Some(attached_runtime_thread_response(
-                    self.workspace_target,
-                    &crate::platform::codex_terminal_session::TerminalSessionAttachAck {
-                        rollout_path: rollout_path.clone(),
-                        ..attached.clone()
-                    },
-                ));
-                let result = attached_thread_start_result(
-                    self.workspace_target,
-                    &crate::platform::codex_terminal_session::TerminalSessionAttachAck {
-                        rollout_path: rollout_path.clone(),
-                        ..attached.clone()
-                    },
-                );
-                if let Some(runtime_value) = runtime_response.as_ref() {
-                    record_runtime_thread_state(
-                        self.workspace_target,
-                        self.home_override(),
-                        runtime_value,
-                    );
-                }
-                return Ok(ThreadStartOutcome {
-                    result,
-                    runtime_response,
-                    rollout_path,
-                });
-            }
-        }
-
         let result = match self.request("thread/start", params.clone()).await {
             Ok(value) => value,
             Err(error) if sandbox_schema_retryable_error(&error) => self
@@ -592,74 +517,6 @@ impl CodexSessionManager {
             json!({ "threadId": thread_id, "turnId": turn_id }),
         )
         .await
-    }
-
-    pub(super) async fn open_managed_terminal_surface(
-        &self,
-        thread_id: &str,
-        cwd_override: Option<&str>,
-    ) -> Result<crate::platform::codex_terminal_session::TerminalSessionAttachAck, String> {
-        let requested_thread_id = thread_id.trim();
-        if requested_thread_id.is_empty() {
-            return Err("thread id is required".to_string());
-        }
-        let Some(workspace_target) = self.workspace_target else {
-            return Err("workspace target is required".to_string());
-        };
-        let Some(bridge) = self.terminal_bridge.as_ref() else {
-            return Err("terminal bridge is not configured".to_string());
-        };
-
-        self.ensure_server().await?;
-
-        let cwd = cwd_override
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-            .or_else(|| {
-                self.thread_runtime_snapshot(requested_thread_id)
-                    .and_then(|snapshot| snapshot.cwd)
-            });
-        let Some(cwd) = cwd else {
-            return Err("cwd is required to open managed terminal".to_string());
-        };
-
-        crate::platform::codex_managed_terminal::launch_managed_terminal_surface(
-            &crate::platform::codex_managed_terminal::ManagedTerminalLaunchRequest {
-                server_port: bridge.server_port,
-                gateway_token: bridge.gateway_token.clone(),
-                workspace_target,
-                cwd: Some(cwd.clone()),
-                home_override: self.home.clone(),
-            },
-        )?;
-
-        let deadline = tokio::time::Instant::now()
-            + std::time::Duration::from_millis(MANAGED_TERMINAL_DISCOVERY_TIMEOUT_MS);
-        loop {
-            if let Some(attached) =
-                crate::platform::codex_terminal_session::try_attach_live_session(
-                    bridge.server_port,
-                    bridge.gateway_token.as_deref(),
-                    self.workspace_target,
-                    &cwd,
-                )
-                .await?
-            {
-                return Ok(attached);
-            }
-            if tokio::time::Instant::now() >= deadline {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(
-                MANAGED_TERMINAL_DISCOVERY_POLL_MS,
-            ))
-            .await;
-        }
-
-        Err(format!(
-            "managed terminal launch for thread {requested_thread_id} was not discovered"
-        ))
     }
 
     pub(super) async fn read_thread(
@@ -900,15 +757,6 @@ pub(super) fn thread_id_from_response(value: &Value) -> Option<String> {
                 .and_then(Value::as_object)
                 .and_then(|thread| read_non_empty_str(thread.get("id")))
         })
-}
-
-fn thread_start_requested_cwd(params: &Value) -> Option<String> {
-    params
-        .get("cwd")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
 }
 
 fn workspace_label(workspace_target: Option<WorkspaceTarget>) -> &'static str {
@@ -1227,67 +1075,6 @@ pub(crate) fn workspace_thread_runtime_snapshot_for_home(
         }
     }
     None
-}
-
-fn attached_thread_start_result(
-    workspace_target: Option<WorkspaceTarget>,
-    attached: &crate::platform::codex_terminal_session::TerminalSessionAttachAck,
-) -> Value {
-    let mut thread = serde_json::Map::from_iter([
-        ("id".to_string(), Value::String(attached.thread_id.clone())),
-        (
-            "workspace".to_string(),
-            Value::String(workspace_label(workspace_target).to_string()),
-        ),
-        ("status".to_string(), json!({ "type": "running" })),
-    ]);
-    if let Some(cwd) = attached.cwd.as_deref() {
-        thread.insert("cwd".to_string(), Value::String(cwd.to_string()));
-    }
-    if let Some(path) = attached.rollout_path.as_deref() {
-        thread.insert("path".to_string(), Value::String(path.to_string()));
-    }
-
-    let mut result = serde_json::Map::from_iter([
-        ("id".to_string(), Value::String(attached.thread_id.clone())),
-        (
-            "transport".to_string(),
-            Value::String("terminal-session".to_string()),
-        ),
-        ("attached".to_string(), Value::Bool(true)),
-        ("thread".to_string(), Value::Object(thread)),
-    ]);
-    if let Some(cwd) = attached.cwd.as_deref() {
-        result.insert("cwd".to_string(), Value::String(cwd.to_string()));
-    }
-    if let Some(path) = attached.rollout_path.as_deref() {
-        result.insert("path".to_string(), Value::String(path.to_string()));
-    }
-    Value::Object(result)
-}
-
-fn attached_runtime_thread_response(
-    workspace_target: Option<WorkspaceTarget>,
-    attached: &crate::platform::codex_terminal_session::TerminalSessionAttachAck,
-) -> Value {
-    let mut thread = serde_json::Map::from_iter([
-        ("id".to_string(), Value::String(attached.thread_id.clone())),
-        (
-            "workspace".to_string(),
-            Value::String(workspace_label(workspace_target).to_string()),
-        ),
-        ("status".to_string(), json!({ "type": "running" })),
-    ]);
-    if let Some(cwd) = attached.cwd.as_deref() {
-        thread.insert("cwd".to_string(), Value::String(cwd.to_string()));
-    }
-    if let Some(path) = attached.rollout_path.as_deref() {
-        thread.insert("path".to_string(), Value::String(path.to_string()));
-    }
-    Value::Object(serde_json::Map::from_iter([(
-        "thread".to_string(),
-        Value::Object(thread),
-    )]))
 }
 
 fn response_rollout_path(value: &Value) -> Option<String> {
@@ -2619,194 +2406,6 @@ mod tests {
             Some("C:\\repo\\.codex\\sessions\\rollout-thread-web.jsonl")
         );
 
-        crate::codex_app_server::_set_test_request_handler(None).await;
-    }
-
-    #[tokio::test]
-    async fn thread_start_attaches_matching_live_terminal_session_before_app_server() {
-        let _guard = crate::codex_app_server::lock_test_globals();
-        crate::platform::codex_terminal_session::_set_test_discovery_sessions(Some(vec![
-            crate::platform::windows_terminal::InferredWtSession {
-                wt_session: "wt-1".to_string(),
-                pid: 42,
-                linux_pid: None,
-                wsl_distro: None,
-                cwd: Some("C:\\repo".to_string()),
-                rollout_path: Some(
-                    "C:\\repo\\.codex\\sessions\\rollout-thread-live.jsonl".to_string(),
-                ),
-                codex_session_id: Some("thread-live".to_string()),
-                reported_model_provider: None,
-                reported_base_url: None,
-                agent_parent_session_id: None,
-                router_confirmed: true,
-                is_agent: false,
-                is_review: false,
-            },
-        ]));
-        crate::codex_app_server::_set_test_request_handler(Some(Arc::new(
-            move |_home, method, _params| Err(format!("{method} should not be called")),
-        )))
-        .await;
-
-        let manager = CodexSessionManager::new(parse_workspace_target("windows"))
-            .with_terminal_bridge(4000, Some("token".to_string()));
-        let outcome = manager
-            .thread_start(json!({
-                "workspace": "windows",
-                "cwd": "C:\\repo"
-            }))
-            .await
-            .expect("thread/start should attach to live terminal session");
-
-        assert_eq!(
-            outcome.result.get("transport").and_then(Value::as_str),
-            Some("terminal-session")
-        );
-        assert_eq!(
-            outcome.result.get("id").and_then(Value::as_str),
-            Some("thread-live")
-        );
-        assert_eq!(
-            outcome.rollout_path.as_deref(),
-            Some("C:\\repo\\.codex\\sessions\\rollout-thread-live.jsonl")
-        );
-
-        crate::platform::codex_terminal_session::_set_test_discovery_sessions(None);
-        crate::codex_app_server::_set_test_request_handler(None).await;
-    }
-
-    #[tokio::test]
-    async fn thread_start_can_attach_non_router_terminal_session_by_cwd() {
-        let _guard = crate::codex_app_server::lock_test_globals();
-        crate::platform::codex_terminal_session::_set_test_discovery_sessions(Some(vec![
-            crate::platform::windows_terminal::InferredWtSession {
-                wt_session: "wt-1".to_string(),
-                pid: 42,
-                linux_pid: None,
-                wsl_distro: None,
-                cwd: Some("C:\\repo".to_string()),
-                rollout_path: Some(
-                    "C:\\repo\\.codex\\sessions\\rollout-thread-plain.jsonl".to_string(),
-                ),
-                codex_session_id: Some("thread-plain".to_string()),
-                reported_model_provider: None,
-                reported_base_url: None,
-                agent_parent_session_id: None,
-                router_confirmed: false,
-                is_agent: false,
-                is_review: false,
-            },
-        ]));
-        crate::codex_app_server::_set_test_request_handler(Some(Arc::new(
-            move |_home, method, _params| Err(format!("{method} should not be called")),
-        )))
-        .await;
-
-        let manager = CodexSessionManager::new(parse_workspace_target("windows"))
-            .with_terminal_bridge(4000, Some("token".to_string()));
-        let outcome = manager
-            .thread_start(json!({
-                "workspace": "windows",
-                "cwd": "C:\\repo"
-            }))
-            .await
-            .expect("thread/start should attach to non-router live terminal session");
-
-        assert_eq!(
-            outcome.result.get("transport").and_then(Value::as_str),
-            Some("terminal-session")
-        );
-        assert_eq!(
-            outcome.result.get("id").and_then(Value::as_str),
-            Some("thread-plain")
-        );
-
-        crate::platform::codex_terminal_session::_set_test_discovery_sessions(None);
-        crate::codex_app_server::_set_test_request_handler(None).await;
-    }
-
-    #[tokio::test]
-    async fn open_managed_terminal_surface_discovers_remote_terminal_by_cwd() {
-        let _guard = crate::codex_app_server::lock_test_globals();
-        _clear_workspace_runtime_registry_for_test();
-        clear_threads_workspace_index_for_test();
-        crate::platform::codex_terminal_session::_set_test_discovery_sessions(None);
-        crate::codex_app_server::_set_test_request_handler(Some(Arc::new(
-            move |_home, method, _params| Err(format!("{method} should not be called")),
-        )))
-        .await;
-
-        let captured = Arc::new(std::sync::Mutex::new(None));
-        let captured_ref = captured.clone();
-        crate::platform::codex_managed_terminal::_set_test_launch_handler(Some(Arc::new(
-            move |spec| {
-                if let Ok(mut guard) = captured_ref.lock() {
-                    *guard = Some(spec.clone());
-                }
-                crate::platform::codex_terminal_session::_set_test_discovery_sessions(Some(vec![
-                    crate::platform::windows_terminal::InferredWtSession {
-                        wt_session: "wt-managed".to_string(),
-                        pid: 4242,
-                        linux_pid: None,
-                        wsl_distro: None,
-                        cwd: Some("C:\\repo".to_string()),
-                        rollout_path: Some(
-                            "C:\\repo\\.codex\\sessions\\rollout-thread-terminal.jsonl".to_string(),
-                        ),
-                        codex_session_id: Some("thread-terminal".to_string()),
-                        reported_model_provider: None,
-                        reported_base_url: None,
-                        agent_parent_session_id: None,
-                        router_confirmed: true,
-                        is_agent: false,
-                        is_review: false,
-                    },
-                ]));
-                Ok(())
-            },
-        )));
-
-        let manager = CodexSessionManager::new(parse_workspace_target("windows"))
-            .with_terminal_bridge(4000, Some("token-1".to_string()));
-        let attached = manager
-            .open_managed_terminal_surface("thread-web", Some("C:\\repo"))
-            .await
-            .expect("managed terminal surface should be discovered");
-
-        assert_eq!(attached.thread_id, "thread-terminal");
-        assert_eq!(attached.cwd.as_deref(), Some("C:\\repo"));
-        assert_eq!(
-            attached.rollout_path.as_deref(),
-            Some("C:\\repo\\.codex\\sessions\\rollout-thread-terminal.jsonl")
-        );
-
-        let spec = captured
-            .lock()
-            .ok()
-            .and_then(|guard| guard.clone())
-            .expect("captured launch spec");
-        assert_eq!(spec.program, "powershell.exe");
-        assert_eq!(spec.args.first().map(String::as_str), Some("-NoLogo"));
-        assert!(spec.args.iter().any(|arg| arg == "-NoExit"));
-        assert!(spec.args.iter().any(|arg| arg.contains("codex.cmd")));
-        assert!(!spec.args.iter().any(|arg| arg.contains("thread-web")));
-        assert!(!spec.args.iter().any(|arg| arg.contains("thread-terminal")));
-        assert!(spec
-            .args
-            .iter()
-            .any(|arg| arg.contains("ws://127.0.0.1:4000/")));
-        assert!(spec
-            .args
-            .iter()
-            .any(|arg| arg.contains("--remote-auth-token-env")));
-        assert!(spec
-            .env
-            .iter()
-            .any(|(key, value)| { key == "API_ROUTER_GATEWAY_TOKEN" && value == "token-1" }));
-
-        crate::platform::codex_managed_terminal::_set_test_launch_handler(None);
-        crate::platform::codex_terminal_session::_set_test_discovery_sessions(None);
         crate::codex_app_server::_set_test_request_handler(None).await;
     }
 }

@@ -7,6 +7,9 @@ use crate::orchestrator::gateway::web_codex_git::{
 };
 use crate::orchestrator::gateway::web_codex_home::parse_workspace_target;
 use crate::orchestrator::gateway::web_codex_session_manager::CodexSessionManager;
+use crate::orchestrator::gateway::web_codex_session_runtime::{
+    locate_workspace_thread_runtime, locate_workspace_thread_runtime_for_target,
+};
 use crate::orchestrator::gateway::web_codex_storage::{codex_attachments_dir, sanitize_name};
 use axum::extract::{Path as AxumPath, Query};
 use base64::Engine;
@@ -198,39 +201,6 @@ fn runtime_turn_sandbox_policy_json(value: Option<&Value>) -> Option<Value> {
     value.cloned()
 }
 
-fn terminal_session_turn_options(
-    req: &TurnStartRequest,
-) -> crate::platform::codex_terminal_session::TerminalSessionTurnOptions {
-    crate::platform::codex_terminal_session::TerminalSessionTurnOptions {
-        model: req.model.clone(),
-        plan_mode: match req
-            .collaboration_mode
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(|value| value.eq_ignore_ascii_case("plan"))
-        {
-            Some(true) => crate::platform::codex_terminal_session::TerminalToggleOverride::Enabled,
-            Some(false) | None => {
-                crate::platform::codex_terminal_session::TerminalToggleOverride::Disabled
-            }
-        },
-        fast_mode: match &req.service_tier {
-            ServiceTierOverride::String(value) if value.trim().eq_ignore_ascii_case("fast") => {
-                crate::platform::codex_terminal_session::TerminalToggleOverride::Enabled
-            }
-            ServiceTierOverride::String(_) | ServiceTierOverride::Null(_) => {
-                crate::platform::codex_terminal_session::TerminalToggleOverride::Disabled
-            }
-            ServiceTierOverride::Missing => {
-                crate::platform::codex_terminal_session::TerminalToggleOverride::Missing
-            }
-        },
-        approval_policy: req.approval_policy.clone(),
-        sandbox_policy: req.sandbox_policy.clone(),
-    }
-}
-
 pub(super) fn build_turn_start_response(
     thread_id: &str,
     result: Value,
@@ -256,92 +226,6 @@ pub(super) fn build_turn_start_response(
     response
 }
 
-fn terminal_ack_turn_id(payload: &Value) -> Option<&str> {
-    payload
-        .get("turn")
-        .and_then(Value::as_object)
-        .and_then(|turn| turn.get("id"))
-        .and_then(Value::as_str)
-        .or_else(|| payload.get("turnId").and_then(Value::as_str))
-        .or_else(|| payload.get("turn_id").and_then(Value::as_str))
-}
-
-fn record_terminal_turn_start_runtime(
-    workspace_target: Option<WorkspaceTarget>,
-    home_override: Option<&str>,
-    thread_id: &str,
-    rollout_path: Option<&str>,
-    payload: &Value,
-) {
-    if workspace_target.is_none() {
-        return;
-    }
-    let turn_id = terminal_ack_turn_id(payload);
-    crate::orchestrator::gateway::web_codex_session_runtime::upsert_workspace_thread_runtime(
-        workspace_target,
-        home_override,
-        crate::orchestrator::gateway::web_codex_session_runtime::WorkspaceThreadRuntimeUpdate {
-            thread_id,
-            cwd: None,
-            rollout_path,
-            status: Some("running"),
-            last_event_id: None,
-            last_turn_id: turn_id,
-            clear_last_turn_id: turn_id.is_none(),
-        },
-    );
-}
-
-async fn try_terminal_turn_start(
-    st: &GatewayState,
-    req: &TurnStartRequest,
-    thread_id: &str,
-    workspace_target: Option<WorkspaceTarget>,
-) -> Result<Option<Value>, String> {
-    let gateway_token = st.secrets.get_gateway_token().unwrap_or_default();
-    let expected_gateway_token =
-        (!gateway_token.trim().is_empty()).then_some(gateway_token.as_str());
-    let server_port = { st.cfg.read().listen.port };
-    let options = terminal_session_turn_options(req);
-    let ack = crate::platform::codex_terminal_session::try_start_turn_in_live_session(
-        server_port,
-        expected_gateway_token,
-        workspace_target,
-        thread_id,
-        &prompt_with_plan_protocol(&req.prompt, req.collaboration_mode.as_deref()),
-        &options,
-    )
-    .await?;
-    let Some(ack) = ack else {
-        return Ok(None);
-    };
-    let rollout_path = match workspace_target {
-        Some(target) => {
-            crate::orchestrator::gateway::web_codex_threads::known_rollout_path_for_thread(
-                target, thread_id,
-            )
-            .await
-        }
-        None => None,
-    };
-    let home_override =
-        crate::orchestrator::gateway::web_codex_home::web_codex_rpc_home_override_for_target(
-            workspace_target,
-        );
-    record_terminal_turn_start_runtime(
-        workspace_target,
-        home_override.as_deref(),
-        thread_id,
-        rollout_path.as_deref(),
-        &ack.payload,
-    );
-    Ok(Some(build_turn_start_response(
-        thread_id,
-        ack.payload,
-        rollout_path.as_deref(),
-    )))
-}
-
 pub(super) async fn codex_turn_start(
     State(st): State<GatewayState>,
     headers: HeaderMap,
@@ -357,17 +241,6 @@ pub(super) async fn codex_turn_start(
         return api_error(StatusCode::BAD_REQUEST, "threadId is required");
     };
     let workspace_target = req.workspace.as_deref().and_then(parse_workspace_target);
-    match try_terminal_turn_start(&st, &req, &thread_id, workspace_target).await {
-        Ok(Some(response)) => return Json(response).into_response(),
-        Ok(None) => {}
-        Err(error) => {
-            return api_error_detail(
-                StatusCode::BAD_GATEWAY,
-                "terminal session transport failed",
-                error,
-            )
-        }
-    }
     let params = build_turn_start_params(&thread_id, &req);
     let manager = CodexSessionManager::new(workspace_target);
     match manager.turn_start(&thread_id, params).await {
@@ -405,22 +278,13 @@ pub(super) async fn codex_turn_stream(
         return api_error(StatusCode::BAD_REQUEST, "threadId is required");
     };
     let started = sse_event("started", &json!({ "ok": true, "threadId": thread_id }));
-    let workspace_target = req.workspace.as_deref().and_then(parse_workspace_target);
-    let terminal_attempt = try_terminal_turn_start(&st, &req, &thread_id, workspace_target).await;
     let params = build_turn_start_params(&thread_id, &req);
+    let workspace_target = req.workspace.as_deref().and_then(parse_workspace_target);
     let manager = CodexSessionManager::new(workspace_target);
     let call = async move {
-        match terminal_attempt {
-            Ok(Some(response)) => Ok(response),
-            Ok(None) => manager.turn_start(&thread_id, params).await.map(|outcome| {
-                build_turn_start_response(
-                    &thread_id,
-                    outcome.result,
-                    outcome.rollout_path.as_deref(),
-                )
-            }),
-            Err(error) => Err(error),
-        }
+        manager.turn_start(&thread_id, params).await.map(|outcome| {
+            build_turn_start_response(&thread_id, outcome.result, outcome.rollout_path.as_deref())
+        })
     }
     .await;
     let stream = async_stream::stream! {
@@ -466,7 +330,7 @@ pub(super) async fn codex_turn_interrupt(
     if thread_id.is_empty() {
         return api_error(StatusCode::BAD_REQUEST, "threadId is required");
     }
-    let manager = CodexSessionManager::new(None);
+    let manager = turn_interrupt_session_manager(&req, thread_id);
     match manager.interrupt_turn(thread_id, &id).await {
         Ok(v) => Json(v).into_response(),
         Err(error) => api_error_detail(
@@ -482,16 +346,32 @@ pub(super) async fn codex_turn_interrupt(
 pub(super) struct TurnInterruptRequest {
     #[serde(default)]
     pub(super) thread_id: String,
+    #[serde(default)]
+    pub(super) workspace: Option<String>,
+}
+
+fn turn_interrupt_session_manager(
+    req: &TurnInterruptRequest,
+    thread_id: &str,
+) -> CodexSessionManager {
+    if let Some(workspace_target) = req.workspace.as_deref().and_then(parse_workspace_target) {
+        if let Some(location) =
+            locate_workspace_thread_runtime_for_target(thread_id, workspace_target)
+        {
+            return CodexSessionManager::new(location.workspace_target)
+                .with_home_override(location.home_override);
+        }
+        return CodexSessionManager::new(Some(workspace_target));
+    }
+    if let Some(location) = locate_workspace_thread_runtime(thread_id) {
+        return CodexSessionManager::new(location.workspace_target)
+            .with_home_override(location.home_override);
+    }
+    CodexSessionManager::new(None)
 }
 
 #[derive(Deserialize)]
 pub(super) struct ThreadInterruptQuery {
-    #[serde(default)]
-    workspace: Option<String>,
-}
-
-#[derive(Deserialize)]
-pub(super) struct ThreadTransportQuery {
     #[serde(default)]
     workspace: Option<String>,
 }
@@ -508,47 +388,18 @@ pub(super) struct ManagedTerminalRequest {
 pub(super) async fn codex_thread_transport(
     State(st): State<GatewayState>,
     headers: HeaderMap,
-    Query(query): Query<ThreadTransportQuery>,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
     if let Some(resp) = require_codex_auth(&st, &headers) {
         return resp;
     }
-    let workspace_target = query.workspace.as_deref().and_then(parse_workspace_target);
-    let gateway_token = st.secrets.get_gateway_token().unwrap_or_default();
-    let expected_gateway_token =
-        (!gateway_token.trim().is_empty()).then_some(gateway_token.as_str());
-    let server_port = { st.cfg.read().listen.port };
-    match crate::platform::codex_terminal_session::lookup_live_session_by_thread(
-        server_port,
-        expected_gateway_token,
-        workspace_target,
-        &id,
-    )
-    .await
-    {
-        Ok(Some(attached)) => Json(json!({
-            "ok": true,
-            "threadId": attached.thread_id,
-            "transport": "terminal-session",
-            "attached": true,
-            "cwd": attached.cwd,
-            "path": attached.rollout_path
-        }))
-        .into_response(),
-        Ok(None) => Json(json!({
-            "ok": true,
-            "threadId": id,
-            "transport": Value::Null,
-            "attached": false
-        }))
-        .into_response(),
-        Err(error) => api_error_detail(
-            StatusCode::BAD_GATEWAY,
-            "terminal session transport lookup failed",
-            error,
-        ),
-    }
+    Json(json!({
+        "ok": true,
+        "threadId": id,
+        "transport": "app-server",
+        "attached": false
+    }))
+    .into_response()
 }
 
 pub(super) async fn codex_thread_open_managed_terminal(
@@ -560,33 +411,14 @@ pub(super) async fn codex_thread_open_managed_terminal(
     if let Some(resp) = require_codex_auth(&st, &headers) {
         return resp;
     }
-    let Some(workspace_target) = req.workspace.as_deref().and_then(parse_workspace_target) else {
+    let Some(_workspace_target) = req.workspace.as_deref().and_then(parse_workspace_target) else {
         return api_error(StatusCode::BAD_REQUEST, "workspace is required");
     };
-    let gateway_token = st.secrets.get_gateway_token().unwrap_or_default();
-    let manager = CodexSessionManager::new(Some(workspace_target)).with_terminal_bridge(
-        st.cfg.read().listen.port,
-        (!gateway_token.trim().is_empty()).then_some(gateway_token),
-    );
-    match manager
-        .open_managed_terminal_surface(&id, req.cwd.as_deref())
-        .await
-    {
-        Ok(attached) => Json(json!({
-            "ok": true,
-            "threadId": attached.thread_id,
-            "transport": "terminal-session",
-            "attached": true,
-            "cwd": attached.cwd,
-            "path": attached.rollout_path
-        }))
-        .into_response(),
-        Err(error) => api_error_detail(
-            StatusCode::BAD_GATEWAY,
-            "managed terminal launch failed",
-            error,
-        ),
-    }
+    let _ = (id, req.cwd);
+    api_error(
+        StatusCode::BAD_REQUEST,
+        "managed terminal sync is disabled for web flows",
+    )
 }
 
 pub(super) async fn codex_thread_interrupt(
@@ -598,42 +430,12 @@ pub(super) async fn codex_thread_interrupt(
     if let Some(resp) = require_codex_auth(&st, &headers) {
         return resp;
     }
-    let workspace_target = query.workspace.as_deref().and_then(parse_workspace_target);
-    let codex_home =
-        crate::orchestrator::gateway::web_codex_home::web_codex_rpc_home_override_for_target(
-            workspace_target,
-        );
-    let gateway_token = st.secrets.get_gateway_token().unwrap_or_default();
-    let expected_gateway_token =
-        (!gateway_token.trim().is_empty()).then_some(gateway_token.as_str());
-    let server_port = { st.cfg.read().listen.port };
-    match crate::platform::codex_terminal_session::try_interrupt_live_session(
-        server_port,
-        expected_gateway_token,
-        workspace_target,
-        &id,
+    let _ = query.workspace.as_deref().and_then(parse_workspace_target);
+    let _ = id;
+    api_error(
+        StatusCode::BAD_REQUEST,
+        "terminal interrupt sync is disabled for web flows",
     )
-    .await
-    {
-        Ok(true) => {
-            crate::codex_app_server::push_terminal_interrupt_notifications(
-                codex_home.as_deref(),
-                &id,
-            )
-            .await;
-            Json(json!({ "ok": true, "transport": "terminal-session", "threadId": id }))
-                .into_response()
-        }
-        Ok(false) => api_error(
-            StatusCode::BAD_REQUEST,
-            "no live terminal session for thread",
-        ),
-        Err(error) => api_error_detail(
-            StatusCode::BAD_GATEWAY,
-            "terminal session transport failed",
-            error,
-        ),
-    }
 }
 
 #[derive(Deserialize)]
@@ -1638,11 +1440,7 @@ pub(super) async fn codex_slash_execute(
             .get("workspace")
             .and_then(Value::as_str)
             .and_then(parse_workspace_target);
-        let gateway_token = st.secrets.get_gateway_token().unwrap_or_default();
-        let manager = CodexSessionManager::new(workspace_target).with_terminal_bridge(
-            st.cfg.read().listen.port,
-            (!gateway_token.trim().is_empty()).then_some(gateway_token),
-        );
+        let manager = CodexSessionManager::new(workspace_target);
         return match manager.thread_start(params).await {
             Ok(outcome) => Json(json!({
                 "ok": true,
@@ -1718,11 +1516,10 @@ mod tests {
     use super::{
         build_turn_start_params, build_turn_start_response, classify_upload_attachment,
         parse_slash_command, prompt_with_plan_protocol, read_plan_mode_from_rollout_path,
-        record_terminal_turn_start_runtime, sanitize_upload_file_name, service_tier_override_json,
-        status_read_result, supported_slash_commands, turn_thread_id, ServiceTierOverride,
-        TurnStartRequest,
+        sanitize_upload_file_name, service_tier_override_json, status_read_result,
+        supported_slash_commands, turn_interrupt_session_manager, turn_thread_id,
+        ServiceTierOverride, TurnInterruptRequest, TurnStartRequest,
     };
-    use crate::orchestrator::gateway::web_codex_home::WorkspaceTarget;
     use serde_json::{json, Value};
 
     #[test]
@@ -1744,6 +1541,113 @@ mod tests {
         assert_eq!(params["input"][0]["type"], "text");
         assert_eq!(params["input"][0]["text"], "hi");
         assert_eq!(params["effort"], "high");
+    }
+
+    #[test]
+    fn turn_interrupt_session_manager_prefers_workspace_field() {
+        let req = TurnInterruptRequest {
+            thread_id: "thread-1".to_string(),
+            workspace: Some("wsl2".to_string()),
+        };
+        let manager = turn_interrupt_session_manager(&req, "thread-1");
+        assert_eq!(
+            manager.workspace_target(),
+            Some(crate::orchestrator::gateway::web_codex_home::WorkspaceTarget::Wsl2)
+        );
+    }
+
+    #[test]
+    fn turn_interrupt_session_manager_falls_back_to_runtime_registry() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        crate::orchestrator::gateway::_clear_workspace_runtime_registry_for_test();
+        crate::orchestrator::gateway::web_codex_session_runtime::upsert_workspace_thread_runtime(
+            Some(crate::orchestrator::gateway::web_codex_home::WorkspaceTarget::Wsl2),
+            Some("/home/yiyou/.api-router/codex-web-home"),
+            crate::orchestrator::gateway::web_codex_session_runtime::WorkspaceThreadRuntimeUpdate {
+                thread_id: "thread-1",
+                cwd: Some("/home/yiyou/repo"),
+                rollout_path: None,
+                status: Some("running"),
+                last_event_id: None,
+                last_turn_id: Some("turn-1"),
+                clear_last_turn_id: false,
+            },
+        );
+
+        let req = TurnInterruptRequest {
+            thread_id: "thread-1".to_string(),
+            workspace: None,
+        };
+        let manager = turn_interrupt_session_manager(&req, "thread-1");
+        assert_eq!(
+            manager.workspace_target(),
+            Some(crate::orchestrator::gateway::web_codex_home::WorkspaceTarget::Wsl2)
+        );
+        assert_eq!(
+            manager.home_override(),
+            Some("/home/yiyou/.api-router/codex-web-home")
+        );
+    }
+
+    #[test]
+    fn turn_interrupt_session_manager_keeps_runtime_home_when_workspace_is_present() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        crate::orchestrator::gateway::_clear_workspace_runtime_registry_for_test();
+        struct TimeOverrideGuard;
+        impl Drop for TimeOverrideGuard {
+            fn drop(&mut self) {
+                crate::orchestrator::gateway::web_codex_session_runtime::_set_test_current_unix_secs(
+                    None,
+                );
+            }
+        }
+        let _time_guard = TimeOverrideGuard;
+        crate::orchestrator::gateway::web_codex_session_runtime::_set_test_current_unix_secs(Some(
+            1_700_000_000,
+        ));
+        crate::orchestrator::gateway::web_codex_session_runtime::upsert_workspace_thread_runtime(
+            Some(crate::orchestrator::gateway::web_codex_home::WorkspaceTarget::Wsl2),
+            Some("/home/yiyou/.api-router/thread-runtime-home"),
+            crate::orchestrator::gateway::web_codex_session_runtime::WorkspaceThreadRuntimeUpdate {
+                thread_id: "thread-1",
+                cwd: Some("/home/yiyou/repo"),
+                rollout_path: None,
+                status: Some("running"),
+                last_event_id: None,
+                last_turn_id: Some("turn-1"),
+                clear_last_turn_id: false,
+            },
+        );
+        crate::orchestrator::gateway::web_codex_session_runtime::_set_test_current_unix_secs(Some(
+            1_700_000_001,
+        ));
+        crate::orchestrator::gateway::web_codex_session_runtime::upsert_workspace_thread_runtime(
+            Some(crate::orchestrator::gateway::web_codex_home::WorkspaceTarget::Windows),
+            Some("C:\\Users\\yiyou\\.api-router\\codex-web-home"),
+            crate::orchestrator::gateway::web_codex_session_runtime::WorkspaceThreadRuntimeUpdate {
+                thread_id: "thread-1",
+                cwd: Some("C:\\Users\\yiyou\\repo"),
+                rollout_path: None,
+                status: Some("running"),
+                last_event_id: None,
+                last_turn_id: Some("turn-1"),
+                clear_last_turn_id: false,
+            },
+        );
+
+        let req = TurnInterruptRequest {
+            thread_id: "thread-1".to_string(),
+            workspace: Some("wsl2".to_string()),
+        };
+        let manager = turn_interrupt_session_manager(&req, "thread-1");
+        assert_eq!(
+            manager.workspace_target(),
+            Some(crate::orchestrator::gateway::web_codex_home::WorkspaceTarget::Wsl2)
+        );
+        assert_eq!(
+            manager.home_override(),
+            Some("/home/yiyou/.api-router/thread-runtime-home")
+        );
     }
 
     #[test]
@@ -1899,78 +1803,6 @@ mod tests {
         assert_eq!(response["threadId"], "thread-1");
         assert_eq!(response["turnId"], "turn-1");
         assert_eq!(response["rolloutPath"], "C:\\temp\\rollout.jsonl");
-    }
-
-    #[test]
-    fn terminal_turn_start_runtime_clears_stale_turn_id_when_ack_has_no_turn() {
-        crate::orchestrator::gateway::web_codex_session_runtime::_clear_workspace_runtime_registry_for_test();
-        crate::orchestrator::gateway::web_codex_session_runtime::upsert_workspace_thread_runtime(
-            Some(WorkspaceTarget::Windows),
-            Some("terminal-live-home"),
-            crate::orchestrator::gateway::web_codex_session_runtime::WorkspaceThreadRuntimeUpdate {
-                thread_id: "thread-1",
-                cwd: None,
-                rollout_path: None,
-                status: Some("failed"),
-                last_event_id: None,
-                last_turn_id: Some("turn-old"),
-                clear_last_turn_id: false,
-            },
-        );
-
-        record_terminal_turn_start_runtime(
-            Some(WorkspaceTarget::Windows),
-            Some("terminal-live-home"),
-            "thread-1",
-            Some("C:\\temp\\rollout.jsonl"),
-            &json!({
-                "threadId": "thread-1",
-                "turnId": Value::Null,
-                "transport": "terminal-session",
-                "result": { "accepted": true }
-            }),
-        );
-
-        let snapshot =
-            crate::orchestrator::gateway::web_codex_session_runtime::workspace_thread_runtime_snapshot(
-                Some(WorkspaceTarget::Windows),
-                Some("terminal-live-home"),
-                "thread-1",
-            )
-            .expect("thread snapshot");
-        assert_eq!(snapshot.status.as_deref(), Some("running"));
-        assert_eq!(snapshot.last_turn_id, None);
-        assert_eq!(
-            snapshot.rollout_path.as_deref(),
-            Some("C:\\temp\\rollout.jsonl")
-        );
-    }
-
-    #[tokio::test]
-    async fn terminal_interrupt_notifications_are_enqueued_for_workspace_home() {
-        let _guard = crate::codex_app_server::lock_test_globals();
-        crate::codex_app_server::_clear_notifications_for_test().await;
-        let home = "test-terminal-interrupt-home";
-
-        crate::codex_app_server::push_terminal_interrupt_notifications(
-            Some(home),
-            "thread-terminal",
-        )
-        .await;
-
-        let (items, first, last, gap) =
-            crate::codex_app_server::replay_notifications_since_in_home(Some(home), 0, 8).await;
-        assert!(!gap);
-        assert_eq!(first, Some(1));
-        assert_eq!(last, Some(2));
-        assert_eq!(items.len(), 2);
-        assert_eq!(items[0]["method"], "turn/cancelled");
-        assert_eq!(items[0]["params"]["threadId"], "thread-terminal");
-        assert_eq!(items[0]["params"]["status"], "interrupted");
-        assert_eq!(items[0]["params"]["source"], "terminal_session_interrupt");
-        assert_eq!(items[1]["method"], "thread/status/changed");
-        assert_eq!(items[1]["params"]["threadId"], "thread-terminal");
-        assert_eq!(items[1]["params"]["status"], "interrupted");
     }
 
     #[test]

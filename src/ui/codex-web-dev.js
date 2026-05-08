@@ -184,6 +184,7 @@ let syncSlashCommandMenu = () => {};
 let executeSlashCommand = async () => null;
 let refreshSlashCommandsState = async () => [];
 let slashStateRefreshTimer = 0;
+let activeThreadHeaderRefreshTimer = 0;
 let getWorkspaceTarget = () => normalizeWorkspaceTarget(state.workspaceTarget || "windows");
 let getStartCwdForWorkspace = () => "";
 let syncActiveThreadMetaFromList = () => {};
@@ -314,10 +315,8 @@ webDiagnostics.install();
 function setActiveThread(id) {
   const prev = state.activeThreadId || "";
   state.activeThreadId = id || "";
-  try {
-    if (state.activeThreadAttachPendingTimer) clearTimeout(state.activeThreadAttachPendingTimer);
-  } catch {}
-  state.activeThreadAttachPendingTimer = 0;
+  if (activeThreadHeaderRefreshTimer) clearTimeout(activeThreadHeaderRefreshTimer);
+  activeThreadHeaderRefreshTimer = 0;
   if (prev !== state.activeThreadId) {
     clearPromptValue();
     hideSlashCommandMenu();
@@ -335,16 +334,10 @@ function setActiveThread(id) {
   if (!state.activeThreadId) {
     state.activeThreadStarted = false;
     state.activeThreadWorkspace = getWorkspaceTarget();
-    state.activeThreadAttachTransport = "";
-    state.activeThreadAttachPendingUntil = 0;
   } else {
-    state.activeThreadAttachPendingUntil = Date.now() + 2000;
     syncActiveThreadMetaFromList(state.activeThreadId);
-    state.activeThreadAttachTransport = String(
-      state.threadAttachTransportById?.get?.(state.activeThreadId) || ""
-    ).trim();
-    state.activeThreadAttachPendingTimer = setTimeout(() => {
-      state.activeThreadAttachPendingTimer = 0;
+    activeThreadHeaderRefreshTimer = setTimeout(() => {
+      activeThreadHeaderRefreshTimer = 0;
       if (!state.activeThreadId) return;
       updateHeaderUi();
     }, 2050);

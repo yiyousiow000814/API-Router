@@ -41,7 +41,10 @@ fn dedup_key(cli_home: &Path) -> String {
     s
 }
 
-fn resolve_cli_homes(cli_homes: Vec<String>) -> Result<Vec<PathBuf>, String> {
+fn resolve_cli_homes_with_limit(
+    cli_homes: Vec<String>,
+    max_homes: Option<usize>,
+) -> Result<Vec<PathBuf>, String> {
     let mut homes: Vec<(String, PathBuf)> = cli_homes
         .into_iter()
         .map(|s| s.trim().to_string())
@@ -59,10 +62,16 @@ fn resolve_cli_homes(cli_homes: Vec<String>) -> Result<Vec<PathBuf>, String> {
                 .ok_or_else(|| "missing HOME/USERPROFILE".to_string())?,
         );
     }
-    if homes.len() > 2 {
-        return Err("At most 2 Codex dirs are supported.".to_string());
+    if let Some(max_homes) = max_homes {
+        if homes.len() > max_homes {
+            return Err(format!("At most {max_homes} Codex dirs are supported."));
+        }
     }
     Ok(homes)
+}
+
+fn resolve_cli_homes(cli_homes: Vec<String>) -> Result<Vec<PathBuf>, String> {
+    resolve_cli_homes_with_limit(cli_homes, Some(2))
 }
 
 fn augment_gateway_sync_homes_with_candidates(
@@ -84,7 +93,7 @@ fn augment_gateway_sync_homes_with_candidates(
     combined
 }
 
-fn augment_gateway_sync_homes(homes: Vec<PathBuf>) -> Vec<PathBuf> {
+fn augment_gateway_sync_homes(config_path: &Path, homes: Vec<PathBuf>) -> Vec<PathBuf> {
     augment_gateway_sync_homes_with_candidates(
         homes,
         [
@@ -92,7 +101,10 @@ fn augment_gateway_sync_homes(homes: Vec<PathBuf>) -> Vec<PathBuf> {
             crate::codex_cli_swap::default_wsl_cli_codex_home(),
         ]
         .into_iter()
-        .flatten(),
+        .flatten()
+        .chain(
+            crate::orchestrator::gateway::web_codex_home::web_codex_runtime_auth_homes(config_path),
+        ),
     )
 }
 
@@ -463,25 +475,17 @@ fn switch_to_gateway_home_impl(
         );
     }
 
-    let listen_port = runtime.gateway.cfg.read().listen.port;
-    let wsl_gateway_host =
-        crate::platform::wsl_gateway_host::resolve_wsl_gateway_host(Some(runtime.config_path));
-    let gateway_host = if is_wsl_unc_home(cli_home) {
-        wsl_gateway_host.as_str()
-    } else {
-        GATEWAY_WINDOWS_HOST
-    };
-    let gateway_base_url = format!("http://{gateway_host}:{listen_port}/v1");
-    let next_cfg = build_direct_provider_cfg(
-        &base_cfg,
-        GATEWAY_MODEL_PROVIDER_ID,
-        &gateway_base_url,
-        false,
-        None,
-    );
+    let next_cfg =
+        build_gateway_provider_cfg(runtime.config_path, runtime.gateway, cli_home, &base_cfg);
     let next_auth = auth_with_openai_key(gateway_token.trim());
     write_swapped_files(runtime.config_path, cli_home, &next_auth, &next_cfg)?;
-    sync_web_codex_runtime_auth(runtime.config_path, cli_home, &next_auth)
+    sync_web_codex_runtime_gateway_files(
+        runtime.config_path,
+        runtime.gateway,
+        cli_home,
+        &next_auth,
+        &base_cfg,
+    )
 }
 
 fn is_wsl_unc_home(cli_home: &Path) -> bool {
@@ -663,6 +667,38 @@ fn auth_without_openai_key() -> serde_json::Value {
     json!({})
 }
 
+fn gateway_base_url_for_home(
+    config_path: &Path,
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    home: &Path,
+) -> String {
+    let listen_port = gateway.cfg.read().listen.port;
+    let wsl_gateway_host =
+        crate::platform::wsl_gateway_host::resolve_wsl_gateway_host(Some(config_path));
+    let gateway_host = if is_wsl_unc_home(home) {
+        wsl_gateway_host.as_str()
+    } else {
+        GATEWAY_WINDOWS_HOST
+    };
+    format!("http://{gateway_host}:{listen_port}/v1")
+}
+
+fn build_gateway_provider_cfg(
+    config_path: &Path,
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    home: &Path,
+    base_cfg: &str,
+) -> String {
+    let gateway_base_url = gateway_base_url_for_home(config_path, gateway, home);
+    build_direct_provider_cfg(
+        base_cfg,
+        GATEWAY_MODEL_PROVIDER_ID,
+        &gateway_base_url,
+        false,
+        None,
+    )
+}
+
 fn web_codex_runtime_auth_home_candidates(config_path: &Path, cli_home: &Path) -> Vec<PathBuf> {
     let mut homes =
         crate::orchestrator::gateway::web_codex_home::web_codex_runtime_auth_homes(config_path);
@@ -694,10 +730,11 @@ fn write_swapped_files(
     Ok(())
 }
 
-fn sync_web_codex_runtime_auth(
+fn sync_web_codex_runtime_files(
     config_path: &Path,
     cli_home: &Path,
     next_auth: &serde_json::Value,
+    next_cfg_text: &str,
 ) -> Result<(), String> {
     let auth_text = serde_json::to_string_pretty(next_auth).map_err(|e| e.to_string())?;
     for home in web_codex_runtime_auth_home_candidates(config_path, cli_home) {
@@ -705,6 +742,42 @@ fn sync_web_codex_runtime_auth(
         if let Some(parent) = auth_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
+        std::fs::write(home.join("config.toml"), next_cfg_text).map_err(|e| {
+            format!(
+                "write web codex runtime config failed for {}: {e}",
+                home.join("config.toml").display()
+            )
+        })?;
+        std::fs::write(&auth_path, &auth_text).map_err(|e| {
+            format!(
+                "write web codex runtime auth failed for {}: {e}",
+                auth_path.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn sync_web_codex_runtime_gateway_files(
+    config_path: &Path,
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    cli_home: &Path,
+    next_auth: &serde_json::Value,
+    base_cfg_text: &str,
+) -> Result<(), String> {
+    let auth_text = serde_json::to_string_pretty(next_auth).map_err(|e| e.to_string())?;
+    for home in web_codex_runtime_auth_home_candidates(config_path, cli_home) {
+        let auth_path = home.join("auth.json");
+        if let Some(parent) = auth_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let next_cfg_text = build_gateway_provider_cfg(config_path, gateway, &home, base_cfg_text);
+        std::fs::write(home.join("config.toml"), next_cfg_text).map_err(|e| {
+            format!(
+                "write web codex runtime config failed for {}: {e}",
+                home.join("config.toml").display()
+            )
+        })?;
         std::fs::write(&auth_path, &auth_text).map_err(|e| {
             format!(
                 "write web codex runtime auth failed for {}: {e}",
@@ -1059,18 +1132,26 @@ fn sync_active_provider_target_for_key_impl(
             auth_with_openai_key(key.trim())
         };
         write_swapped_files(&state.config_path, h, &next_auth, &next_cfg)?;
-        sync_web_codex_runtime_auth(&state.config_path, h, &next_auth)?;
+        sync_web_codex_runtime_files(&state.config_path, h, &next_auth, &next_cfg)?;
     }
 
     Ok(())
 }
 
-fn sync_gateway_target_for_rotated_token_impl(
+pub(crate) struct GatewayTargetSyncReport {
+    pub failed_targets: Vec<String>,
+    pub refreshed_homes: Vec<String>,
+}
+
+fn sync_gateway_target_for_rotated_token_report_impl(
     state: &AppState,
     cli_homes_override: Option<Vec<String>>,
-) -> Result<Vec<String>, String> {
+) -> Result<GatewayTargetSyncReport, String> {
     let Some(sw) = load_switchboard_state_from_config_path(&state.config_path) else {
-        return Ok(Vec::new());
+        return Ok(GatewayTargetSyncReport {
+            failed_targets: Vec::new(),
+            refreshed_homes: Vec::new(),
+        });
     };
     if sw
         .get("target")
@@ -1078,7 +1159,10 @@ fn sync_gateway_target_for_rotated_token_impl(
         .map(|v| !v.eq_ignore_ascii_case("gateway"))
         .unwrap_or(true)
     {
-        return Ok(Vec::new());
+        return Ok(GatewayTargetSyncReport {
+            failed_targets: Vec::new(),
+            refreshed_homes: Vec::new(),
+        });
     }
 
     let state_homes = sw
@@ -1091,8 +1175,8 @@ fn sync_gateway_target_for_rotated_token_impl(
         })
         .unwrap_or_default();
     let homes = if let Some(cli_homes_override) = cli_homes_override {
-        let override_homes = resolve_cli_homes(cli_homes_override)?;
-        let override_homes = augment_gateway_sync_homes(override_homes);
+        let override_homes = resolve_cli_homes_with_limit(cli_homes_override, None)?;
+        let override_homes = augment_gateway_sync_homes(&state.config_path, override_homes);
         if !override_homes.is_empty() {
             if let Err(e) = save_switchboard_state_to_config_path(
                 &state.config_path,
@@ -1113,10 +1197,16 @@ fn sync_gateway_target_for_rotated_token_impl(
             }
             override_homes
         } else {
-            augment_gateway_sync_homes(resolve_cli_homes(state_homes)?)
+            augment_gateway_sync_homes(
+                &state.config_path,
+                resolve_cli_homes_with_limit(state_homes, None)?,
+            )
         }
     } else {
-        let homes = augment_gateway_sync_homes(resolve_cli_homes(state_homes)?);
+        let homes = augment_gateway_sync_homes(
+            &state.config_path,
+            resolve_cli_homes_with_limit(state_homes, None)?,
+        );
         if homes.len() > 1 {
             let _ =
                 save_switchboard_state_to_config_path(&state.config_path, &homes, "gateway", None);
@@ -1125,6 +1215,7 @@ fn sync_gateway_target_for_rotated_token_impl(
     };
 
     let mut failed_targets: Vec<String> = Vec::new();
+    let mut refreshed_homes: Vec<String> = Vec::new();
 
     for h in &homes {
         let mode = match home_mode(h) {
@@ -1144,10 +1235,15 @@ fn sync_gateway_target_for_rotated_token_impl(
                 "{} (rewrite gateway target failed: {e})",
                 h.to_string_lossy()
             ));
+        } else {
+            refreshed_homes.push(h.to_string_lossy().to_string());
         }
     }
 
-    Ok(failed_targets)
+    Ok(GatewayTargetSyncReport {
+        failed_targets,
+        refreshed_homes,
+    })
 }
 
 pub fn sync_active_provider_target_for_key(
@@ -1157,17 +1253,26 @@ pub fn sync_active_provider_target_for_key(
     sync_active_provider_target_for_key_impl(state, provider)
 }
 
-pub fn sync_gateway_target_for_rotated_token_with_failures(
-    state: &tauri::State<'_, AppState>,
-    cli_homes: Option<Vec<String>>,
+#[cfg(test)]
+fn sync_gateway_target_for_rotated_token_impl(
+    state: &AppState,
+    cli_homes_override: Option<Vec<String>>,
 ) -> Result<Vec<String>, String> {
-    sync_gateway_target_for_rotated_token_impl(state, cli_homes)
+    sync_gateway_target_for_rotated_token_report_impl(state, cli_homes_override)
+        .map(|report| report.failed_targets)
 }
 
-pub(crate) fn sync_gateway_target_for_current_token_on_startup(
+pub(crate) fn sync_gateway_target_for_current_token_on_startup_with_report(
     state: &AppState,
-) -> Result<Vec<String>, String> {
-    sync_gateway_target_for_rotated_token_impl(state, None)
+) -> Result<GatewayTargetSyncReport, String> {
+    sync_gateway_target_for_rotated_token_report_impl(state, None)
+}
+
+pub(crate) fn sync_gateway_target_for_rotated_token_with_report(
+    state: &AppState,
+    cli_homes: Option<Vec<String>>,
+) -> Result<GatewayTargetSyncReport, String> {
+    sync_gateway_target_for_rotated_token_report_impl(state, cli_homes)
 }
 
 include!("provider_switchboard/actions.rs");

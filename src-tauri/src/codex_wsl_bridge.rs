@@ -8,6 +8,8 @@ use std::borrow::Cow;
 #[cfg(any(test, target_os = "windows"))]
 use std::collections::HashMap;
 #[cfg(target_os = "windows")]
+use std::collections::HashSet;
+#[cfg(target_os = "windows")]
 use std::process::Stdio;
 #[cfg(any(test, target_os = "windows"))]
 use std::sync::OnceLock;
@@ -33,7 +35,7 @@ const BRIDGE_PORT_CANDIDATES: usize = 4;
 #[cfg(any(test, target_os = "windows"))]
 const BRIDGE_HEALTH_MARKER: &str = "api-router-wsl-codex-bridge";
 #[cfg(any(test, target_os = "windows"))]
-const BRIDGE_SCRIPT_VERSION: u32 = 4;
+const BRIDGE_SCRIPT_VERSION: u32 = 6;
 #[cfg(any(test, target_os = "windows"))]
 const BRIDGE_LOG_PATH: &str = "/tmp/api-router-wsl-codex-bridge.log";
 
@@ -59,6 +61,15 @@ type TestReplayHandler = std::sync::Arc<
 
 #[cfg(all(test, target_os = "windows"))]
 static TEST_REPLAY_HANDLER: OnceLock<Mutex<Option<TestReplayHandler>>> = OnceLock::new();
+
+#[cfg(all(test, target_os = "windows"))]
+type TestRefreshHandler = std::sync::Arc<dyn Fn(Option<&str>) -> Result<(), String> + Send + Sync>;
+
+#[cfg(all(test, target_os = "windows"))]
+static TEST_REFRESH_HANDLER: OnceLock<Mutex<Option<TestRefreshHandler>>> = OnceLock::new();
+
+#[cfg(target_os = "windows")]
+static REFRESHED_HOME_KEYS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg(any(test, target_os = "windows"))]
@@ -191,12 +202,13 @@ fn bridge_ports_for_target(target: &BridgeTarget) -> Vec<u16> {
 }
 
 #[cfg(any(test, target_os = "windows"))]
-fn python_bridge_script() -> &'static str {
-    r#"
+fn python_bridge_script() -> String {
+    const TEMPLATE: &str = r#"
 import collections
 import json
 import os
 import queue
+import signal
 import subprocess
 import threading
 import time
@@ -236,36 +248,36 @@ def extract_text_value(value):
                 return raw
     return None
 
-    def has_failure_marker(value):
-        if value is None:
-            return False
-        if isinstance(value, bool):
-            return not value
+def has_failure_marker(value):
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return not value
     if isinstance(value, str):
         return False
     if isinstance(value, list):
         return any(has_failure_marker(item) for item in value)
-        if isinstance(value, dict):
-            if value.get("success") is False or value.get("ok") is False:
+    if isinstance(value, dict):
+        if value.get("success") is False or value.get("ok") is False:
+            return True
+        if value.get("error") not in (None, ""):
+            error = value.get("error")
+            if isinstance(error, str):
+                return bool(error.strip())
+            if error_object_has_failure_marker(error):
                 return True
-            if value.get("error") not in (None, ""):
-                error = value.get("error")
-                if isinstance(error, str):
-                    return bool(error.strip())
-                if error_object_has_failure_marker(error):
-                    return True
-            status = str(value.get("status") or "").strip().lower()
-            if status in ("failed", "error", "denied", "cancelled", "timeout"):
-                return True
-            return False
+        status = str(value.get("status") or "").strip().lower()
+        if status in ("failed", "error", "denied", "cancelled", "timeout"):
+            return True
         return False
+    return False
 
-    def error_object_has_failure_marker(value):
-        if isinstance(value, dict):
-            message = value.get("message")
-            if isinstance(message, str) and message.strip():
-                return True
-        return has_failure_marker(value)
+def error_object_has_failure_marker(value):
+    if isinstance(value, dict):
+        message = value.get("message")
+        if isinstance(message, str) and message.strip():
+            return True
+    return has_failure_marker(value)
 
 def is_shell_like_tool_name(name):
     normalized = str(name or "").strip().lower().replace("-", "").replace("_", "")
@@ -681,6 +693,7 @@ class AppServer:
             encoding="utf-8",
             bufsize=1,
             env=env,
+            start_new_session=True,
         )
         self.reader = threading.Thread(target=self._route_stdout, daemon=True)
         self.reader.start()
@@ -691,7 +704,14 @@ class AppServer:
         if child is None or child.poll() is not None:
             return
         try:
-            child.kill()
+            os.killpg(os.getpgid(child.pid), signal.SIGKILL)
+        except Exception:
+            try:
+                child.kill()
+            except Exception:
+                pass
+        try:
+            child.wait(timeout=5)
         except Exception:
             pass
 
@@ -807,7 +827,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path == "/health":
-            self._send(200, {"ok": True, "bridge": "api-router-wsl-codex-bridge", "version": 4})
+            self._send(200, {"ok": True, "bridge": "api-router-wsl-codex-bridge", "version": __BRIDGE_SCRIPT_VERSION__})
             return
         if parsed.path != "/notifications":
             self._send(404, {"error": "not found"})
@@ -869,7 +889,11 @@ if __name__ == "__main__":
     port = int(os.environ.get("API_ROUTER_WSL_BRIDGE_PORT", "42180"))
     server = ThreadingHTTPServer((host, port), Handler)
     server.serve_forever()
-"#
+    "#;
+    TEMPLATE.replace(
+        "__BRIDGE_SCRIPT_VERSION__",
+        &BRIDGE_SCRIPT_VERSION.to_string(),
+    )
 }
 
 #[cfg(any(test, target_os = "windows"))]
@@ -1037,6 +1061,13 @@ pub async fn _set_test_replay_handler(handler: Option<TestReplayHandler>) {
 }
 
 #[cfg(all(test, target_os = "windows"))]
+pub async fn _set_test_refresh_handler(handler: Option<TestRefreshHandler>) {
+    let lock = TEST_REFRESH_HANDLER.get_or_init(|| Mutex::new(None));
+    let mut guard = lock.lock().await;
+    *guard = handler;
+}
+
+#[cfg(all(test, target_os = "windows"))]
 async fn maybe_handle_test_rpc(
     codex_home: Option<&str>,
     method: &str,
@@ -1058,6 +1089,50 @@ async fn maybe_handle_test_replay(
     let guard = lock.lock().await;
     let handler = guard.as_ref()?;
     Some(handler(codex_home, since_event_id, max))
+}
+
+#[cfg(all(test, target_os = "windows"))]
+async fn maybe_handle_test_refresh(codex_home: Option<&str>) -> Option<Result<(), String>> {
+    let lock = TEST_REFRESH_HANDLER.get_or_init(|| Mutex::new(None));
+    let guard = lock.lock().await;
+    let handler = guard.as_ref()?;
+    Some(handler(codex_home))
+}
+
+#[cfg(target_os = "windows")]
+fn refreshed_home_keys() -> &'static Mutex<HashSet<String>> {
+    REFRESHED_HOME_KEYS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+#[cfg(target_os = "windows")]
+async fn refresh_bridge_home_once(target: &BridgeTarget) -> Result<(), String> {
+    let Some(home) = target.codex_home_linux.as_deref().map(str::trim) else {
+        return Ok(());
+    };
+    if home.is_empty() {
+        return Ok(());
+    }
+
+    let should_refresh = {
+        let mut guard = refreshed_home_keys().lock().await;
+        guard.insert(home.to_string())
+    };
+    if !should_refresh {
+        return Ok(());
+    }
+
+    let result = refresh_via_bridge(target).await;
+    if result.is_err() {
+        let mut guard = refreshed_home_keys().lock().await;
+        guard.remove(home);
+    }
+    result
+}
+
+#[cfg(all(test, target_os = "windows"))]
+async fn clear_refreshed_home_keys_for_test() {
+    let mut guard = refreshed_home_keys().lock().await;
+    guard.clear();
 }
 
 #[cfg(target_os = "windows")]
@@ -1224,6 +1299,9 @@ pub async fn try_request_in_home(
     #[cfg(target_os = "windows")]
     {
         let target = parse_bridge_target(codex_home)?;
+        if let Err(err) = refresh_bridge_home_once(&target).await {
+            return Some(Err(err));
+        }
         #[cfg(all(test, target_os = "windows"))]
         if let Some(result) =
             maybe_handle_test_rpc(target.codex_home_linux.as_deref(), method, &params).await
@@ -1243,6 +1321,10 @@ pub async fn try_refresh_server_in_home(codex_home: Option<&str>) -> Option<Resu
     #[cfg(target_os = "windows")]
     {
         let target = parse_bridge_target(codex_home)?;
+        {
+            let mut guard = refreshed_home_keys().lock().await;
+            guard.remove(target.codex_home_linux.as_deref().unwrap_or_default());
+        }
         Some(refresh_via_bridge(&target).await)
     }
 }
@@ -1305,6 +1387,10 @@ async fn request_via_bridge(
 
 #[cfg(target_os = "windows")]
 async fn refresh_via_bridge(target: &BridgeTarget) -> Result<(), String> {
+    #[cfg(all(test, target_os = "windows"))]
+    if let Some(result) = maybe_handle_test_refresh(target.codex_home_linux.as_deref()).await {
+        return result;
+    }
     let bridge = ensure_bridge(target).await?;
     let response = bridge
         .client
@@ -1406,16 +1492,45 @@ mod tests {
     }
 
     #[test]
+    fn python_bridge_script_kills_app_server_process_group() {
+        let script = python_bridge_script();
+        assert!(script.contains("import signal"));
+        assert!(script.contains("start_new_session=True"));
+        assert!(script.contains("os.killpg(os.getpgid(child.pid), signal.SIGKILL)"));
+        assert!(script.contains("child.wait(timeout=5)"));
+    }
+
+    #[test]
+    fn python_bridge_script_defines_failure_marker_helpers_at_module_scope() {
+        let script = python_bridge_script();
+
+        assert!(script.contains("\ndef has_failure_marker(value):"));
+        assert!(script.contains("\ndef error_object_has_failure_marker(value):"));
+        assert!(!script.contains("\n    def has_failure_marker(value):"));
+        assert!(!script.contains("\n    def error_object_has_failure_marker(value):"));
+    }
+
+    #[test]
+    fn python_bridge_script_serves_only_when_run_as_main() {
+        let script = python_bridge_script();
+
+        assert!(script.contains("if __name__ == \"__main__\":\n    host = os.environ.get"));
+        assert!(script.contains("\n    server = ThreadingHTTPServer((host, port), Handler)"));
+        assert!(script.contains("\n    server.serve_forever()"));
+    }
+
+    #[test]
     fn launch_script_stays_short_by_streaming_python_over_stdin() {
         let target = BridgeTarget {
             distro: Some("Ubuntu".to_string()),
             codex_home_linux: Some("/home/me/.codex".to_string()),
         };
         let script = build_launch_script(&target, 42180);
+        let bridge_script = python_bridge_script();
 
         assert!(script.len() < 2048);
         assert!(!script.contains("base64"));
-        assert!(!script.contains(python_bridge_script()));
+        assert!(!script.contains(&bridge_script));
     }
 
     #[test]
@@ -1441,6 +1556,43 @@ mod tests {
         assert!(second.try_lock().is_err());
         drop(held);
         assert!(second.try_lock().is_ok());
+    }
+
+    #[cfg(all(test, target_os = "windows"))]
+    #[tokio::test]
+    async fn request_refreshes_wsl_home_once_per_process() {
+        clear_refreshed_home_keys_for_test().await;
+
+        let refresh_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let rpc_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let refresh_calls_for_handler = refresh_calls.clone();
+        let rpc_calls_for_handler = rpc_calls.clone();
+
+        _set_test_refresh_handler(Some(std::sync::Arc::new(move |_codex_home| {
+            refresh_calls_for_handler.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        })))
+        .await;
+        _set_test_rpc_handler(Some(std::sync::Arc::new(
+            move |_codex_home, _method, _params| {
+                rpc_calls_for_handler.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(serde_json::json!({"ok": true}))
+            },
+        )))
+        .await;
+
+        let home = Some(r"\\wsl.localhost\Ubuntu\home\me\.codex");
+        let first = try_request_in_home(home, "thread/start", serde_json::json!({})).await;
+        let second = try_request_in_home(home, "thread/start", serde_json::json!({})).await;
+
+        assert!(matches!(first, Some(Ok(_))));
+        assert!(matches!(second, Some(Ok(_))));
+        assert_eq!(refresh_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(rpc_calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+        _set_test_rpc_handler(None).await;
+        _set_test_refresh_handler(None).await;
+        clear_refreshed_home_keys_for_test().await;
     }
 
     #[test]
