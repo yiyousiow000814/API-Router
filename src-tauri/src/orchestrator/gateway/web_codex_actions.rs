@@ -7,6 +7,7 @@ use crate::orchestrator::gateway::web_codex_git::{
 };
 use crate::orchestrator::gateway::web_codex_home::parse_workspace_target;
 use crate::orchestrator::gateway::web_codex_session_manager::CodexSessionManager;
+use crate::orchestrator::gateway::web_codex_session_runtime::locate_workspace_thread_runtime;
 use crate::orchestrator::gateway::web_codex_storage::{codex_attachments_dir, sanitize_name};
 use axum::extract::{Path as AxumPath, Query};
 use base64::Engine;
@@ -327,7 +328,7 @@ pub(super) async fn codex_turn_interrupt(
     if thread_id.is_empty() {
         return api_error(StatusCode::BAD_REQUEST, "threadId is required");
     }
-    let manager = CodexSessionManager::new(None);
+    let manager = turn_interrupt_session_manager(&req, thread_id);
     match manager.interrupt_turn(thread_id, &id).await {
         Ok(v) => Json(v).into_response(),
         Err(error) => api_error_detail(
@@ -343,6 +344,22 @@ pub(super) async fn codex_turn_interrupt(
 pub(super) struct TurnInterruptRequest {
     #[serde(default)]
     pub(super) thread_id: String,
+    #[serde(default)]
+    pub(super) workspace: Option<String>,
+}
+
+fn turn_interrupt_session_manager(
+    req: &TurnInterruptRequest,
+    thread_id: &str,
+) -> CodexSessionManager {
+    if let Some(workspace_target) = req.workspace.as_deref().and_then(parse_workspace_target) {
+        return CodexSessionManager::new(Some(workspace_target));
+    }
+    if let Some(location) = locate_workspace_thread_runtime(thread_id) {
+        return CodexSessionManager::new(location.workspace_target)
+            .with_home_override(location.home_override);
+    }
+    CodexSessionManager::new(None)
 }
 
 #[derive(Deserialize)]
@@ -1492,7 +1509,8 @@ mod tests {
         build_turn_start_params, build_turn_start_response, classify_upload_attachment,
         parse_slash_command, prompt_with_plan_protocol, read_plan_mode_from_rollout_path,
         sanitize_upload_file_name, service_tier_override_json, status_read_result,
-        supported_slash_commands, turn_thread_id, ServiceTierOverride, TurnStartRequest,
+        supported_slash_commands, turn_interrupt_session_manager, turn_thread_id,
+        ServiceTierOverride, TurnInterruptRequest, TurnStartRequest,
     };
     use serde_json::{json, Value};
 
@@ -1515,6 +1533,52 @@ mod tests {
         assert_eq!(params["input"][0]["type"], "text");
         assert_eq!(params["input"][0]["text"], "hi");
         assert_eq!(params["effort"], "high");
+    }
+
+    #[test]
+    fn turn_interrupt_session_manager_prefers_workspace_field() {
+        let req = TurnInterruptRequest {
+            thread_id: "thread-1".to_string(),
+            workspace: Some("wsl2".to_string()),
+        };
+        let manager = turn_interrupt_session_manager(&req, "thread-1");
+        assert_eq!(
+            manager.workspace_target(),
+            Some(crate::orchestrator::gateway::web_codex_home::WorkspaceTarget::Wsl2)
+        );
+    }
+
+    #[test]
+    fn turn_interrupt_session_manager_falls_back_to_runtime_registry() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        crate::orchestrator::gateway::_clear_workspace_runtime_registry_for_test();
+        crate::orchestrator::gateway::web_codex_session_runtime::upsert_workspace_thread_runtime(
+            Some(crate::orchestrator::gateway::web_codex_home::WorkspaceTarget::Wsl2),
+            Some("/home/yiyou/.api-router/codex-web-home"),
+            crate::orchestrator::gateway::web_codex_session_runtime::WorkspaceThreadRuntimeUpdate {
+                thread_id: "thread-1",
+                cwd: Some("/home/yiyou/repo"),
+                rollout_path: None,
+                status: Some("running"),
+                last_event_id: None,
+                last_turn_id: Some("turn-1"),
+                clear_last_turn_id: false,
+            },
+        );
+
+        let req = TurnInterruptRequest {
+            thread_id: "thread-1".to_string(),
+            workspace: None,
+        };
+        let manager = turn_interrupt_session_manager(&req, "thread-1");
+        assert_eq!(
+            manager.workspace_target(),
+            Some(crate::orchestrator::gateway::web_codex_home::WorkspaceTarget::Wsl2)
+        );
+        assert_eq!(
+            manager.home_override(),
+            Some("/home/yiyou/.api-router/codex-web-home")
+        );
     }
 
     #[test]

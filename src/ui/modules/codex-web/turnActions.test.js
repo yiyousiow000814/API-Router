@@ -969,7 +969,7 @@ describe("turnActions", () => {
       {
         path: "/codex/turns/turn-1/interrupt",
         method: "POST",
-        body: { threadId: "thread-1" },
+        body: { threadId: "thread-1", workspace: "windows" },
       },
     ]);
   });
@@ -1116,7 +1116,7 @@ describe("turnActions", () => {
       {
         path: "/codex/turns/turn-1/interrupt",
         method: "POST",
-        body: { threadId: "thread-1" },
+        body: { threadId: "thread-1", workspace: "windows" },
       },
     ]);
     expect(state.activeThreadQueuedTurns).toEqual([
@@ -3374,7 +3374,7 @@ it("clears failed-turn synthetic pending suppression before starting a new turn"
       {
         path: "/codex/turns/turn-1/interrupt",
         method: "POST",
-        body: { threadId: "thread-1" },
+        body: { threadId: "thread-1", workspace: "windows" },
       },
     ]);
     expect(syntheticClears).toEqual([{ threadId: "thread-1", items: [] }]);

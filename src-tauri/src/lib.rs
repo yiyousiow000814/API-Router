@@ -758,7 +758,7 @@ pub fn run() {
                         );
 
                         let token_sync_started = Instant::now();
-                        app_state::run_startup_gateway_token_sync(&st);
+                        app_state::run_startup_gateway_token_sync(&st).await;
                         write_app_startup_diag(
                             "startup_gateway_token_sync",
                             token_sync_started.elapsed().as_millis(),

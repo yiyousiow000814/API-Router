@@ -1096,12 +1096,11 @@ pub(crate) fn rotate_gateway_token(
     cli_homes: Option<Vec<String>>,
 ) -> Result<serde_json::Value, String> {
     let token = state.secrets.rotate_gateway_token()?;
-    let (failed_targets, sync_hard_failed) =
-        match crate::provider_switchboard::sync_gateway_target_for_rotated_token_with_failures(
-            &state,
-            cli_homes,
+    let (failed_targets, refreshed_homes, sync_hard_failed) =
+        match crate::provider_switchboard::sync_gateway_target_for_rotated_token_with_report(
+            &state, cli_homes,
         ) {
-            Ok(v) => (v, false),
+            Ok(report) => (report.failed_targets, report.refreshed_homes, false),
             Err(e) => {
                 state.gateway.store.events().codex().provider_switchboard_gateway_token_sync_failed(
                     "gateway",
@@ -1110,7 +1109,7 @@ pub(crate) fn rotate_gateway_token(
                     ),
                     serde_json::Value::Null,
                 );
-                (vec![format!("sync state error: {e}")], true)
+                (vec![format!("sync state error: {e}")], Vec::new(), true)
             }
         };
     if !sync_hard_failed && !failed_targets.is_empty() {
@@ -1119,6 +1118,13 @@ pub(crate) fn rotate_gateway_token(
             "Gateway token rotated, but failed to sync some gateway targets.",
             serde_json::json!({ "failed_targets": failed_targets }),
         );
+    }
+    if !sync_hard_failed {
+        for home in &refreshed_homes {
+            let _ = tauri::async_runtime::block_on(
+                crate::codex_app_server::refresh_server_after_provider_switch(Some(home.as_str())),
+            );
+        }
     }
     Ok(serde_json::json!({
       "token": token,

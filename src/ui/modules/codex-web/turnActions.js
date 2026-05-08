@@ -750,6 +750,7 @@ export function createTurnActionsModule(deps) {
           method: "POST",
           body: {
             threadId,
+            workspace,
           },
         });
     clearPlanTurnArtifacts(threadId, { bumpLiveEpoch: true });

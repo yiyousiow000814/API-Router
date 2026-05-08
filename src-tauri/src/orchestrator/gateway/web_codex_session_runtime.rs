@@ -27,6 +27,14 @@ pub(crate) struct WorkspaceThreadRuntimeSnapshot {
     pub(crate) updated_at_unix_secs: i64,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct WorkspaceThreadRuntimeLocation {
+    pub(crate) workspace_target: Option<WorkspaceTarget>,
+    pub(crate) home_override: Option<String>,
+    pub(crate) updated_at_unix_secs: i64,
+}
+
 pub(crate) struct WorkspaceThreadRuntimeUpdate<'a> {
     pub(crate) thread_id: &'a str,
     pub(crate) cwd: Option<&'a str>,
@@ -342,6 +350,33 @@ pub(crate) fn workspace_thread_runtime_snapshot(
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn locate_workspace_thread_runtime(
+    thread_id: &str,
+) -> Option<WorkspaceThreadRuntimeLocation> {
+    let normalized_thread_id = thread_id.trim();
+    if normalized_thread_id.is_empty() {
+        return None;
+    }
+    let guard = lock_registry();
+    guard
+        .values()
+        .filter_map(|entry| {
+            let thread = entry.threads.get(normalized_thread_id)?;
+            Some(WorkspaceThreadRuntimeLocation {
+                workspace_target: entry.workspace_target,
+                home_override: entry.home_override.clone(),
+                updated_at_unix_secs: thread.updated_at_unix_secs,
+            })
+        })
+        .max_by_key(|location| {
+            (
+                location.updated_at_unix_secs,
+                location.workspace_target.is_some(),
+            )
+        })
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn workspace_thread_runtime_count(
     workspace_target: Option<WorkspaceTarget>,
     home_override: Option<&str>,
@@ -363,10 +398,11 @@ pub(crate) fn _clear_workspace_runtime_registry_for_test() {
 mod tests {
     use super::{
         _clear_workspace_runtime_registry_for_test, consume_workspace_thread_retry_attempt,
-        ensure_workspace_runtime_registered, mark_workspace_runtime_connected,
-        mark_workspace_runtime_replay, upsert_workspace_thread_runtime, workspace_runtime_snapshot,
+        ensure_workspace_runtime_registered, locate_workspace_thread_runtime,
+        mark_workspace_runtime_connected, mark_workspace_runtime_replay,
+        upsert_workspace_thread_runtime, workspace_runtime_snapshot,
         workspace_thread_retry_budget_can_retry, workspace_thread_runtime_count,
-        workspace_thread_runtime_snapshot,
+        workspace_thread_runtime_snapshot, WorkspaceThreadRuntimeUpdate,
     };
 
     fn lock_tests() -> std::sync::MutexGuard<'static, ()> {
@@ -390,6 +426,48 @@ mod tests {
         assert!(!snapshot.connected);
         assert_eq!(snapshot.last_replay_cursor, 0);
         assert_eq!(snapshot.last_replay_last_event_id, None);
+    }
+
+    #[test]
+    fn locate_workspace_thread_runtime_prefers_latest_workspace_specific_record() {
+        let _guard = lock_tests();
+        _clear_workspace_runtime_registry_for_test();
+
+        upsert_workspace_thread_runtime(
+            None,
+            Some("C:\\fallback-home"),
+            WorkspaceThreadRuntimeUpdate {
+                thread_id: "thread-1",
+                cwd: None,
+                rollout_path: None,
+                status: Some("running"),
+                last_event_id: None,
+                last_turn_id: None,
+                clear_last_turn_id: false,
+            },
+        );
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        upsert_workspace_thread_runtime(
+            Some(WorkspaceTarget::Wsl2),
+            Some("/home/yiyou/.api-router/codex-web-home"),
+            WorkspaceThreadRuntimeUpdate {
+                thread_id: "thread-1",
+                cwd: None,
+                rollout_path: None,
+                status: Some("running"),
+                last_event_id: None,
+                last_turn_id: Some("turn-1"),
+                clear_last_turn_id: false,
+            },
+        );
+
+        let location =
+            locate_workspace_thread_runtime("thread-1").expect("thread runtime location");
+        assert_eq!(location.workspace_target, Some(WorkspaceTarget::Wsl2));
+        assert_eq!(
+            location.home_override.as_deref(),
+            Some("/home/yiyou/.api-router/codex-web-home")
+        );
     }
 
     #[test]

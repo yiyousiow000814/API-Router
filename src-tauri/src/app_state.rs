@@ -1188,9 +1188,18 @@ impl Default for UiWatchdogState {
     }
 }
 
-pub fn run_startup_gateway_token_sync(state: &AppState) {
-    match crate::provider_switchboard::sync_gateway_target_for_current_token_on_startup(state) {
-        Ok(failed_targets) => {
+pub async fn run_startup_gateway_token_sync(state: &AppState) {
+    match crate::provider_switchboard::sync_gateway_target_for_current_token_on_startup_with_report(
+        state,
+    ) {
+        Ok(report) => {
+            for home in &report.refreshed_homes {
+                let _ = crate::codex_app_server::refresh_server_after_provider_switch(Some(
+                    home.as_str(),
+                ))
+                .await;
+            }
+            let failed_targets = report.failed_targets;
             if !failed_targets.is_empty() {
                 state
                     .gateway
@@ -1629,8 +1638,9 @@ mod tests {
         assert_eq!(parse_tasklist_mem_kb(&columns[4]), Some(221_112));
     }
 
-    #[test]
-    fn build_state_syncs_gateway_token_to_gateway_targets() {
+    #[cfg(windows)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn build_state_syncs_gateway_token_to_gateway_targets() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let config_path = tmp.path().join("user-data").join("config.toml");
         let data_dir = tmp.path().join("data");
@@ -1677,7 +1687,7 @@ mod tests {
         .expect("write switchboard state");
 
         let state = build_state(config_path, data_dir).expect("build state");
-        run_startup_gateway_token_sync(&state);
+        run_startup_gateway_token_sync(&state).await;
 
         let auth: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(cli_home.join("auth.json")).expect("read synced auth"),
@@ -1781,7 +1791,7 @@ mod tests {
         let active_port = state.gateway.cfg.read().listen.port;
         assert_ne!(active_port, occupied_port);
 
-        run_startup_gateway_token_sync(&state);
+        run_startup_gateway_token_sync(&state).await;
 
         let cli_cfg = std::fs::read_to_string(cli_home.join("config.toml")).expect("read cli cfg");
         assert!(cli_cfg.contains(&format!("base_url = \"http://127.0.0.1:{active_port}/v1\"")));
