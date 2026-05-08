@@ -430,12 +430,23 @@ pub(super) async fn codex_thread_interrupt(
     if let Some(resp) = require_codex_auth(&st, &headers) {
         return resp;
     }
-    let _ = query.workspace.as_deref().and_then(parse_workspace_target);
-    let _ = id;
-    api_error(
-        StatusCode::BAD_REQUEST,
-        "terminal interrupt sync is disabled for web flows",
-    )
+    let thread_id = id.trim();
+    if thread_id.is_empty() {
+        return api_error(StatusCode::BAD_REQUEST, "threadId is required");
+    }
+    let req = TurnInterruptRequest {
+        thread_id: thread_id.to_string(),
+        workspace: query.workspace,
+    };
+    let manager = turn_interrupt_session_manager(&req, thread_id);
+    match manager.interrupt_turn(thread_id, "").await {
+        Ok(v) => Json(v).into_response(),
+        Err(error) => api_error_detail(
+            StatusCode::BAD_GATEWAY,
+            "codex app-server request failed",
+            error,
+        ),
+    }
 }
 
 #[derive(Deserialize)]
@@ -1515,12 +1526,55 @@ pub(super) async fn codex_rpc_proxy(
 mod tests {
     use super::{
         build_turn_start_params, build_turn_start_response, classify_upload_attachment,
-        parse_slash_command, prompt_with_plan_protocol, read_plan_mode_from_rollout_path,
-        sanitize_upload_file_name, service_tier_override_json, status_read_result,
-        supported_slash_commands, turn_interrupt_session_manager, turn_thread_id,
-        ServiceTierOverride, TurnInterruptRequest, TurnStartRequest,
+        codex_thread_interrupt, parse_slash_command, prompt_with_plan_protocol,
+        read_plan_mode_from_rollout_path, sanitize_upload_file_name, service_tier_override_json,
+        status_read_result, supported_slash_commands, turn_interrupt_session_manager,
+        turn_thread_id, ServiceTierOverride, ThreadInterruptQuery, TurnInterruptRequest,
+        TurnStartRequest,
     };
+    use axum::body::to_bytes;
+    use axum::extract::{Path as AxumPath, Query, State};
+    use axum::http::{header, HeaderMap, StatusCode};
+    use parking_lot::RwLock;
     use serde_json::{json, Value};
+    use std::collections::HashMap;
+    use std::sync::atomic::AtomicU64;
+    use std::sync::Arc;
+
+    use crate::orchestrator::config::AppConfig;
+    use crate::orchestrator::gateway::web_codex_home::WorkspaceTarget;
+    use crate::orchestrator::gateway::web_codex_session_runtime::{
+        upsert_workspace_thread_runtime, WorkspaceThreadRuntimeUpdate,
+    };
+    use crate::orchestrator::router::RouterState;
+    use crate::orchestrator::secrets::SecretStore;
+    use crate::orchestrator::store::unix_ms;
+    use crate::orchestrator::upstream::UpstreamClient;
+
+    fn build_test_gateway_state(
+        tmp: &tempfile::TempDir,
+    ) -> crate::orchestrator::gateway::GatewayState {
+        let store =
+            crate::orchestrator::gateway::open_store_dir(tmp.path().join("data")).expect("store");
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets
+            .set_gateway_token("test-token")
+            .expect("set gateway token");
+        let cfg = AppConfig::default_config();
+        let router = Arc::new(RouterState::new(&cfg, unix_ms()));
+        crate::orchestrator::gateway::GatewayState {
+            cfg: Arc::new(RwLock::new(cfg)),
+            router,
+            store,
+            upstream: UpstreamClient::new(),
+            secrets,
+            last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+            last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+            usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+            prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+            client_sessions: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
 
     #[test]
     fn turn_start_request_accepts_reasoning_effort() {
@@ -1648,6 +1702,63 @@ mod tests {
             manager.home_override(),
             Some("/home/yiyou/.api-router/thread-runtime-home")
         );
+    }
+
+    #[tokio::test]
+    async fn thread_interrupt_routes_web_flow_to_turn_interrupt() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        crate::orchestrator::gateway::_clear_workspace_runtime_registry_for_test();
+        upsert_workspace_thread_runtime(
+            Some(WorkspaceTarget::Wsl2),
+            Some("/home/yiyou/.api-router/thread-runtime-home"),
+            WorkspaceThreadRuntimeUpdate {
+                thread_id: "thread-1",
+                cwd: Some("/home/yiyou/repo"),
+                rollout_path: None,
+                status: Some("running"),
+                last_event_id: None,
+                last_turn_id: Some("turn-1"),
+                clear_last_turn_id: false,
+            },
+        );
+        crate::codex_app_server::_set_test_request_handler(Some(Arc::new(
+            move |home, method, params| {
+                assert_eq!(home, Some("/home/yiyou/.api-router/thread-runtime-home"));
+                assert_eq!(method, "turn/interrupt");
+                assert_eq!(params, json!({ "threadId": "thread-1", "turnId": "" }));
+                Ok(json!({ "ok": true, "interrupted": true }))
+            },
+        )))
+        .await;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state = build_test_gateway_state(&tmp);
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            "Bearer test-token".parse().expect("auth header"),
+        );
+
+        let response = codex_thread_interrupt(
+            State(state),
+            headers,
+            Query(ThreadInterruptQuery {
+                workspace: Some("wsl2".to_string()),
+            }),
+            AxumPath("thread-1".to_string()),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).expect("json body"),
+            json!({ "ok": true, "interrupted": true })
+        );
+
+        crate::codex_app_server::_set_test_request_handler(None).await;
     }
 
     #[test]

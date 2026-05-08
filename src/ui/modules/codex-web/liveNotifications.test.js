@@ -877,6 +877,86 @@ Implement this plan?
     );
   });
 
+  it("settles pending runtime when a final assistant snapshot was already rendered by history", () => {
+    const finalizedRuntime = [];
+    const statuses = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [
+        { role: "user", text: "hi", kind: "" },
+        { role: "assistant", text: "你好，直接说任务。", kind: "" },
+      ],
+      activeThreadLiveAssistantThreadId: "",
+      activeThreadLiveAssistantIndex: -1,
+      activeThreadLiveAssistantMsgNode: null,
+      activeThreadLiveAssistantBodyNode: null,
+      activeThreadLiveAssistantText: "",
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingUserMessage: "hi",
+      activeThreadPendingAssistantMessage: "你好，直接说任务。",
+      activeThreadActiveCommands: [],
+      activeThreadPlan: null,
+      liveDebugEvents: [],
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      addChat() {},
+      scheduleChatLiveFollow() {},
+      setStatus(message, isWarn = false) {
+        statuses.push({ message, isWarn });
+      },
+      finalizeRuntimeState(threadId) {
+        finalizedRuntime.push(threadId);
+      },
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || notification?.params?.item?.thread_id || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "item.completed",
+      params: {
+        item: {
+          type: "agent_message",
+          thread_id: "thread-1",
+          phase: "final_answer",
+          text: "你好，直接说任务。",
+        },
+      },
+    });
+
+    expect(state.activeThreadMessages).toEqual([
+      { role: "user", text: "hi", kind: "" },
+      { role: "assistant", text: "你好，直接说任务。", kind: "" },
+    ]);
+    expect(state.activeThreadPendingTurnRunning).toBe(false);
+    expect(state.activeThreadPendingTurnThreadId).toBe("");
+    expect(state.activeThreadPendingTurnId).toBe("");
+    expect(state.activeThreadPendingUserMessage).toBe("");
+    expect(state.activeThreadPendingAssistantMessage).toBe("");
+    expect(finalizedRuntime).toEqual(["thread-1"]);
+    expect(statuses.at(-1)).toEqual({ message: "Turn completed.", isWarn: false });
+    expect(state.liveDebugEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "live.skip:assistant_snapshot_duplicate",
+          threadId: "thread-1",
+        }),
+      ])
+    );
+  });
+
   it("persists the finalized assistant snapshot into pending turn state until history catches up", () => {
     const chatBox = {
       appendChild(node) {

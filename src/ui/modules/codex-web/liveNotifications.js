@@ -1250,6 +1250,17 @@ export function createLiveNotificationsModule(deps) {
     syncPendingAssistantState(String(state.activeThreadLiveAssistantThreadId || ""), state.activeThreadLiveAssistantText);
   }
 
+  function settleDuplicateFinalAssistantSnapshot(threadId, reason) {
+    finishPendingTurnRun(threadId);
+    resetPendingTurnRuntime({ reason });
+    if (
+      (!Array.isArray(state.activeThreadActiveCommands) || state.activeThreadActiveCommands.length === 0) &&
+      !state.activeThreadPlan
+    ) {
+      setStatus("Turn completed.", false);
+    }
+  }
+
   function renderAssistantSnapshot(threadId, text, options = {}) {
     const nextText = String(text || "");
     if (!nextText) {
@@ -1265,6 +1276,7 @@ export function createLiveNotificationsModule(deps) {
         final: true,
         chars: nextText.length,
       });
+      settleDuplicateFinalAssistantSnapshot(threadId, "live.assistant_snapshot:recent_final_duplicate");
       return;
     }
     if (
@@ -1285,6 +1297,7 @@ export function createLiveNotificationsModule(deps) {
           final: !!options.final,
         });
         rememberFinalAssistant(threadId, nextText);
+        settleDuplicateFinalAssistantSnapshot(threadId, "live.assistant_snapshot:materialized_final_duplicate");
         return;
       }
     }
