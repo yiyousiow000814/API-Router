@@ -1558,6 +1558,7 @@ mod tests {
         assert!(second.try_lock().is_ok());
     }
 
+    #[cfg(all(test, target_os = "windows"))]
     #[tokio::test]
     async fn request_refreshes_wsl_home_once_per_process() {
         clear_refreshed_home_keys_for_test().await;
