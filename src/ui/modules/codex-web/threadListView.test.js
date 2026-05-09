@@ -82,7 +82,7 @@ describe("threadListView", () => {
     };
   }
 
-  it("builds stable workspace entries grouped by first visible order", () => {
+  it("sorts workspace groups alphabetically while preserving thread order inside each group", () => {
     const entries = buildWorkspaceEntries(
       [
         { id: "2", workspaceLabel: "zzz-project" },
@@ -92,12 +92,12 @@ describe("threadListView", () => {
       (thread) => thread.workspaceLabel
     );
     expect(entries.map(([label, items]) => [label, items.map((item) => item.id)])).toEqual([
-      ["zzz-project", ["2"]],
       ["aaa-project", ["1", "3"]],
+      ["zzz-project", ["2"]],
     ]);
   });
 
-  it("keeps same-label folders separate when group keys differ", () => {
+  it("sorts same-label folders by their rendered disambiguation", () => {
     const entries = buildWorkspaceEntries(
       [
         { id: "1", cwd: "C:/work/api-router" },
@@ -109,8 +109,8 @@ describe("threadListView", () => {
       })
     );
     expect(entries.map(([label, items, key]) => [label, items.map((item) => item.id), key])).toEqual([
-      ["api-router (work)", ["1"], "c:/work/api-router"],
       ["api-router (sandbox)", ["2"], "d:/sandbox/api-router"],
+      ["api-router (work)", ["1"], "c:/work/api-router"],
     ]);
   });
 
