@@ -65,13 +65,25 @@ export function buildWorkspaceEntries(sourceItems, workspaceKeyOfThread) {
     if (!groupLabels.has(key)) groupLabels.set(key, keyLabel);
     groups.get(key).push(thread);
   }
-  const orderedGroups = Array.from(groups.entries()).map(([key, items]) => ({
+  const groupEntries = Array.from(groups.entries()).map(([key, items]) => ({
     key,
     label: groupLabels.get(key) || key,
     items,
   }));
-  const labels = buildDisambiguatedWorkspaceLabels(orderedGroups);
-  return orderedGroups.map((group, index) => [labels[index] || group.label, group.items, group.key]);
+  const labels = buildDisambiguatedWorkspaceLabels(groupEntries);
+  const orderedGroups = groupEntries
+    .map((group, index) => ({
+      ...group,
+      displayLabel: labels[index] || group.label,
+    }))
+    .sort((a, b) => {
+      const leftLabel = String(a?.displayLabel || a?.label || a?.key || "").trim().toLowerCase();
+      const rightLabel = String(b?.displayLabel || b?.label || b?.key || "").trim().toLowerCase();
+      const labelCompare = leftLabel.localeCompare(rightLabel, undefined, { numeric: true });
+      if (labelCompare !== 0) return labelCompare;
+      return String(a?.key || "").localeCompare(String(b?.key || ""), undefined, { numeric: true });
+    });
+  return orderedGroups.map((group) => [group.displayLabel || group.label, group.items, group.key]);
 }
 
 export function filterWorkspaceSectionThreads(threads, favoriteSet, query, workspaceLabel) {

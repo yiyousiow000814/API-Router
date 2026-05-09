@@ -96,7 +96,9 @@ fn workspace_bucket_is_stale(
 }
 
 fn workspace_allows_stale_auto_refresh(target: WorkspaceTarget) -> bool {
-    !matches!(target, WorkspaceTarget::Wsl2)
+    match target {
+        WorkspaceTarget::Windows | WorkspaceTarget::Wsl2 => true,
+    }
 }
 
 fn workspace_bucket_needs_auto_refresh(
@@ -1996,7 +1998,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wsl2_stale_cached_thread_list_does_not_auto_rebuild_on_non_force() {
+    async fn wsl2_stale_cached_thread_list_rebuilds_in_background_on_non_force() {
         let _test_guard = codex_app_server::lock_test_globals();
         invalidate_thread_list_cache_all();
         upsert_thread_item_hint(
@@ -2019,26 +2021,28 @@ mod tests {
         }
 
         let snapshot = list_threads_snapshot(Some(WorkspaceTarget::Wsl2), false).await;
-
         assert_eq!(snapshot.items.len(), 1);
         assert_eq!(
             snapshot.items[0].get("id").and_then(Value::as_str),
             Some("thread-wsl-cached")
         );
         assert!(
-            !snapshot.refreshing,
-            "cached WSL2 list should not launch background WSL work during normal polling"
+            snapshot.refreshing,
+            "stale WSL2 cache should return stale data while background rebuild runs"
         );
+
+        wait_for_workspace_refresh_to_finish(WorkspaceTarget::Wsl2).await;
+
         let index = lock_threads_workspace_index();
         let bucket = workspace_bucket_ref(&index, WorkspaceTarget::Wsl2);
         assert!(
             !bucket.refreshing,
-            "normal WSL2 cache reads must not leave a background rebuild running"
+            "WSL2 background rebuild should clear refreshing state when done"
         );
     }
 
     #[tokio::test]
-    async fn wsl2_thread_snapshot_hydrates_from_persisted_cache_without_refresh() {
+    async fn wsl2_thread_snapshot_hydrates_from_persisted_cache_and_revalidates_when_stale() {
         let _test_guard = codex_app_server::lock_test_globals();
         let temp = tempfile::tempdir().expect("tempdir");
         let user_data_dir = temp.path().join("user-data");
@@ -2072,14 +2076,15 @@ mod tests {
             Some("persisted-wsl-thread")
         );
         assert!(
-            !snapshot.refreshing,
-            "persisted WSL2 cache should avoid launching WSL during reload"
+            snapshot.refreshing,
+            "stale persisted WSL2 cache should return cached items while background refresh runs"
         );
+        wait_for_workspace_refresh_to_finish(WorkspaceTarget::Wsl2).await;
         let index = lock_threads_workspace_index();
         let bucket = workspace_bucket_ref(&index, WorkspaceTarget::Wsl2);
         assert!(
             !bucket.refreshing,
-            "hydrating WSL2 cache should not leave background WSL work running"
+            "hydrating stale WSL2 cache should clear background refresh state when done"
         );
     }
 
