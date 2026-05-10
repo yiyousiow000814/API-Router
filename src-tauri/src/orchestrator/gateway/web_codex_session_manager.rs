@@ -1049,13 +1049,11 @@ pub(crate) fn workspace_thread_runtime_snapshot_for_home(
     home_override: Option<&str>,
     thread_id: &str,
 ) -> Option<WorkspaceThreadRuntimeSnapshot> {
-    if let Some(snapshot) = workspace_thread_runtime_snapshot(None, home_override, thread_id) {
-        return Some(snapshot);
-    }
     let normalized_home = home_override
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
+    let mut preferred_snapshot = None;
     for workspace_target in [WorkspaceTarget::Windows, WorkspaceTarget::Wsl2] {
         let workspace_home = web_codex_rpc_home_override_for_target(Some(workspace_target));
         let workspace_home = workspace_home
@@ -1071,10 +1069,19 @@ pub(crate) fn workspace_thread_runtime_snapshot_for_home(
             normalized_home.as_deref(),
             thread_id,
         ) {
-            return Some(snapshot);
+            let replace = preferred_snapshot
+                .as_ref()
+                .map(|current: &WorkspaceThreadRuntimeSnapshot| {
+                    snapshot.updated_at_unix_secs >= current.updated_at_unix_secs
+                })
+                .unwrap_or(true);
+            if replace {
+                preferred_snapshot = Some(snapshot);
+            }
         }
     }
-    None
+    preferred_snapshot
+        .or_else(|| workspace_thread_runtime_snapshot(None, normalized_home.as_deref(), thread_id))
 }
 
 fn response_rollout_path(value: &Value) -> Option<String> {
@@ -1726,12 +1733,16 @@ mod tests {
     #[tokio::test]
     async fn replay_notification_batch_resets_cursor_and_injects_workspace() {
         let _guard = crate::codex_app_server::lock_test_globals();
-        let _home = isolate_windows_web_codex_home();
         _clear_workspace_runtime_registry_for_test();
         clear_threads_workspace_index_for_test();
         crate::codex_app_server::_clear_notifications_for_test().await;
-        let home = web_codex_rpc_home_override_for_target(Some(WorkspaceTarget::Windows))
-            .expect("isolated windows home");
+        let home = std::env::temp_dir().join(format!(
+            "api-router-replay-test-{}-{}",
+            std::process::id(),
+            crate::orchestrator::store::unix_ms()
+        ));
+        std::fs::create_dir_all(home.join("sessions")).expect("sessions dir");
+        let home = home.to_string_lossy().to_string();
         crate::codex_app_server::_push_notification_for_test(
             Some(home.as_str()),
             json!({
@@ -1744,7 +1755,8 @@ mod tests {
         )
         .await;
 
-        let manager = CodexSessionManager::new(parse_workspace_target("windows"));
+        let manager = CodexSessionManager::new(parse_workspace_target("windows"))
+            .with_home_override(Some(home.clone()));
         let batch = manager.replay_notification_batch(999, 16, true).await;
 
         assert!(batch.reset);
@@ -1773,6 +1785,52 @@ mod tests {
         assert_eq!(thread_snapshot.last_event_id, Some(batch.next_cursor));
 
         crate::codex_app_server::_clear_notifications_for_test().await;
+    }
+
+    #[test]
+    fn workspace_thread_runtime_snapshot_for_home_prefers_workspace_specific_snapshot() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        let _home_guard = isolate_windows_web_codex_home();
+        _clear_workspace_runtime_registry_for_test();
+        let home = web_codex_rpc_home_override_for_target(Some(WorkspaceTarget::Windows))
+            .expect("windows runtime home");
+
+        upsert_workspace_thread_runtime(
+            None,
+            Some(home.as_str()),
+            WorkspaceThreadRuntimeUpdate {
+                thread_id: "thread-1",
+                cwd: Some(r"C:\fallback"),
+                rollout_path: Some(r"C:\fallback\.codex\sessions\thread-1.jsonl"),
+                status: Some("failed"),
+                last_event_id: Some(4),
+                last_turn_id: Some("turn-fallback"),
+                clear_last_turn_id: false,
+            },
+        );
+        upsert_workspace_thread_runtime(
+            Some(WorkspaceTarget::Windows),
+            Some(home.as_str()),
+            WorkspaceThreadRuntimeUpdate {
+                thread_id: "thread-1",
+                cwd: Some(r"C:\repo"),
+                rollout_path: Some(r"C:\repo\.codex\sessions\thread-1.jsonl"),
+                status: Some("running"),
+                last_event_id: Some(9),
+                last_turn_id: Some("turn-live"),
+                clear_last_turn_id: false,
+            },
+        );
+
+        let snapshot = workspace_thread_runtime_snapshot_for_home(Some(home.as_str()), "thread-1")
+            .expect("runtime snapshot");
+        assert_eq!(snapshot.cwd.as_deref(), Some(r"C:\repo"));
+        assert_eq!(
+            snapshot.rollout_path.as_deref(),
+            Some(r"C:\repo\.codex\sessions\thread-1.jsonl")
+        );
+        assert_eq!(snapshot.status.as_deref(), Some("running"));
+        assert_eq!(snapshot.last_turn_id.as_deref(), Some("turn-live"));
     }
 
     #[tokio::test]

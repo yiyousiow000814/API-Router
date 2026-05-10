@@ -1066,6 +1066,362 @@ describe("debugTools", () => {
     ]);
   });
 
+  it("records mocked fetches and exposes ws/history e2e hooks", async () => {
+    const windowRef = {
+      location: { search: "?e2e=1" },
+      setInterval() {
+        return 1;
+      },
+      clearInterval() {},
+      addEventListener() {},
+    };
+    const baseFetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ items: { data: [], nextCursor: null } }),
+    }));
+    windowRef.fetch = baseFetch;
+    const refreshCalls = [];
+    const loadCalls = [];
+    const apiCalls = [];
+    const state = {
+      activeThreadId: "",
+      activeThreadWorkspace: "windows",
+      activeThreadRolloutPath: "",
+      ws: { readyState: 0 },
+      wsSubscribedEvents: false,
+      liveDebugEvents: [],
+    };
+    const module = createDebugToolsModule({
+      state,
+      byId() {
+        return null;
+      },
+      renderInlineMessageText(value) {
+        return String(value || "");
+      },
+      findNextInlineCodeSpan() {
+        return null;
+      },
+      normalizeWorkspaceTarget(value) {
+        return value === "wsl2" ? "wsl2" : "windows";
+      },
+      normalizeModelOption(value) {
+        return value;
+      },
+      ensureArrayItems(value) {
+        return Array.isArray(value) ? value : [];
+      },
+      pickLatestModelId() {
+        return "";
+      },
+      REASONING_EFFORT_KEY: "reasoning",
+      MODEL_LOADING_MIN_MS: 0,
+      normalizeThreadTokenUsage(value) {
+        return value;
+      },
+      renderComposerContextLeft() {},
+      clearChatMessages() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      getWorkspaceTarget() {
+        return state.activeThreadWorkspace;
+      },
+      getStartCwdForWorkspace() {
+        return "";
+      },
+      parseUserMessageParts() {
+        return { text: "", images: [] };
+      },
+      renderMessageAttachments() {
+        return "";
+      },
+      setMainTab() {},
+      setMobileTab() {},
+      setActiveThread(value) {
+        state.activeThreadId = value;
+      },
+      setChatOpening() {},
+      api: async (path, options) => {
+        apiCalls.push({ path, options });
+        return {
+          threadId: "safe-thread-open-1",
+          thread: {
+            id: "safe-thread-open-1",
+            path: "C:\\Users\\yiyou\\.codex\\sessions\\safe-thread-open-1.jsonl",
+          },
+        };
+      },
+      loadThreadMessages: async (threadId, options) => {
+        loadCalls.push({ threadId, options });
+      },
+      refreshThreads: async (target, options) => {
+        refreshCalls.push({ target, options });
+        return windowRef.fetch(`/codex/threads?workspace=${target}`, { method: "GET" });
+      },
+      handleWsPayload() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      createAssistantStreamingMessage() {
+        return { msg: null, body: null };
+      },
+      appendStreamingDelta() {},
+      setStatus() {},
+      isThreadAnimDebugEnabled() {
+        return false;
+      },
+      pushThreadAnimDebug() {},
+      threadAnimDebug: { enabled: false, events: [], seq: 0 },
+      WEB_CODEX_DEV_DEBUG_VERSION: "test",
+      documentRef: {
+        querySelectorAll() {
+          return [];
+        },
+        getElementById() {
+          return { textContent: "" };
+        },
+      },
+      windowRef,
+      performanceRef: { now: () => 0 },
+    });
+
+    module.installDebugAndE2E();
+    const hooks = windowRef.__webCodexE2E;
+
+    expect(typeof hooks.installFetchRecorder).toBe("function");
+    expect(typeof hooks.getFetchCalls).toBe("function");
+    expect(typeof hooks.setWsConnectedForE2E).toBe("function");
+    expect(typeof hooks.triggerHistoryFetchForE2E).toBe("function");
+    expect(typeof hooks.seedHeavyThreadHistory).toBe("function");
+    expect(typeof hooks.setChatStickiness).toBe("function");
+    expect(typeof hooks.setChatOpeningState).toBe("function");
+    expect(typeof hooks.startOpenThreadSlow).toBe("function");
+    expect(typeof hooks.awaitSlowOpenDone).toBe("function");
+    expect(typeof hooks.showTransientToolMessage).toBe("function");
+
+    expect(hooks.seedThreads(2)).toEqual({ ok: true, count: 2 });
+    expect(state.activeThreadWorkspace).toBe("windows");
+    expect(state.threadItemsAll.map((item) => item.id)).toEqual(["e2e_0", "e2e_1"]);
+    expect(state.threadItemsAll.map((item) => item.workspace)).toEqual(["wsl2", "windows"]);
+
+    expect(hooks.installFetchRecorder()).toEqual({ ok: true });
+    const refreshResult = await hooks.refreshThreadsWithMock("windows", [{ id: "t-1" }]);
+    expect(refreshResult).toEqual({ ok: true });
+    expect(refreshCalls).toEqual([
+      { target: "windows", options: { force: true } },
+    ]);
+    expect(baseFetch).not.toHaveBeenCalled();
+    expect(hooks.getFetchCalls()).toEqual([
+      expect.objectContaining({
+        url: "/codex/threads?workspace=windows",
+        method: "GET",
+      }),
+    ]);
+
+    expect(hooks.seedHeavyThreadHistory("heavy-thread", { turns: 2, itemsPerTurn: 3, textSize: 4 })).toEqual({
+      ok: true,
+      turns: 2,
+      itemsPerTurn: 3,
+      textSize: 4,
+    });
+    expect(hooks.getThreadHistory("heavy-thread")?.turns).toHaveLength(2);
+    expect(hooks.setChatStickiness(false)).toEqual({ ok: true, sticky: false });
+    expect(hooks.setChatOpeningState(true)).toEqual(expect.objectContaining({ text: expect.any(String) }));
+
+    expect(hooks.setWsConnectedForE2E(true)).toEqual({ ok: true, connected: true });
+    expect(state.ws.readyState).toBe(1);
+    expect(state.wsSubscribedEvents).toBe(true);
+
+    const triggerResult = await hooks.triggerHistoryFetchForE2E({
+      threadId: "thread-1",
+      workspace: "wsl2",
+      rolloutPath: "/tmp/thread-1.jsonl",
+    });
+    expect(triggerResult).toEqual({
+      ok: true,
+      threadId: "thread-1",
+      workspace: "wsl2",
+      rolloutPath: "/tmp/thread-1.jsonl",
+    });
+    expect(state.activeThreadId).toBe("thread-1");
+    expect(state.activeThreadWorkspace).toBe("wsl2");
+    expect(state.activeThreadRolloutPath).toBe("/tmp/thread-1.jsonl");
+    expect(loadCalls).toEqual([
+      {
+        threadId: "thread-1",
+        options: expect.objectContaining({
+          animateBadge: false,
+          forceRender: true,
+          stickToBottom: true,
+          workspace: "wsl2",
+          rolloutPath: "/tmp/thread-1.jsonl",
+        }),
+      },
+    ]);
+
+    const createdThread = await hooks.createShadowThreadForE2E({
+      threadId: "safe-thread-open-1",
+      workspace: "windows",
+      cwd: "C:\\Users\\yiyou\\API-Router",
+      waitMs: 0,
+    });
+    expect(createdThread).toEqual({
+      ok: true,
+      threadId: "safe-thread-open-1",
+      rolloutPath: "C:\\Users\\yiyou\\.codex\\sessions\\safe-thread-open-1.jsonl",
+      workspace: "windows",
+      waitedMs: 0,
+    });
+    expect(apiCalls).toEqual([
+      {
+        path: "/codex/turns/start",
+        options: expect.objectContaining({
+          method: "POST",
+          body: expect.objectContaining({
+            threadId: "safe-thread-open-1",
+            workspace: "windows",
+            cwd: "C:\\Users\\yiyou\\API-Router",
+          }),
+        }),
+      },
+    ]);
+  });
+
+  it("keeps model loading active until the minimum e2e delay elapses", async () => {
+    vi.useFakeTimers();
+    const windowRef = {
+      location: { search: "?e2e=1" },
+      setInterval() {
+        return 1;
+      },
+      clearInterval() {},
+      addEventListener() {},
+    };
+    const state = {
+      modelOptions: [],
+      modelOptionsLoading: false,
+      modelOptionsLoadingSeq: 0,
+      modelOptionsLoadingStartedAt: 0,
+      liveDebugEvents: [],
+      wsSubscribedEvents: true,
+    };
+    const renderHeaderModelMenu = vi.fn();
+    const updateHeaderUi = vi.fn();
+    const storage = { getItem() { return ""; }, setItem() {} };
+    const module = createDebugToolsModule({
+      state,
+      byId() {
+        return null;
+      },
+      renderInlineMessageText(value) {
+        return String(value || "");
+      },
+      findNextInlineCodeSpan() {
+        return null;
+      },
+      normalizeWorkspaceTarget(value) {
+        return value === "wsl2" ? "wsl2" : "windows";
+      },
+      normalizeModelOption(value) {
+        if (!value || typeof value !== "object") return null;
+        return {
+          id: String(value.id || ""),
+          label: String(value.label || value.id || ""),
+          isDefault: !!value.isDefault,
+          supportedReasoningEfforts: Array.isArray(value.supportedReasoningEfforts)
+            ? value.supportedReasoningEfforts
+            : [],
+          defaultReasoningEffort: String(value.defaultReasoningEffort || ""),
+        };
+      },
+      ensureArrayItems(value) {
+        return Array.isArray(value) ? value : [];
+      },
+      pickLatestModelId(options) {
+        return options[0]?.id || "";
+      },
+      REASONING_EFFORT_KEY: "reasoning",
+      MODEL_LOADING_MIN_MS: 600,
+      normalizeThreadTokenUsage(value) {
+        return value;
+      },
+      renderHeaderModelMenu,
+      setHeaderModelMenuOpen() {},
+      renderComposerContextLeft() {},
+      clearChatMessages() {},
+      showWelcomeCard() {},
+      updateHeaderUi,
+      getWorkspaceTarget() {
+        return "windows";
+      },
+      getStartCwdForWorkspace() {
+        return "";
+      },
+      parseUserMessageParts() {
+        return { text: "", images: [] };
+      },
+      renderMessageAttachments() {
+        return "";
+      },
+      setMainTab() {},
+      setMobileTab() {},
+      setActiveThread() {},
+      setChatOpening() {},
+      loadThreadMessages: async () => {},
+      refreshThreads: async () => {},
+      handleWsPayload() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      createAssistantStreamingMessage() {
+        return { msg: null, body: null };
+      },
+      appendStreamingDelta() {},
+      setStatus() {},
+      isThreadAnimDebugEnabled() {
+        return false;
+      },
+      pushThreadAnimDebug() {},
+      threadAnimDebug: { enabled: false, events: [], seq: 0 },
+      WEB_CODEX_DEV_DEBUG_VERSION: "test",
+      documentRef: {
+        body: { appendChild() {} },
+        querySelectorAll() {
+          return [];
+        },
+        getElementById() {
+          return { textContent: "" };
+        },
+      },
+      windowRef,
+      localStorageRef: storage,
+      performanceRef: { now: () => 0 },
+    });
+
+    module.installDebugAndE2E();
+    const hooks = windowRef.__webCodexE2E;
+    const result = hooks.loadModelsWithMinLoadingMs(
+      [
+        {
+          id: "gpt-5.5-codex",
+          supportedReasoningEfforts: [{ effort: "medium" }],
+        },
+      ],
+      600
+    );
+
+    expect(result).toEqual({ ok: true, remainingMs: 600 });
+    expect(state.modelOptionsLoading).toBe(true);
+    expect(state.modelOptions.map((item) => item.id)).toEqual(["gpt-5.5-codex"]);
+    expect(state.selectedModel).toBe("gpt-5.5-codex");
+    expect(state.selectedReasoningEffort).toBe("medium");
+    expect(renderHeaderModelMenu).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(599);
+    expect(state.modelOptionsLoading).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(state.modelOptionsLoading).toBe(false);
+  });
+
   it("refreshes e2e workspace target after hydrating availability", async () => {
     const windowRef = {
       location: { search: "?e2e=1" },

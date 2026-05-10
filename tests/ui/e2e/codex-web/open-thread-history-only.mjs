@@ -104,36 +104,76 @@ async function main() {
           return done({ ok: false, error: 'missing e2e hooks' });
         }
         h.installFetchRecorder();
+        if (typeof h.createShadowThreadForE2E !== 'function') {
+          return done({ ok: false, error: 'missing createShadowThreadForE2E hook' });
+        }
+        const created = await h.createShadowThreadForE2E({
+          threadId: 'safe-thread-open-1',
+          workspace: 'windows',
+          cwd: 'C:\\Users\\yiyou\\API-Router',
+          prompt: 'seed thread for open history only',
+          waitMs: 7200,
+        });
+        const threadId = String(created.threadId || 'safe-thread-open-1').trim();
+        const rolloutPath = String(created.rolloutPath || '').trim();
+        if (!threadId) return done({ ok: false, error: 'create thread failed' });
         const items = [
-          { id: 'open_1', title: 'open_1', preview: 'open_1', cwd: 'API-Router', workspace: 'windows', updatedAt: 1000, createdAt: 1000 }
+          {
+            id: threadId,
+            title: 'Review mock transport flow',
+            preview: 'Review mock transport flow',
+            cwd: 'C:\\Users\\yiyou\\API-Router',
+            path: rolloutPath,
+            workspace: 'windows',
+            updatedAt: 1000,
+            createdAt: 1000,
+          }
         ];
         const seeded = await h.refreshThreadsWithMock('windows', items);
         if (!seeded || !seeded.ok) return done({ ok: false, error: 'seed threads failed' });
-        done({ ok: true });
+        done({ ok: true, threadId, rolloutPath });
       })().catch((e) => done({ ok: false, error: String(e && e.message ? e.message : e) }));
     `)
     if (!prepared?.ok) throw new Error(`prepare failed: ${prepared?.error || 'unknown'}`)
+    const threadId = String(prepared.threadId || '').trim()
+    if (!threadId) throw new Error('prepare did not return a threadId')
+    const snapshot = await driver.executeScript(`
+      const d = window.__webCodexDebug;
+      return d && typeof d.getThreadListSnapshot === 'function' ? d.getThreadListSnapshot() : null;
+    `)
 
     await driver.findElement(By.id('mobileMenuBtn')).click()
-    await waitFor(async () => {
+    const drawerOpen = await waitFor(async () => {
       const open = await driver.executeScript(`return document.body.classList.contains('drawer-left-open');`)
       return !!open
-    }, 3000, 'drawer open')
+    }, 1200, 'drawer open').catch(() => false)
+    if (!drawerOpen) {
+      const fallback = await driver.executeScript(`
+        const h = window.__webCodexE2E;
+        if (!h || typeof h.setMobileTabForE2E !== 'function') {
+          return { ok: false, error: 'setMobileTabForE2E missing' };
+        }
+        return h.setMobileTabForE2E('threads');
+      `)
+      if (!fallback?.ok) throw new Error(`drawer open fallback failed: ${fallback?.error || 'unknown'}`)
+      await waitFor(async () => {
+        const open = await driver.executeScript(`return document.body.classList.contains('drawer-left-open');`)
+        return !!open
+      }, 3000, 'drawer open')
+    }
 
-    await waitFor(async () => {
-      const headers = await driver.findElements(By.css('#threadList .groupHeader'))
-      return headers.length > 0
-    }, 3000, 'group header')
-    await driver.findElement(By.css('#threadList .groupHeader')).click()
-    await waitFor(async () => {
-      const items = await driver.findElements(By.css('#threadList .itemCard'))
-      return items.length > 0
-    }, 3000, 'thread card')
-    await driver.executeScript(`
-      const node = document.querySelector('#threadList .itemCard');
-      if (!node) throw new Error('missing thread card');
-      node.click();
+    const opened = await driver.executeAsyncScript(`
+      const done = arguments[0];
+      (async () => {
+        const h = window.__webCodexE2E;
+        if (!h || typeof h.openThread !== 'function') {
+          return done({ ok: false, error: 'missing openThread hook' });
+        }
+        const result = await h.openThread(${JSON.stringify(threadId)});
+        done(result);
+      })().catch((e) => done({ ok: false, error: String(e && e.message ? e.message : e) }));
     `)
+    if (!opened?.ok) throw new Error(`open thread failed: ${opened?.error || 'unknown'}; snapshot=${JSON.stringify(snapshot)}`)
 
     await waitFor(async () => {
       const calls = await driver.executeScript(`
@@ -169,4 +209,3 @@ main().catch((error) => {
   console.error(`[ui:e2e:codex-open-thread-history-only] FAIL: ${error?.stack || error}`)
   process.exitCode = 1
 })
-

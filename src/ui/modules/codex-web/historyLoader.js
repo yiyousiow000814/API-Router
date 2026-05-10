@@ -23,6 +23,7 @@ import {
   getRenderBaseline,
   reportPreparedHistory,
 } from "./historyApplyFlow.js";
+import { shouldResumeThreadAfterOpen } from "./threadOpenState.js";
 import {
   beginHistoryLoad,
   finalizeHistoryLoad,
@@ -147,7 +148,7 @@ function shouldClearTransientConnectionStatusOnExplicitHistoryOpen(state = {}, t
     return false;
   }
   if (String(state.activeThreadOpenState?.threadId || "").trim() !== id) return false;
-  if (state.activeThreadOpenState?.resumeRequired === true) return false;
+  if (shouldResumeThreadAfterOpen(state.activeThreadOpenState)) return false;
   const hasTrackedRuntimeContext =
     (String(state.activeThreadPendingTurnThreadId || "").trim() === id) ||
     (String(state.activeThreadLiveAssistantThreadId || "").trim() === id) ||
@@ -750,11 +751,13 @@ export function createHistoryLoaderModule(deps) {
     renderMessageBody,
     addChat,
     buildMsgNode,
+    replayAssistantHistoryMessage,
     clearChatMessages,
     showTransientToolMessage = () => {},
     showTransientThinkingMessage = () => {},
     clearTransientToolMessages = () => {},
     clearTransientThinkingMessages = () => {},
+    renderRuntimePanels = () => {},
     clearRuntimeState = () => {},
     renderCommentaryArchive = () => {},
     syncRuntimeStateFromHistory = () => {},
@@ -878,8 +881,10 @@ export function createHistoryLoaderModule(deps) {
     }
     if (String(state.activeThreadCommentaryCurrent?.text || "").trim()) {
       showTransientThinkingMessage(state.activeThreadCommentaryCurrent.text);
+      renderRuntimePanels();
     } else {
       clearTransientThinkingMessages();
+      renderRuntimePanels();
     }
     const box = byId("chatBox");
     const assistantNodes = Array.from(box?.querySelectorAll?.(".assistant") || []);
@@ -1153,6 +1158,7 @@ export function createHistoryLoaderModule(deps) {
           scheduleChatLiveFollow,
           scrollChatToBottom,
           maybeScheduleChatFollow,
+          replayAssistantHistoryMessage,
           finalizeThreadRenderEffects: (nextHistoryCommentary, nextLiveCommentarySnapshot, extra = {}) =>
             finalizeThreadRenderEffects(thread, options, nextHistoryCommentary, nextLiveCommentarySnapshot, extra),
         },
@@ -1183,12 +1189,14 @@ export function createHistoryLoaderModule(deps) {
       deps: {
         renderMessageBody,
         addChat,
+        buildMsgNode,
         clearChatMessages,
         renderChatFull,
         pushLiveDebugEvent,
         scrollChatToBottom,
         canStartChatLiveFollow,
         maybeScheduleChatFollow,
+        replayAssistantHistoryMessage,
         scrollToBottomReliable,
         scheduleChatLiveFollow,
         finalizeThreadRenderEffects: (nextHistoryCommentary, nextLiveCommentarySnapshot, extra = {}) =>

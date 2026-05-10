@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   getThreadOpenState,
   resolveThreadOpenState,
+  shouldResumeThreadAfterOpen,
+  shouldResumeThreadBeforeSend,
   setThreadOpenState,
 } from "./threadOpenState.js";
 
@@ -113,6 +115,21 @@ describe("threadOpenState", () => {
       resumeRequired: false,
       resumeReason: "thread-not-loaded",
     });
+  });
+
+  it("separates open-time and send-time resume decisions", () => {
+    const openState = {
+      threadId: "thread-1",
+      threadStatusType: "idle",
+      historyThreadId: "thread-1",
+      historyIncomplete: false,
+      historyStatusType: "idle",
+      loaded: false,
+      resumeRequired: false,
+    };
+
+    expect(shouldResumeThreadAfterOpen(openState)).toBe(false);
+    expect(shouldResumeThreadBeforeSend(openState)).toBe(true);
   });
 
   it("creates an idle open state by default", () => {

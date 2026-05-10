@@ -114,6 +114,15 @@ export function getThreadOpenState(state = {}) {
   return resolveThreadOpenState(state?.activeThreadOpenState);
 }
 
+export function shouldResumeThreadAfterOpen(openState = {}) {
+  return !!(openState && typeof openState === "object" && openState.resumeRequired === true);
+}
+
+export function shouldResumeThreadBeforeSend(openState = {}) {
+  if (openState && typeof openState === "object" && openState.resumeRequired === true) return true;
+  return !(openState && typeof openState === "object" && openState.loaded === true);
+}
+
 export function resetTransientConnectionStatusForThreadOpen(state, openState = {}, clearLiveThreadConnectionStatus = () => {}) {
   const normalized = resolveThreadOpenState(openState);
   const threadId = String(normalized.threadId || "").trim();
