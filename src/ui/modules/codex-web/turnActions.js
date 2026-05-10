@@ -14,6 +14,7 @@ import {
 } from "./proposedPlan.js";
 import {
   resolveThreadOpenState,
+  shouldResumeThreadBeforeSend,
   setThreadOpenState,
 } from "./threadOpenState.js";
 import { resolveActionErrorMessage } from "./actionBindings.js";
@@ -336,8 +337,8 @@ export function createTurnActionsModule(deps) {
 
   function activeThreadRequiresResume() {
     const openState = state.activeThreadOpenState;
-    if (openState && openState.loaded !== true) return true;
-    return (openState || resolveThreadOpenState()).resumeRequired === true;
+    if (openState) return shouldResumeThreadBeforeSend(openState);
+    return resolveThreadOpenState().resumeRequired === true;
   }
 
   function shouldMirrorPendingResolutionToChat() {

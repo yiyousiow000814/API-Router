@@ -2917,6 +2917,188 @@ describe("composerUi", () => {
     expect(chatBox.querySelector("#runtimeToolInline").innerHTML).toContain("npm test");
   });
 
+  it("renders runtime thinking numbered commentary as readable markdown blocks", () => {
+    const nodes = new Map();
+    const runtimeDock = makeNode();
+    const runtimeActivityBar = makeNode();
+    runtimeActivityBar.id = "runtimeActivityBar";
+    runtimeDock.appendChild(runtimeActivityBar);
+    nodes.set("runtimeDock", runtimeDock);
+    nodes.set("runtimeActivityBar", runtimeActivityBar);
+    const chatBox = makeNode();
+    nodes.set("chatBox", chatBox);
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadTokenUsage: null,
+      activeMainTab: "chat",
+      activeThreadActiveCommands: [],
+      activeThreadActivity: null,
+      activeThreadPlan: null,
+      activeThreadCommentaryCurrent: {
+        threadId: "thread-1",
+        key: "commentary-1",
+        text: [
+          "我现在看到了两个实质问题：",
+          "",
+          "1. assistant final answer 只有旧 DOM 时才 replay。",
+          "2. commentary/thinking 首帧 snapshot 还是直接整段显示。",
+        ].join("\n"),
+        tools: [],
+      },
+    };
+    const module = createComposerUiModule({
+      state,
+      byId(id) {
+        return nodes.get(id) || (id === "mobilePromptInput" ? { value: "" } : null);
+      },
+      readPromptValue(node) { return String(node?.value || ""); },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+      renderComposerContextLeftInNode() {},
+      renderInlineMessageText(value) { return `<span>${String(value || "")}</span>`; },
+      toolItemToMessage(item) { return item?.text || ""; },
+      normalizeType(value) { return String(value || "").replace(/[^a-z0-9]/gi, "").toLowerCase(); },
+      escapeHtml(value) { return String(value || ""); },
+      updateHeaderUi() {},
+      documentRef: { querySelector() { return null; }, createElement: makeElementFactory(chatBox) },
+      windowRef: { innerHeight: 900 },
+    });
+
+    module.renderRuntimePanels();
+
+    const html = chatBox.querySelector("#runtimeThinkingInline").innerHTML;
+    expect(html).toContain("<p>我现在看到了两个实质问题：</p>");
+    expect(html).toContain("<ol>");
+    expect(html).toContain('data-list-marker="1."');
+    expect(html).toContain('data-list-marker="2."');
+    expect(html.indexOf('data-list-marker="1."')).toBeLessThan(html.indexOf('data-list-marker="2."'));
+  });
+
+  it("replays runtime thinking text in visible chunks when a snapshot grows", () => {
+    const nodes = new Map();
+    const runtimeDock = makeNode();
+    const runtimeActivityBar = makeNode();
+    const rafQueue = [];
+    runtimeActivityBar.id = "runtimeActivityBar";
+    runtimeDock.appendChild(runtimeActivityBar);
+    nodes.set("runtimeDock", runtimeDock);
+    nodes.set("runtimeActivityBar", runtimeActivityBar);
+    const chatBox = makeNode();
+    nodes.set("chatBox", chatBox);
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadTokenUsage: null,
+      activeMainTab: "chat",
+      activeThreadActiveCommands: [],
+      activeThreadActivity: null,
+      activeThreadPlan: null,
+      activeThreadCommentaryCurrent: {
+        threadId: "thread-1",
+        key: "commentary-1",
+        text: "thinking one plus a long incremental commentary update",
+        tools: [],
+      },
+      activeThreadTransientThinkingText: "thinking one",
+    };
+    const module = createComposerUiModule({
+      state,
+      byId(id) {
+        return nodes.get(id) || (id === "mobilePromptInput" ? { value: "" } : null);
+      },
+      readPromptValue(node) { return String(node?.value || ""); },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+      renderComposerContextLeftInNode() {},
+      renderInlineMessageText(value) { return `<span>${String(value || "")}</span>`; },
+      toolItemToMessage(item) { return item?.text || ""; },
+      normalizeType(value) { return String(value || "").replace(/[^a-z0-9]/gi, "").toLowerCase(); },
+      escapeHtml(value) { return String(value || ""); },
+      updateHeaderUi() {},
+      documentRef: { querySelector() { return null; }, createElement: makeElementFactory(chatBox) },
+      windowRef: {
+        innerHeight: 900,
+        requestAnimationFrame(callback) {
+          rafQueue.push(callback);
+          return rafQueue.length;
+        },
+      },
+    });
+
+    module.renderRuntimePanels();
+    const thinkingNode = chatBox.querySelector("#runtimeThinkingInline");
+    expect(thinkingNode.innerHTML).toContain("thinking one");
+
+    state.activeThreadTransientThinkingText = "thinking one plus a long incremental commentary update";
+    module.renderRuntimePanels();
+
+    expect(thinkingNode.innerHTML).toContain("thinking one");
+    expect(thinkingNode.innerHTML).not.toContain("commentary update");
+
+    while (rafQueue.length) rafQueue.shift()();
+    expect(thinkingNode.innerHTML).toContain("commentary update");
+  });
+
+  it("replays the first runtime thinking snapshot in chunks when the thread is already active", () => {
+    const nodes = new Map();
+    const runtimeDock = makeNode();
+    const runtimeActivityBar = makeNode();
+    const rafQueue = [];
+    runtimeActivityBar.id = "runtimeActivityBar";
+    runtimeDock.appendChild(runtimeActivityBar);
+    nodes.set("runtimeDock", runtimeDock);
+    nodes.set("runtimeActivityBar", runtimeActivityBar);
+    const chatBox = makeNode();
+    nodes.set("chatBox", chatBox);
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadTokenUsage: null,
+      activeMainTab: "chat",
+      activeThreadStarted: true,
+      activeThreadRolloutPath: "C:\\Users\\yiyou\\.codex\\sessions\\rollout.jsonl",
+      activeThreadActiveCommands: [],
+      activeThreadActivity: null,
+      activeThreadPlan: null,
+      activeThreadCommentaryCurrent: {
+        threadId: "thread-1",
+        key: "commentary-1",
+        text: "this is a long first commentary snapshot that should stream in chunks",
+        tools: [],
+      },
+      activeThreadTransientThinkingText: "this is a long first commentary snapshot that should stream in chunks",
+    };
+    const module = createComposerUiModule({
+      state,
+      byId(id) {
+        return nodes.get(id) || (id === "mobilePromptInput" ? { value: "" } : null);
+      },
+      readPromptValue(node) { return String(node?.value || ""); },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+      renderComposerContextLeftInNode() {},
+      renderInlineMessageText(value) { return `<span>${String(value || "")}</span>`; },
+      toolItemToMessage(item) { return item?.text || ""; },
+      normalizeType(value) { return String(value || "").replace(/[^a-z0-9]/gi, "").toLowerCase(); },
+      escapeHtml(value) { return String(value || ""); },
+      updateHeaderUi() {},
+      documentRef: { querySelector() { return null; }, createElement: makeElementFactory(chatBox) },
+      windowRef: {
+        innerHeight: 900,
+        requestAnimationFrame(callback) {
+          rafQueue.push(callback);
+          return rafQueue.length;
+        },
+      },
+    });
+
+    module.renderRuntimePanels();
+    const thinkingNode = chatBox.querySelector("#runtimeThinkingInline");
+    expect(thinkingNode.innerHTML).toContain("this is a long");
+    expect(thinkingNode.innerHTML).not.toContain("should stream in chunks");
+
+    while (rafQueue.length) rafQueue.shift()();
+    expect(thinkingNode.innerHTML).toContain("should stream in chunks");
+  });
+
   it("prefers active commentary over a stored plan for the runtime activity bar", () => {
     const nodes = new Map();
     const runtimeDock = makeNode();

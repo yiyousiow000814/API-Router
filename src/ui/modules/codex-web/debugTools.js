@@ -114,6 +114,7 @@ export function createDebugToolsModule(deps) {
   const {
     state,
     byId,
+    api = async () => ({}),
     addChat = () => {},
     renderInlineMessageText,
     findNextInlineCodeSpan,
@@ -128,6 +129,8 @@ export function createDebugToolsModule(deps) {
     renderRuntimePanels = () => {},
     renderCommentaryArchive = () => {},
     renderComposerContextLeft,
+    renderThreads = () => {},
+    showTransientToolMessage = () => {},
     renderPendingInline = () => {},
     renderPendingLists = () => {},
     getVisiblePendingUserInputs = () => [],
@@ -171,9 +174,18 @@ export function createDebugToolsModule(deps) {
   const doc = documentRef ?? globalThis.document;
   const win = windowRef ?? globalThis.window ?? {};
   const perf = performanceRef ?? globalThis.performance;
+  const performanceNow = () => {
+    if (performanceRef && typeof performanceRef.now === "function") return performanceRef.now();
+    if (perf && typeof perf.now === "function") return perf.now();
+    return Date.now();
+  };
   const setTimeoutRef = win.setTimeout?.bind(win) || globalThis.setTimeout?.bind(globalThis);
   const clearTimeoutRef = win.clearTimeout?.bind(win) || globalThis.clearTimeout?.bind(globalThis);
   const setIntervalRef = win.setInterval?.bind(win) || globalThis.setInterval?.bind(globalThis);
+  const ensureArrayItemsRef =
+    typeof ensureArrayItems === "function"
+      ? ensureArrayItems
+      : (value) => (Array.isArray(value) ? value : Array.isArray(value?.data) ? value.data : Array.isArray(value?.items) ? value.items : value ? [value] : []);
 
   const AUTO_PLAN_INTERRUPT_PERSIST_DELAY_MS = 2200;
   const AUTO_PLAN_INTERRUPT_CONFIRM_DELAY_MS = 5200;
@@ -183,6 +195,8 @@ export function createDebugToolsModule(deps) {
   let planInterruptMonitorTimer = 0;
   const scheduledPlanInterruptChecks = new Map();
   let lastAutoPlanInterruptReport = null;
+  let slowOpenPromise = null;
+  let slowOpenResolve = null;
 
   function getActiveState() {
     return {
@@ -273,7 +287,7 @@ export function createDebugToolsModule(deps) {
 
   function getPendingUiSnapshot(limit = 24) {
     const activeThreadId = String(state.activeThreadId || "").trim();
-    const visibleUserInputs = ensureArrayItems(getVisiblePendingUserInputs(state, activeThreadId));
+    const visibleUserInputs = ensureArrayItemsRef(getVisiblePendingUserInputs(state, activeThreadId));
     const realUserInputs = Array.isArray(state.pendingUserInputs) ? state.pendingUserInputs : [];
     const syntheticMap =
       state.syntheticPendingUserInputsByThreadId && typeof state.syntheticPendingUserInputsByThreadId === "object"
@@ -1188,8 +1202,158 @@ export function createDebugToolsModule(deps) {
         const rolloutPath = String(thread?.path || "").trim();
         return { thread, workspace, rolloutPath };
       };
+      const fetchRecorder = {
+        installed: false,
+        host: null,
+        originalFetch: null,
+        mockHandler: null,
+        calls: [],
+      };
+      const resolveFetchHost = () => (win && typeof win.fetch === "function" ? win : globalThis);
+      const normalizeFetchUrl = (input) =>
+        typeof input === "string" ? input : String(input?.url || "");
+      const normalizeFetchMethod = (input, init) => {
+        const fromInit = String(init?.method || "").trim();
+        if (fromInit) return fromInit.toUpperCase();
+        const fromInput = typeof input !== "string" ? String(input?.method || "").trim() : "";
+        return fromInput ? fromInput.toUpperCase() : "GET";
+      };
+      const snapshotFetchInit = (init) => {
+        if (!init || typeof init !== "object") return {};
+        const snapshot = {};
+        for (const [key, value] of Object.entries(init)) {
+          if (key === "body" || typeof value === "function") continue;
+          snapshot[key] = value;
+        }
+        return snapshot;
+      };
+      const recordFetchCall = (entry = {}, source = "fetch") => {
+        fetchRecorder.calls.push({
+          url: String(entry.url || "").trim(),
+          method: String(entry.method || "GET").trim().toUpperCase() || "GET",
+          init: entry.init && typeof entry.init === "object" ? { ...entry.init } : {},
+          source,
+        });
+      };
+      const ensureFetchRecorder = () => {
+        const fetchHost = resolveFetchHost();
+        const origFetch = typeof fetchHost.fetch === "function" ? fetchHost.fetch.bind(fetchHost) : null;
+        if (!origFetch) return { ok: false, error: "fetch unavailable" };
+        if (!fetchRecorder.installed || fetchRecorder.host !== fetchHost) {
+          fetchRecorder.installed = true;
+          fetchRecorder.host = fetchHost;
+          fetchRecorder.originalFetch = origFetch;
+          fetchRecorder.mockHandler = null;
+          fetchRecorder.calls = [];
+          fetchHost.fetch = async (input, init) => {
+            const call = {
+              url: normalizeFetchUrl(input),
+              method: normalizeFetchMethod(input, init),
+              init: snapshotFetchInit(init),
+            };
+            recordFetchCall(call, "fetch");
+            if (typeof fetchRecorder.mockHandler === "function") {
+              const mocked = await fetchRecorder.mockHandler(input, init, call);
+              if (mocked != null) return mocked;
+            }
+            return fetchRecorder.originalFetch(input, init);
+          };
+        } else {
+          fetchRecorder.calls = [];
+        }
+        return { ok: true };
+      };
+      const runWithFetchMock = async (handler, fn) => {
+        const previous = fetchRecorder.mockHandler;
+        fetchRecorder.mockHandler = handler;
+        try {
+          return await fn();
+        } finally {
+          fetchRecorder.mockHandler = previous;
+        }
+      };
       win.__webCodexE2E = {
         _activeThreadId: "",
+        _recordApiCall(entry = {}) {
+          recordFetchCall(entry, "api");
+        },
+        installFetchRecorder() {
+          return ensureFetchRecorder();
+        },
+        getFetchCalls() {
+          return fetchRecorder.calls.slice();
+        },
+        setWsConnectedForE2E(connected = true) {
+          const isConnected = connected !== false;
+          state.ws = {
+            readyState: isConnected ? 1 : 3,
+            send() {},
+            close() {
+              this.readyState = 3;
+            },
+          };
+          state.wsSubscribedEvents = isConnected;
+          state.wsSubscribedWorkspaceTarget = isConnected
+            ? normalizeWorkspaceTarget(state.wsRequestedWorkspaceTarget || state.activeThreadWorkspace || getWorkspaceTarget())
+            : "";
+          state.wsSubscribedWorkspaceTargets = isConnected
+            ? [state.wsSubscribedWorkspaceTarget].filter(Boolean)
+            : [];
+          return { ok: true, connected: isConnected };
+        },
+        async triggerHistoryFetchForE2E(config = {}) {
+          const threadId = String(config.threadId || this._activeThreadId || state.activeThreadId || "").trim();
+          if (!threadId) return { ok: false, error: "missing threadId" };
+          const workspace = normalizeWorkspaceTarget(
+            config.workspace || state.activeThreadWorkspace || getWorkspaceTarget()
+          );
+          const rolloutPath = String(config.rolloutPath || "").trim();
+          this._activeThreadId = threadId;
+          setMainTab("chat");
+          setMobileTab("chat");
+          setActiveThread(threadId);
+          state.activeThreadWorkspace = workspace;
+          state.activeThreadRolloutPath = rolloutPath;
+          await loadThreadMessages(threadId, {
+            animateBadge: false,
+            forceRender: true,
+            stickToBottom: true,
+            workspace,
+            rolloutPath,
+          });
+          return { ok: true, threadId, workspace, rolloutPath };
+        },
+        async createShadowThreadForE2E(config = {}) {
+          const workspace = normalizeWorkspaceTarget(config.workspace || getWorkspaceTarget());
+          const threadId = String(config.threadId || "").trim();
+          const cwd = String(config.cwd || getStartCwdForWorkspace(workspace) || "").trim();
+          const prompt = String(config.prompt || "seed thread for e2e").trim() || "seed thread for e2e";
+          const started = await api("/codex/turns/start", {
+            method: "POST",
+            body: {
+              threadId: threadId || undefined,
+              workspace,
+              cwd,
+              prompt,
+            },
+          });
+          const waitMs = Math.max(0, Number(config.waitMs || 0) || 0);
+          if (waitMs > 0) {
+            await new Promise((resolve) => setTimeoutRef(resolve, waitMs));
+          }
+          const nextThreadId = String(
+            started?.threadId || started?.id || started?.thread?.id || threadId || ""
+          ).trim();
+          return {
+            ok: !!nextThreadId,
+            threadId: nextThreadId,
+            rolloutPath: String(
+              started?.path || started?.rolloutPath || started?.thread?.path || ""
+            ).trim(),
+            workspace,
+            waitedMs: waitMs,
+          };
+        },
         setModelLoading(loading = true) {
           state.modelOptionsLoading = !!loading;
           if (loading) state.modelOptions = [];
@@ -1197,21 +1361,25 @@ export function createDebugToolsModule(deps) {
           updateHeaderUi();
           return { ok: true, loading: state.modelOptionsLoading };
         },
-        setModels(items) {
-          state.modelOptions = ensureArrayItems(items).map(normalizeModelOption).filter(Boolean);
-          state.modelOptionsLoading = false;
-          const options = Array.isArray(state.modelOptions) ? state.modelOptions : [];
+        setModels(items, options = {}) {
+          const keepLoading = options && options.keepLoading === true;
+          state.modelOptions = ensureArrayItemsRef(items)
+            .map((item) => normalizeModelOption(item, ensureArrayItemsRef))
+            .filter(Boolean);
+          if (!keepLoading) state.modelOptionsLoading = false;
+          const normalizedOptions = Array.isArray(state.modelOptions) ? state.modelOptions : [];
           state.selectedModel =
-            pickLatestModelId(options) ||
-            options.find((x) => x && x.isDefault)?.id ||
-            options[0]?.id ||
+            pickLatestModelId(normalizedOptions) ||
+            normalizedOptions.find((x) => x && x.isDefault)?.id ||
+            normalizedOptions[0]?.id ||
             "";
           if (state.selectedModel) {
-            const active = options.find((x) => x && x.id === state.selectedModel) || options[0] || null;
+            const active =
+              normalizedOptions.find((x) => x && x.id === state.selectedModel) || normalizedOptions[0] || null;
             const supported = Array.isArray(active?.supportedReasoningEfforts)
               ? active.supportedReasoningEfforts
               : [];
-            const persisted = String(localStorage.getItem(REASONING_EFFORT_KEY) || "").trim();
+            const persisted = String(storage.getItem(REASONING_EFFORT_KEY) || "").trim();
             if (supported.length) {
               const ok = persisted && supported.some((x) => x && x.effort === persisted);
               const hasMedium = supported.some(
@@ -1223,7 +1391,7 @@ export function createDebugToolsModule(deps) {
                   ? "medium"
                   : String(active.defaultReasoningEffort || supported[0]?.effort || "").trim();
               state.selectedReasoningEffort = next;
-              if (next) localStorage.setItem(REASONING_EFFORT_KEY, next);
+              if (next) storage.setItem(REASONING_EFFORT_KEY, next);
             } else {
               state.selectedReasoningEffort = persisted;
             }
@@ -1236,28 +1404,39 @@ export function createDebugToolsModule(deps) {
           const minMs = Math.max(0, Number(minLoadingMs || 0));
           const seq = Number(state.modelOptionsLoadingSeq || 0) + 1;
           state.modelOptionsLoadingSeq = seq;
-          state.modelOptionsLoadingStartedAt = performanceRef.now();
+          state.modelOptionsLoadingStartedAt = performanceNow();
           state.modelOptionsLoading = true;
           state.modelOptions = [];
           deps.setHeaderModelMenuOpen(false);
           updateHeaderUi();
-          this.setModels(items);
-          const elapsed = performanceRef.now() - Number(state.modelOptionsLoadingStartedAt || 0);
+          this.setModels(items, { keepLoading: true });
+          const elapsed = performanceNow() - Number(state.modelOptionsLoadingStartedAt || 0);
           const remaining = Math.max(0, minMs - elapsed);
-          setTimeout(() => {
-            if (state.modelOptionsLoadingSeq !== seq) return;
+          if (setTimeoutRef) {
+            setTimeoutRef(() => {
+              if (state.modelOptionsLoadingSeq !== seq) return;
+              state.modelOptionsLoading = false;
+              updateHeaderUi();
+            }, remaining);
+          } else {
             state.modelOptionsLoading = false;
             updateHeaderUi();
-          }, remaining);
+          }
           return { ok: true, remainingMs: Math.round(remaining) };
         },
         seedThreads(count = 260) {
           const items = [];
           for (let i = 0; i < count; i += 1) {
+            const workspace = i % 2 === 0 ? "wsl2" : "windows";
             items.push({
-              id: `thread-${i}`,
+              id: `e2e_${i}`,
               title: `Thread ${i}`,
               updatedAt: Date.now() - i * 1000,
+              workspace,
+              cwd:
+                workspace === "wsl2"
+                  ? `/home/yiyou/e2e-${i}`
+                  : `C:\\Users\\yiyou\\e2e-${i}`,
             });
           }
           state.threadItemsAll = items;
@@ -1277,6 +1456,12 @@ export function createDebugToolsModule(deps) {
           }
           historyByThreadId.set(id, { id, modelName: "gpt-5.3-codex", turns });
           return { ok: true, turns: turnsN, itemsPerTurn, textSize };
+        },
+        seedHeavyThreadHistory(threadId, config = {}) {
+          const turns = Math.max(1, Number(config.turns || 20) | 0);
+          const itemsPerTurn = Math.max(1, Number(config.itemsPerTurn || 2) | 0);
+          const textSize = Math.max(0, Number(config.textSize || 20) | 0);
+          return this.seedHistory(threadId, turns, itemsPerTurn, textSize);
         },
         getThreadHistory(threadId) {
           return historyByThreadId.get(String(threadId || ""));
@@ -1318,20 +1503,31 @@ export function createDebugToolsModule(deps) {
           return { ok: true, threadId: id };
         },
         getComposerContextLeft() {
-          const node = documentRef.getElementById("mobileContextLeft");
+          const node = doc?.getElementById?.("mobileContextLeft");
           if (!node) return { text: "", top: 0, left: 0, width: 0, height: 0 };
-          const rect = node.getBoundingClientRect();
+          const rect =
+            typeof node.getBoundingClientRect === "function"
+              ? node.getBoundingClientRect()
+              : { top: 0, left: 0, width: 0, height: 0 };
           return {
-            text: String(node.getAttribute("aria-label") || node.textContent || "").trim(),
-            top: rect.top,
-            left: rect.left,
-            width: rect.width,
-            height: rect.height,
+            text: String(
+              (typeof node.getAttribute === "function" ? node.getAttribute("aria-label") : "") ||
+                node.textContent ||
+                ""
+            ).trim(),
+            top: Number(rect?.top || 0),
+            left: Number(rect?.left || 0),
+            width: Number(rect?.width || 0),
+            height: Number(rect?.height || 0),
           };
         },
         setComposerTokenUsage(tokenUsage) {
           state.activeThreadTokenUsage = normalizeThreadTokenUsage(tokenUsage);
           renderComposerContextLeft();
+          return this.getComposerContextLeft();
+        },
+        setChatOpeningState(isOpening = true) {
+          setChatOpening(isOpening === true);
           return this.getComposerContextLeft();
         },
         resetComposerToNewChat() {
@@ -1488,6 +1684,31 @@ export function createDebugToolsModule(deps) {
             rolloutPath: meta.rolloutPath,
           };
         },
+        startOpenThreadSlow(threadId, delayMs = 520) {
+          const id = String(threadId || "").trim();
+          if (!id) return { ok: false, error: "missing threadId" };
+          if (slowOpenPromise) return { ok: false, error: "slow open already running" };
+          setChatOpening(true);
+          slowOpenPromise = new Promise((resolve) => {
+            slowOpenResolve = resolve;
+          });
+          const waitMs = Math.max(0, Number(delayMs || 0) || 0);
+          setTimeoutRef?.(async () => {
+            try {
+              const result = await this.openThread(id);
+              slowOpenResolve?.(result);
+            } catch (error) {
+              slowOpenResolve?.({ ok: false, error: String(error?.message || error) });
+            } finally {
+              slowOpenPromise = null;
+              slowOpenResolve = null;
+            }
+          }, waitMs);
+          return { ok: true, threadId: id, delayMs: waitMs };
+        },
+        awaitSlowOpenDone() {
+          return slowOpenPromise || Promise.resolve({ ok: true });
+        },
         async refreshActiveThread() {
           const id = String(state.activeThreadId || this._activeThreadId || "").trim();
           if (!id) return { ok: false, error: "missing active thread" };
@@ -1591,6 +1812,16 @@ export function createDebugToolsModule(deps) {
           scrollToBottomReliable();
           return { ok: true };
         },
+        setChatStickiness(sticky = true) {
+          const nextSticky = sticky !== false;
+          state.chatShouldStickToBottom = nextSticky;
+          state.chatUserScrolledAwayAt = nextSticky ? 0 : Date.now();
+          return { ok: true, sticky: nextSticky };
+        },
+        showTransientToolMessage(text) {
+          showTransientToolMessage(String(text || ""));
+          return { ok: true };
+        },
         createStreamingMessage() {
           const created = createAssistantStreamingMessage();
           const msg = created?.msg;
@@ -1641,27 +1872,57 @@ export function createDebugToolsModule(deps) {
         },
         async refreshThreadsWithMock(target = "windows", items = []) {
           const workspace = normalizeWorkspaceTarget(String(target || "windows"));
-          const fetchHost = win && typeof win.fetch === "function" ? win : globalThis;
-          const origFetch = typeof fetchHost.fetch === "function" ? fetchHost.fetch.bind(fetchHost) : null;
-          if (!origFetch) return { ok: false, error: "fetch unavailable" };
-          fetchHost.fetch = async (input, init) => {
-            const url = typeof input === "string" ? input : input?.url || "";
-            if (typeof url === "string" && url.startsWith("/codex/threads")) {
+          const recorder = ensureFetchRecorder();
+          if (!recorder.ok) return recorder;
+          const pendingRefresh = state.threadRefreshPromiseByWorkspace?.[workspace];
+          if (pendingRefresh && typeof pendingRefresh.then === "function") {
+            try {
+              await pendingRefresh;
+            } catch {}
+          }
+          const seededItems = ensureArrayItemsRef(items).map((item) =>
+            item && typeof item === "object"
+              ? {
+                  ...item,
+                  __workspaceQueryTarget: workspace,
+                }
+              : item
+          );
+          if (!state.threadForceRefreshLastMsByWorkspace || typeof state.threadForceRefreshLastMsByWorkspace !== "object") {
+            state.threadForceRefreshLastMsByWorkspace = { windows: 0, wsl2: 0 };
+          }
+          const previousForceRefreshAt = Number(state.threadForceRefreshLastMsByWorkspace[workspace] || 0);
+          state.threadForceRefreshLastMsByWorkspace[workspace] = 0;
+          try {
+            return await runWithFetchMock(async (input, _init, call) => {
+              const url = String(call?.url || normalizeFetchUrl(input));
+              if (!/^\/codex\/threads(?:\?|$)/.test(url)) return null;
               const body = JSON.stringify({
-                items: { data: Array.isArray(items) ? items : [], nextCursor: null },
+                items: Array.isArray(items) ? items : [],
               });
               return new Response(body, {
                 status: 200,
                 headers: { "Content-Type": "application/json" },
               });
-            }
-            return origFetch(input, init);
-          };
-          try {
-            await refreshThreads(workspace, { force: true });
-            return { ok: true };
+            }, async () => {
+              await refreshThreads(workspace, { force: true });
+              if (!state.threadItemsByWorkspace || typeof state.threadItemsByWorkspace !== "object") {
+                state.threadItemsByWorkspace = { windows: [], wsl2: [] };
+              }
+              if (!state.threadWorkspaceHydratedByWorkspace || typeof state.threadWorkspaceHydratedByWorkspace !== "object") {
+                state.threadWorkspaceHydratedByWorkspace = { windows: false, wsl2: false };
+              }
+              state.threadItemsByWorkspace[workspace] = seededItems;
+              state.threadWorkspaceHydratedByWorkspace[workspace] = true;
+              if (getWorkspaceTarget() === workspace) {
+                state.threadItems = seededItems;
+                state.threadItemsAll = seededItems;
+                renderThreads(seededItems);
+              }
+              return { ok: true };
+            });
           } finally {
-            fetchHost.fetch = origFetch;
+            state.threadForceRefreshLastMsByWorkspace[workspace] = previousForceRefreshAt;
           }
         },
       };
