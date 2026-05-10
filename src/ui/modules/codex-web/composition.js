@@ -335,6 +335,30 @@ export function createCodexWebComposition(deps) {
     PERMISSION_PRESET_STORAGE_KEY: deps.PERMISSION_PRESET_STORAGE_KEY,
   });
 
+  ({
+    wireThreadPullToRefresh,
+    startThreadAutoRefreshLoop,
+    startActiveThreadLivePollLoop,
+  } = deps.createThreadLiveModule({
+    state: deps.state,
+    byId: deps.byId,
+    waitMs: deps.waitMs,
+    setStatus: deps.setStatus,
+    refreshThreads: (...args) => refreshThreads(...args),
+    refreshCodexVersions: deps.refreshCodexVersions,
+    getWorkspaceTarget: workspaceUi.getWorkspaceTarget,
+    loadThreadMessages: historyLoader.loadThreadMessages,
+    THREAD_PULL_REFRESH_TRIGGER_PX: deps.THREAD_PULL_REFRESH_TRIGGER_PX,
+    THREAD_PULL_REFRESH_MAX_PX: deps.THREAD_PULL_REFRESH_MAX_PX,
+    THREAD_PULL_REFRESH_MIN_MS: deps.THREAD_PULL_REFRESH_MIN_MS,
+    THREAD_PULL_HINT_CLEAR_DELAY_MS: deps.THREAD_PULL_HINT_CLEAR_DELAY_MS,
+    THREAD_AUTO_REFRESH_CONNECTED_MS: deps.THREAD_AUTO_REFRESH_CONNECTED_MS,
+    THREAD_AUTO_REFRESH_DISCONNECTED_MS: deps.THREAD_AUTO_REFRESH_DISCONNECTED_MS,
+    ACTIVE_THREAD_LIVE_POLL_MS: deps.ACTIVE_THREAD_LIVE_POLL_MS,
+    ACTIVE_THREAD_LIVE_POLL_WS_FALLBACK_MS: deps.ACTIVE_THREAD_LIVE_POLL_WS_FALLBACK_MS,
+    documentRef,
+  }));
+
   const actionBindings = deps.createActionBindingsModule({
     state: deps.state,
     byId: deps.byId,
@@ -461,30 +485,6 @@ export function createCodexWebComposition(deps) {
     setWorkspaceTarget: workspaceUi.setWorkspaceTarget,
     setStartCwdForWorkspace: workspaceUi.setStartCwdForWorkspace,
   });
-
-  ({
-    wireThreadPullToRefresh,
-    startThreadAutoRefreshLoop,
-    startActiveThreadLivePollLoop,
-  } = deps.createThreadLiveModule({
-    state: deps.state,
-    byId: deps.byId,
-    waitMs: deps.waitMs,
-    setStatus: deps.setStatus,
-    refreshThreads: (...args) => refreshThreads(...args),
-    refreshCodexVersions: deps.refreshCodexVersions,
-    getWorkspaceTarget: workspaceUi.getWorkspaceTarget,
-    loadThreadMessages: historyLoader.loadThreadMessages,
-    THREAD_PULL_REFRESH_TRIGGER_PX: deps.THREAD_PULL_REFRESH_TRIGGER_PX,
-    THREAD_PULL_REFRESH_MAX_PX: deps.THREAD_PULL_REFRESH_MAX_PX,
-    THREAD_PULL_REFRESH_MIN_MS: deps.THREAD_PULL_REFRESH_MIN_MS,
-    THREAD_PULL_HINT_CLEAR_DELAY_MS: deps.THREAD_PULL_HINT_CLEAR_DELAY_MS,
-    THREAD_AUTO_REFRESH_CONNECTED_MS: deps.THREAD_AUTO_REFRESH_CONNECTED_MS,
-    THREAD_AUTO_REFRESH_DISCONNECTED_MS: deps.THREAD_AUTO_REFRESH_DISCONNECTED_MS,
-    ACTIVE_THREAD_LIVE_POLL_MS: deps.ACTIVE_THREAD_LIVE_POLL_MS,
-    ACTIVE_THREAD_LIVE_POLL_WS_FALLBACK_MS: deps.ACTIVE_THREAD_LIVE_POLL_WS_FALLBACK_MS,
-    documentRef,
-  }));
 
   const bootstrapApp = deps.createBootstrapModule({
     state: deps.state,

@@ -17,6 +17,12 @@ describe("composition", () => {
       sendTurn: () => {},
       uploadAttachment: () => {},
     }));
+    const liveWireThreadPullToRefresh = vi.fn();
+    const createThreadLiveModule = vi.fn(() => ({
+      wireThreadPullToRefresh: liveWireThreadPullToRefresh,
+      startThreadAutoRefreshLoop: () => {},
+      startActiveThreadLivePollLoop: () => {},
+    }));
     const clearLiveThreadConnectionStatus = () => {};
     const composition = createCodexWebComposition({
       state: {},
@@ -133,7 +139,7 @@ describe("composition", () => {
       createTurnActionsModule,
       createActionBindingsModule,
       createDebugToolsModule: stubFactory({ installDebugAndE2E: () => {} }),
-      createThreadLiveModule: stubFactory({ wireThreadPullToRefresh: () => {}, startThreadAutoRefreshLoop: () => {}, startActiveThreadLivePollLoop: () => {} }),
+      createThreadLiveModule,
       createBootstrapModule: stubFactory({ bootstrap: () => {} }),
       clearLiveThreadConnectionStatus,
     });
@@ -145,6 +151,7 @@ describe("composition", () => {
       expect.objectContaining({
         refreshActiveThreadGitMeta: expect.any(Function),
         removeChatMessageByKey: expect.any(Function),
+        wireThreadPullToRefresh: liveWireThreadPullToRefresh,
       })
     );
     expect(createTurnActionsModule).toHaveBeenCalledWith(
