@@ -5,7 +5,8 @@ use super::web_codex_rollout_import::{
 };
 use super::web_codex_rollout_path::runtime_path_should_override_existing;
 use super::web_codex_session_runtime::{
-    ensure_workspace_runtime_registered, mark_workspace_runtime_connected,
+    ensure_workspace_runtime_registered, locate_workspace_thread_runtime,
+    locate_workspace_thread_runtime_for_target, mark_workspace_runtime_connected,
     mark_workspace_runtime_replay, upsert_workspace_thread_runtime, workspace_runtime_snapshot,
     workspace_thread_runtime_snapshot, WorkspaceRuntimeSnapshot, WorkspaceThreadRuntimeSnapshot,
     WorkspaceThreadRuntimeUpdate,
@@ -239,7 +240,6 @@ impl CodexSessionManager {
         self
     }
 
-    #[cfg(test)]
     pub(super) fn workspace_target(&self) -> Option<WorkspaceTarget> {
         self.workspace_target
     }
@@ -701,6 +701,26 @@ impl CodexSessionManager {
             }
         }
     }
+}
+
+pub(super) fn resolve_thread_session_manager(
+    workspace_target: Option<WorkspaceTarget>,
+    thread_id: &str,
+) -> CodexSessionManager {
+    if let Some(workspace_target) = workspace_target {
+        if let Some(location) =
+            locate_workspace_thread_runtime_for_target(thread_id, workspace_target)
+        {
+            return CodexSessionManager::new(location.workspace_target)
+                .with_home_override(location.home_override);
+        }
+        return CodexSessionManager::new(Some(workspace_target));
+    }
+    if let Some(location) = locate_workspace_thread_runtime(thread_id) {
+        return CodexSessionManager::new(location.workspace_target)
+            .with_home_override(location.home_override);
+    }
+    CodexSessionManager::new(None)
 }
 
 fn unsupported_or_null_value(error: &str) -> Value {
@@ -1349,7 +1369,9 @@ async fn turn_start_retry_in_alternate_home(
 
 fn resume_error_looks_like_missing_rollout(error: &str) -> bool {
     let lower = error.to_ascii_lowercase();
-    lower.contains("no rollout found") || lower.contains("thread id")
+    lower.contains("missing rollout path")
+        || lower.contains("no rollout found")
+        || lower.contains("thread id")
 }
 
 fn turn_start_error_looks_like_missing_thread(error: &str) -> bool {
@@ -1371,7 +1393,9 @@ mod tests {
     use super::*;
     use crate::orchestrator::gateway::web_codex_home::parse_workspace_target;
     use crate::orchestrator::gateway::web_codex_session_runtime::_clear_workspace_runtime_registry_for_test;
-    use crate::orchestrator::gateway::web_codex_threads::clear_threads_workspace_index_for_test;
+    use crate::orchestrator::gateway::web_codex_threads::{
+        clear_threads_workspace_index_for_test, upsert_thread_item_hint,
+    };
     use serde_json::json;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
@@ -1433,11 +1457,18 @@ mod tests {
     fn read_live_trace_lines() -> Vec<String> {
         let path = crate::orchestrator::gateway::web_codex_storage::codex_live_trace_file_path()
             .expect("live trace file path");
-        std::fs::read_to_string(path)
-            .expect("read live trace")
-            .lines()
-            .map(str::to_string)
-            .collect()
+        let started = std::time::Instant::now();
+        loop {
+            if let Ok(contents) = std::fs::read_to_string(&path) {
+                return contents.lines().map(str::to_string).collect();
+            }
+            assert!(
+                started.elapsed() <= std::time::Duration::from_secs(1),
+                "read live trace: {}",
+                path.display()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     #[test]
@@ -1453,6 +1484,133 @@ mod tests {
         assert_eq!(wsl2.workspace_target(), Some(WorkspaceTarget::Wsl2));
         assert_eq!(windows.runtime_snapshot().workspace_label, "windows");
         assert_eq!(wsl2.runtime_snapshot().workspace_label, "wsl2");
+    }
+
+    #[test]
+    fn resolve_thread_session_manager_uses_runtime_registry_when_workspace_is_unknown() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        let _win_home = isolate_windows_web_codex_home();
+        let _wsl_home = isolate_wsl_web_codex_home();
+        _clear_workspace_runtime_registry_for_test();
+        let runtime_home = "/home/yiyou/.api-router/thread-runtime-home";
+        upsert_workspace_thread_runtime(
+            Some(WorkspaceTarget::Wsl2),
+            Some(runtime_home),
+            WorkspaceThreadRuntimeUpdate {
+                thread_id: "thread-1",
+                cwd: Some("/home/yiyou/repo"),
+                rollout_path: None,
+                status: Some("running"),
+                last_event_id: None,
+                last_turn_id: Some("turn-1"),
+                clear_last_turn_id: false,
+            },
+        );
+
+        let manager = resolve_thread_session_manager(None, "thread-1");
+
+        assert_eq!(manager.workspace_target(), Some(WorkspaceTarget::Wsl2));
+        assert_eq!(manager.home_override(), Some(runtime_home));
+    }
+
+    #[tokio::test]
+    async fn resume_thread_uses_known_rollout_path_when_runtime_record_has_no_path() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        let home = isolate_windows_web_codex_home();
+        _clear_workspace_runtime_registry_for_test();
+        clear_threads_workspace_index_for_test();
+        let source_root = std::env::temp_dir().join(format!(
+            "api-router-resume-rollout-source-{}-{}",
+            std::process::id(),
+            crate::orchestrator::store::unix_ms()
+        ));
+        std::fs::create_dir_all(source_root.join("sessions")).expect("source sessions dir");
+        let source_rollout_path = source_root
+            .join("sessions")
+            .join("rollout-thread-resume.jsonl");
+        std::fs::write(&source_rollout_path, "{\"thread_id\":\"thread-resume\"}\n")
+            .expect("write rollout source");
+        upsert_thread_item_hint(
+            WorkspaceTarget::Windows,
+            json!({
+                "id": "thread-resume",
+                "workspace": "windows",
+                "path": source_rollout_path.to_string_lossy(),
+                "status": { "type": "notLoaded" },
+                "updatedAt": 1
+            }),
+        );
+        upsert_workspace_thread_runtime(
+            Some(WorkspaceTarget::Windows),
+            web_codex_rpc_home_override_for_target(Some(WorkspaceTarget::Windows)).as_deref(),
+            WorkspaceThreadRuntimeUpdate {
+                thread_id: "thread-resume",
+                cwd: Some("C:\\repo"),
+                rollout_path: None,
+                status: Some("idle"),
+                last_event_id: None,
+                last_turn_id: None,
+                clear_last_turn_id: false,
+            },
+        );
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let request_count_ref = request_count.clone();
+        crate::codex_app_server::_set_test_request_handler(Some(Arc::new(
+            move |_home, method, params| {
+                assert_eq!(method, "thread/resume");
+                assert_eq!(
+                    params.get("threadId").and_then(Value::as_str),
+                    Some("thread-resume")
+                );
+                let call = request_count_ref.fetch_add(1, Ordering::SeqCst);
+                if call == 0 {
+                    Err("missing rollout path for thread-resume".to_string())
+                } else {
+                    Ok(json!({
+                        "thread": {
+                            "id": "thread-resume",
+                            "path": "C:\\repo\\.codex\\sessions\\rollout-thread-resume.jsonl",
+                            "status": { "type": "idle" }
+                        }
+                    }))
+                }
+            },
+        )))
+        .await;
+
+        let manager =
+            resolve_thread_session_manager(Some(WorkspaceTarget::Windows), "thread-resume");
+        let known_rollout_path =
+            crate::orchestrator::gateway::web_codex_threads::known_rollout_path_for_thread(
+                WorkspaceTarget::Windows,
+                "thread-resume",
+            )
+            .await;
+        let result = manager
+            .resume_thread(
+                "thread-resume",
+                json!({ "threadId": "thread-resume" }),
+                known_rollout_path.as_deref(),
+            )
+            .await
+            .expect("resume should import known rollout path and retry");
+
+        assert_eq!(
+            runtime_thread_payload(&result)
+                .and_then(|thread| thread.get("id"))
+                .and_then(Value::as_str),
+            Some("thread-resume")
+        );
+        assert_eq!(request_count.load(Ordering::SeqCst), 2);
+        let imported_rollout = home
+            .path
+            .join("sessions")
+            .join("imported")
+            .join("thread-resume.jsonl");
+        assert!(imported_rollout.is_file(), "imported rollout should exist");
+
+        crate::codex_app_server::_set_test_request_handler(None).await;
+        let _ = std::fs::remove_dir_all(source_root);
     }
 
     #[tokio::test]
@@ -2046,6 +2204,7 @@ mod tests {
         let _guard = crate::codex_app_server::lock_test_globals();
         let _home = isolate_windows_web_codex_home();
         let _user_data = isolate_user_data_dir();
+        _clear_workspace_runtime_registry_for_test();
         clear_runtime_trace_cache_for_test();
         crate::codex_app_server::_set_test_request_handler(Some(Arc::new(
             move |_home, method, _params| {
@@ -2156,6 +2315,7 @@ mod tests {
     #[tokio::test]
     async fn read_thread_history_page_from_runtime_uses_empty_history_fallback_for_new_thread() {
         let _guard = crate::codex_app_server::lock_test_globals();
+        _clear_workspace_runtime_registry_for_test();
         crate::codex_app_server::_set_test_request_handler(Some(Arc::new(
             move |_home, method, params| {
                 assert_eq!(method, "thread/read");
@@ -2199,6 +2359,7 @@ mod tests {
     #[tokio::test]
     async fn read_thread_history_page_from_runtime_keeps_active_empty_fallback_incomplete() {
         let _guard = crate::codex_app_server::lock_test_globals();
+        _clear_workspace_runtime_registry_for_test();
         crate::codex_app_server::_set_test_request_handler(Some(Arc::new(
             move |_home, method, params| {
                 assert_eq!(method, "thread/read");
@@ -2352,6 +2513,7 @@ mod tests {
         let _guard = crate::codex_app_server::lock_test_globals();
         let _home = isolate_windows_web_codex_home();
         let _user_data = isolate_user_data_dir();
+        _clear_workspace_runtime_registry_for_test();
         clear_runtime_trace_cache_for_test();
         crate::codex_app_server::_set_test_request_handler(Some(Arc::new(
             move |_home, method, params| {

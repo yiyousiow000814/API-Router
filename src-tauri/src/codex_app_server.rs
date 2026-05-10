@@ -1789,6 +1789,10 @@ fn resolve_windows_accessible_codex_home(codex_home: Option<&str>) -> Option<Pat
 }
 
 fn resolve_rollout_sessions_root(codex_home: Option<&str>) -> Option<PathBuf> {
+    let explicit_root = codex_home
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
     let session_home =
         crate::orchestrator::gateway::web_codex_home::web_codex_session_home_for_runtime_home(
             codex_home,
@@ -1796,28 +1800,24 @@ fn resolve_rollout_sessions_root(codex_home: Option<&str>) -> Option<PathBuf> {
     let root = {
         #[cfg(target_os = "windows")]
         {
-            resolve_windows_accessible_codex_home(session_home.as_deref())
+            explicit_root
+                .as_ref()
+                .filter(|path| path.join("sessions").is_dir())
+                .cloned()
+                .or_else(|| resolve_windows_accessible_codex_home(session_home.as_deref()))
                 .or_else(|| session_home.as_deref().map(PathBuf::from))
                 .or_else(|| resolve_windows_accessible_codex_home(codex_home))
-                .or_else(|| {
-                    codex_home
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(PathBuf::from)
-                })
+                .or(explicit_root)
                 .or_else(resolve_default_codex_home)
         }
         #[cfg(not(target_os = "windows"))]
         {
-            session_home
-                .as_deref()
-                .map(PathBuf::from)
-                .or_else(|| {
-                    codex_home
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(PathBuf::from)
-                })
+            explicit_root
+                .as_ref()
+                .filter(|path| path.join("sessions").is_dir())
+                .cloned()
+                .or_else(|| session_home.as_deref().map(PathBuf::from))
+                .or(explicit_root)
                 .or_else(resolve_default_codex_home)
         }
     }?;
@@ -2911,6 +2911,7 @@ mod tests {
     }
 
     struct TestCodexHomeGuard {
+        key: &'static str,
         previous: Option<String>,
     }
 
@@ -2918,26 +2919,34 @@ mod tests {
         fn drop(&mut self) {
             if let Some(previous) = self.previous.take() {
                 unsafe {
-                    std::env::set_var("CODEX_HOME", previous);
+                    std::env::set_var(self.key, previous);
                 }
             } else {
                 unsafe {
-                    std::env::remove_var("CODEX_HOME");
+                    std::env::remove_var(self.key);
                 }
             }
         }
     }
 
     fn isolate_default_codex_home() -> TestCodexHomeGuard {
-        let previous = std::env::var("CODEX_HOME").ok();
+        isolate_env_codex_home("CODEX_HOME")
+    }
+
+    fn isolate_web_codex_home() -> TestCodexHomeGuard {
+        isolate_env_codex_home("API_ROUTER_WEB_CODEX_CODEX_HOME")
+    }
+
+    fn isolate_env_codex_home(key: &'static str) -> TestCodexHomeGuard {
+        let previous = std::env::var(key).ok();
         let temp = tempfile::tempdir().expect("temp codex home");
         let temp_path = temp.keep();
         let sessions = temp_path.join("sessions");
         std::fs::create_dir_all(&sessions).expect("sessions dir");
         unsafe {
-            std::env::set_var("CODEX_HOME", &temp_path);
+            std::env::set_var(key, &temp_path);
         }
-        TestCodexHomeGuard { previous }
+        TestCodexHomeGuard { key, previous }
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -3347,6 +3356,43 @@ mod tests {
         assert_eq!(last, Some(1));
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].get("eventId").and_then(Value::as_u64), Some(1));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn replay_prefers_explicit_runtime_home_sessions_root() {
+        let _guard = lock_tests();
+        let _home = isolate_default_codex_home();
+        let _web_home = isolate_web_codex_home();
+        _clear_notifications_for_test().await;
+        let runtime_home_text =
+            std::env::var("API_ROUTER_WEB_CODEX_CODEX_HOME").expect("runtime home");
+
+        _push_notification_for_test(
+            Some(runtime_home_text.as_str()),
+            serde_json::json!({
+                "method": "thread/status/changed",
+                "params": { "threadId": "thread-runtime" }
+            }),
+        )
+        .await;
+
+        let (items, _first, _last, _gap) =
+            replay_notifications_since_in_home(Some(runtime_home_text.as_str()), 0, 8).await;
+
+        assert_eq!(
+            items
+                .iter()
+                .filter(|item| {
+                    item.get("params")
+                        .and_then(Value::as_object)
+                        .and_then(|params| params.get("threadId"))
+                        .and_then(Value::as_str)
+                        == Some("thread-runtime")
+                })
+                .count(),
+            1
+        );
+        assert_eq!(items.len(), 1, "replay should stay in runtime home");
     }
 
     #[tokio::test(flavor = "current_thread")]

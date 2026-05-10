@@ -6,9 +6,8 @@ use crate::orchestrator::gateway::web_codex_git::{
     current_branch_for_workspace, local_branches_for_workspace, run_git_command_for_workspace,
 };
 use crate::orchestrator::gateway::web_codex_home::parse_workspace_target;
-use crate::orchestrator::gateway::web_codex_session_manager::CodexSessionManager;
-use crate::orchestrator::gateway::web_codex_session_runtime::{
-    locate_workspace_thread_runtime, locate_workspace_thread_runtime_for_target,
+use crate::orchestrator::gateway::web_codex_session_manager::{
+    resolve_thread_session_manager, CodexSessionManager,
 };
 use crate::orchestrator::gateway::web_codex_storage::{codex_attachments_dir, sanitize_name};
 use axum::extract::{Path as AxumPath, Query};
@@ -354,20 +353,10 @@ fn turn_interrupt_session_manager(
     req: &TurnInterruptRequest,
     thread_id: &str,
 ) -> CodexSessionManager {
-    if let Some(workspace_target) = req.workspace.as_deref().and_then(parse_workspace_target) {
-        if let Some(location) =
-            locate_workspace_thread_runtime_for_target(thread_id, workspace_target)
-        {
-            return CodexSessionManager::new(location.workspace_target)
-                .with_home_override(location.home_override);
-        }
-        return CodexSessionManager::new(Some(workspace_target));
-    }
-    if let Some(location) = locate_workspace_thread_runtime(thread_id) {
-        return CodexSessionManager::new(location.workspace_target)
-            .with_home_override(location.home_override);
-    }
-    CodexSessionManager::new(None)
+    resolve_thread_session_manager(
+        req.workspace.as_deref().and_then(parse_workspace_target),
+        thread_id,
+    )
 }
 
 #[derive(Deserialize)]
