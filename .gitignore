@@ -34,6 +34,7 @@ packycode-cost/
 artifacts/
 .claude/
 docs/superpowers/
+.worktrees/
 
 # MCP build artifacts
 mcp/target/
