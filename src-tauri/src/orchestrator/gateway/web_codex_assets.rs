@@ -58,6 +58,8 @@ const WEB_CODEX_HISTORY_RENDER_APPLY_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/historyRenderApply.js");
 const WEB_CODEX_HISTORY_RENDER_STRATEGY_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/historyRenderStrategy.js");
+const WEB_CODEX_HISTORY_TIMELINE_RECONCILE_JS: &str =
+    include_str!("../../../../src/ui/modules/codex-web/historyTimelineReconcile.js");
 const WEB_CODEX_HISTORY_OLDER_CHUNK_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/historyOlderChunk.js");
 const WEB_CODEX_HISTORY_WINDOW_CONTROL_JS: &str =
@@ -94,6 +96,8 @@ const WEB_CODEX_SLASH_COMMANDS_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/slashCommands.js");
 const WEB_CODEX_THREAD_LIST_REFRESH_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/threadListRefresh.js");
+const WEB_CODEX_TEXT_REPLAY_JS: &str =
+    include_str!("../../../../src/ui/modules/codex-web/textReplay.js");
 const WEB_CODEX_THREAD_LIVE_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/threadLive.js");
 const WEB_CODEX_THREAD_META_JS: &str =
@@ -200,6 +204,7 @@ fn resolve_web_codex_module_asset(module_path: &str) -> Option<WebCodexModuleAss
         "codex-web/historyPreparation.js" => WEB_CODEX_HISTORY_PREPARATION_JS,
         "codex-web/historyRenderApply.js" => WEB_CODEX_HISTORY_RENDER_APPLY_JS,
         "codex-web/historyRenderStrategy.js" => WEB_CODEX_HISTORY_RENDER_STRATEGY_JS,
+        "codex-web/historyTimelineReconcile.js" => WEB_CODEX_HISTORY_TIMELINE_RECONCILE_JS,
         "codex-web/historyWindowControl.js" => WEB_CODEX_HISTORY_WINDOW_CONTROL_JS,
         "codex-web/imageViewer.js" => WEB_CODEX_IMAGE_VIEWER_JS,
         "codex-web/liveNotifications.js" => WEB_CODEX_LIVE_NOTIFICATIONS_JS,
@@ -217,6 +222,7 @@ fn resolve_web_codex_module_asset(module_path: &str) -> Option<WebCodexModuleAss
         "codex-web/runtimePlan.js" => WEB_CODEX_RUNTIME_PLAN_JS,
         "codex-web/runtimeUserInput.js" => WEB_CODEX_RUNTIME_USER_INPUT_JS,
         "codex-web/slashCommands.js" => WEB_CODEX_SLASH_COMMANDS_JS,
+        "codex-web/textReplay.js" => WEB_CODEX_TEXT_REPLAY_JS,
         "codex-web/threadListRefresh.js" => WEB_CODEX_THREAD_LIST_REFRESH_JS,
         "codex-web/threadLive.js" => WEB_CODEX_THREAD_LIVE_JS,
         "codex-web/threadMeta.js" => WEB_CODEX_THREAD_META_JS,
@@ -415,6 +421,7 @@ mod tests {
         assert!(resolve_web_codex_module_body("codex-web/historyPreparation.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/historyRenderApply.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/historyRenderStrategy.js").is_some());
+        assert!(resolve_web_codex_module_body("codex-web/historyTimelineReconcile.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/historyWindowControl.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/imageViewer.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/liveNotifications.js").is_some());
@@ -428,6 +435,7 @@ mod tests {
         assert!(resolve_web_codex_module_body("codex-web/runtimeState.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/runtimePlan.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/runtimeUserInput.js").is_some());
+        assert!(resolve_web_codex_module_body("codex-web/textReplay.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/threadListRefresh.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/threadLive.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/threadMeta.js").is_some());

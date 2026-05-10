@@ -3586,6 +3586,45 @@
       font-size: 13px;
       line-height: 1.6;
     }
+    .runtimeThinkingBody > :last-child {
+      margin-bottom: 0;
+    }
+    .runtimeThinkingBody p {
+      margin: 0 0 8px;
+      min-width: 0;
+    }
+    .runtimeThinkingBody ul,
+    .runtimeThinkingBody ol {
+      margin: 4px 0 8px;
+      padding-left: 20px;
+      list-style: none;
+    }
+    .runtimeThinkingBody li {
+      margin: 2px 0;
+      min-width: 0;
+      position: relative;
+    }
+    .runtimeThinkingBody li::before {
+      content: attr(data-list-marker);
+      position: absolute;
+      left: -20px;
+      top: 0;
+      min-width: 16px;
+      text-align: right;
+      color: #52627d;
+      font-variant-numeric: tabular-nums;
+    }
+    .runtimeThinkingBody li > ul,
+    .runtimeThinkingBody li > ol {
+      margin-top: 4px;
+    }
+    .runtimeThinkingBody .msgListItem {
+      margin-left: 0;
+    }
+    .runtimeThinkingBody strong {
+      font-weight: 700;
+      color: #16233c;
+    }
     .runtimeToolItem {
       display: flex;
       align-items: center;

@@ -751,11 +751,13 @@ export function createHistoryLoaderModule(deps) {
     renderMessageBody,
     addChat,
     buildMsgNode,
+    replayAssistantHistoryMessage,
     clearChatMessages,
     showTransientToolMessage = () => {},
     showTransientThinkingMessage = () => {},
     clearTransientToolMessages = () => {},
     clearTransientThinkingMessages = () => {},
+    renderRuntimePanels = () => {},
     clearRuntimeState = () => {},
     renderCommentaryArchive = () => {},
     syncRuntimeStateFromHistory = () => {},
@@ -879,8 +881,10 @@ export function createHistoryLoaderModule(deps) {
     }
     if (String(state.activeThreadCommentaryCurrent?.text || "").trim()) {
       showTransientThinkingMessage(state.activeThreadCommentaryCurrent.text);
+      renderRuntimePanels();
     } else {
       clearTransientThinkingMessages();
+      renderRuntimePanels();
     }
     const box = byId("chatBox");
     const assistantNodes = Array.from(box?.querySelectorAll?.(".assistant") || []);
@@ -1154,6 +1158,7 @@ export function createHistoryLoaderModule(deps) {
           scheduleChatLiveFollow,
           scrollChatToBottom,
           maybeScheduleChatFollow,
+          replayAssistantHistoryMessage,
           finalizeThreadRenderEffects: (nextHistoryCommentary, nextLiveCommentarySnapshot, extra = {}) =>
             finalizeThreadRenderEffects(thread, options, nextHistoryCommentary, nextLiveCommentarySnapshot, extra),
         },
@@ -1184,12 +1189,14 @@ export function createHistoryLoaderModule(deps) {
       deps: {
         renderMessageBody,
         addChat,
+        buildMsgNode,
         clearChatMessages,
         renderChatFull,
         pushLiveDebugEvent,
         scrollChatToBottom,
         canStartChatLiveFollow,
         maybeScheduleChatFollow,
+        replayAssistantHistoryMessage,
         scrollToBottomReliable,
         scheduleChatLiveFollow,
         finalizeThreadRenderEffects: (nextHistoryCommentary, nextLiveCommentarySnapshot, extra = {}) =>

@@ -136,6 +136,7 @@ export function createCodexWebComposition(deps) {
     renderMessageBody: deps.renderMessageBody,
     addChat: chatTimeline.addChat,
     buildMsgNode: chatTimeline.buildMsgNode,
+    replayAssistantHistoryMessage: chatTimeline.replayAssistantHistoryMessage,
     clearChatMessages: chatTimeline.clearChatMessages,
     showTransientToolMessage: deps.showTransientToolMessage,
     showTransientThinkingMessage: deps.showTransientThinkingMessage,

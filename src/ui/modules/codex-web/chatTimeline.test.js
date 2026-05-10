@@ -617,6 +617,88 @@ describe("chatTimeline", () => {
     ]);
   });
 
+  it("reconciles commentary archive insertions when the final assistant text changes", async () => {
+    const clearCalls = [];
+    const userNode = module.buildMsgNode({ role: "user", text: "hello", kind: "" });
+    const assistantNode = module.buildMsgNode({ role: "assistant", text: "draft answer", kind: "" });
+    dom.chatBox.appendChild(userNode);
+    dom.chatBox.appendChild(assistantNode);
+    state.activeThreadMessages = [
+      { role: "user", text: "hello", kind: "" },
+      { role: "assistant", text: "draft answer", kind: "" },
+    ];
+
+    await applyFullHistoryRender({
+      state,
+      threadId: "thread-1",
+      messages: [
+        { role: "user", text: "hello", kind: "" },
+        {
+          role: "system",
+          kind: "commentaryArchive",
+          text: "thinking one",
+          archiveKey: "turn-1",
+          archiveBlocks: [
+            {
+              key: "commentary-1",
+              text: "thinking one",
+              tools: [],
+            },
+          ],
+        },
+        { role: "assistant", text: "final answer", kind: "" },
+      ],
+      prevMessages: [
+        { role: "user", text: "hello", kind: "" },
+        { role: "assistant", text: "draft answer", kind: "" },
+      ],
+      box: dom.chatBox,
+      preservedScrollTop: null,
+      inlineCommentaryArchiveCount: 1,
+      renderSig: "thread-1::history",
+      toolCount: 0,
+      forceFullRender: false,
+      options: {},
+      historyCommentary: null,
+      liveCommentarySnapshot: null,
+      deps: {
+        renderMessageBody: (_role, text) => `<span>${String(text || "")}</span>`,
+        addChat: module.addChat,
+        clearChatMessages(options = {}) {
+          clearCalls.push(options);
+        },
+        renderChatFull: async () => {},
+        pushLiveDebugEvent() {},
+        scrollChatToBottom() {},
+        canStartChatLiveFollow() {
+          return false;
+        },
+        maybeScheduleChatFollow() {},
+        scrollToBottomReliable() {},
+        scheduleChatLiveFollow() {},
+        finalizeThreadRenderEffects() {},
+        buildMsgNode: module.buildMsgNode,
+      },
+    });
+
+    expect(clearCalls).toEqual([]);
+    expect(assistantNode.querySelector(".msgBody")?.innerHTML).toContain("final answer");
+    expect(
+      dom.chatBox.children
+        .filter((child) => child.classList.contains("msg") || child.classList.contains("commentaryArchiveMount"))
+        .map((child) => ({
+          role: child.__webCodexRole,
+          kind: child.__webCodexKind,
+          text: child.__webCodexRawText,
+          source: child.__webCodexSource,
+        }))
+    ).toEqual([
+      { role: "user", kind: "", text: "hello", source: "buildMsgNode" },
+      { role: "system", kind: "commentaryArchive", text: "thinking one", source: "buildMsgNode" },
+      { role: "assistant", kind: "", text: "final answer", source: "buildMsgNode" },
+    ]);
+  });
+
   it("renders inline commentary archive messages as collapsible archive mounts", () => {
     const node = module.buildMsgNode({
       role: "system",
@@ -995,5 +1077,273 @@ describe("chatTimeline", () => {
 
     expect(String(body.innerHTML || "")).toContain("<span><strong>关于 tool live</strong></span>");
     expect(body.attributes.get("data-streaming")).toBe("1");
+  });
+
+  it("replays assistant history snapshots in visible chunks", () => {
+    const rafQueue = [];
+    const replayModule = createChatTimelineModule({
+      byId: (id) => dom.documentRef.getElementById(id),
+      state,
+      escapeHtml: (value) => String(value || ""),
+      renderMessageAttachments: () => "",
+      renderMessageBody: (_role, text) => `<span>${String(text || "")}</span>`,
+      wireMessageLinks: vi.fn(),
+      wireMessageAttachments: vi.fn(),
+      ...refs,
+      requestAnimationFrameRef: (cb) => {
+        rafQueue.push(cb);
+        return rafQueue.length;
+      },
+      documentRef: dom.documentRef,
+    });
+    const node = replayModule.buildMsgNode({ role: "assistant", text: "older", kind: "" });
+    const body = node.querySelector(".msgBody");
+
+    replayModule.replayAssistantHistoryMessage(node, {
+      role: "assistant",
+      text: "hello world",
+      kind: "",
+    }, { fromText: "", chunkSize: 5 });
+
+    expect(String(body.innerHTML || "")).toContain("hello");
+    expect(String(body.innerHTML || "")).not.toContain("world");
+
+    rafQueue.shift()();
+    expect(String(body.innerHTML || "")).toContain("hello worl");
+    expect(String(body.innerHTML || "")).not.toContain("hello world");
+
+    while (rafQueue.length) rafQueue.shift()();
+    expect(String(body.innerHTML || "")).toContain("hello world");
+    expect(node.__webCodexRawText).toBe("hello world");
+  });
+
+  it("replays appended assistant history snapshots instead of instant full append", async () => {
+    const replayed = [];
+    state.activeThreadStarted = true;
+    state.activeThreadHistoryStatusType = "running";
+    state.activeThreadRolloutPath = "C:\\Users\\yiyou\\.codex\\sessions\\rollout.jsonl";
+    state.activeThreadMessages = [{ role: "user", text: "hi", kind: "" }];
+    dom.chatBox.appendChild(module.buildMsgNode({ role: "user", text: "hi", kind: "" }));
+
+    await applyFullHistoryRender({
+      state,
+      threadId: "thread-1",
+      messages: [
+        { role: "user", text: "hi", kind: "" },
+        { role: "assistant", text: "final answer", kind: "" },
+      ],
+      prevMessages: [{ role: "user", text: "hi", kind: "" }],
+      box: dom.chatBox,
+      preservedScrollTop: null,
+      inlineCommentaryArchiveCount: 0,
+      renderSig: "thread-1::history",
+      toolCount: 0,
+      forceFullRender: false,
+      options: {},
+      historyCommentary: null,
+      liveCommentarySnapshot: null,
+      deps: {
+        renderMessageBody: (_role, text) => `<span>${String(text || "")}</span>`,
+        addChat: module.addChat,
+        clearChatMessages: module.clearChatMessages,
+        renderChatFull: async () => {},
+        pushLiveDebugEvent() {},
+        scrollChatToBottom() {},
+        canStartChatLiveFollow() {
+          return false;
+        },
+        maybeScheduleChatFollow() {},
+        scrollToBottomReliable() {},
+        scheduleChatLiveFollow() {},
+        finalizeThreadRenderEffects() {},
+        replayAssistantHistoryMessage(node, message, options = {}) {
+          replayed.push({
+            node,
+            text: String(message?.text || ""),
+            fromText: String(options.fromText || ""),
+          });
+        },
+      },
+    });
+
+    expect(replayed).toEqual([
+      expect.objectContaining({
+        text: "final answer",
+        fromText: "",
+      }),
+    ]);
+  });
+
+  it("replays appended assistant history snapshots even when the snapshot is completed", async () => {
+    const replayed = [];
+    state.activeThreadStarted = true;
+    state.activeThreadHistoryStatusType = "completed";
+    state.activeThreadRolloutPath = "C:\\Users\\yiyou\\.codex\\sessions\\rollout.jsonl";
+    state.activeThreadMessages = [{ role: "user", text: "hi", kind: "" }];
+    dom.chatBox.appendChild(module.buildMsgNode({ role: "user", text: "hi", kind: "" }));
+
+    await applyFullHistoryRender({
+      state,
+      threadId: "thread-1",
+      messages: [
+        { role: "user", text: "hi", kind: "" },
+        { role: "assistant", text: "final answer", kind: "" },
+      ],
+      prevMessages: [{ role: "user", text: "hi", kind: "" }],
+      box: dom.chatBox,
+      preservedScrollTop: null,
+      inlineCommentaryArchiveCount: 0,
+      renderSig: "thread-1::history",
+      toolCount: 0,
+      forceFullRender: false,
+      options: {},
+      historyCommentary: null,
+      liveCommentarySnapshot: null,
+      deps: {
+        renderMessageBody: (_role, text) => `<span>${String(text || "")}</span>`,
+        addChat: module.addChat,
+        clearChatMessages: module.clearChatMessages,
+        renderChatFull: async () => {},
+        pushLiveDebugEvent() {},
+        scrollChatToBottom() {},
+        canStartChatLiveFollow() {
+          return false;
+        },
+        maybeScheduleChatFollow() {},
+        scrollToBottomReliable() {},
+        scheduleChatLiveFollow() {},
+        finalizeThreadRenderEffects() {},
+        replayAssistantHistoryMessage(node, message, options = {}) {
+          replayed.push({
+            node,
+            text: String(message?.text || ""),
+            fromText: String(options.fromText || ""),
+          });
+        },
+      },
+    });
+
+    expect(replayed).toEqual([
+      expect.objectContaining({
+        text: "final answer",
+        fromText: "",
+      }),
+    ]);
+  });
+
+  it("replays the first assistant history snapshot when the active rollout-backed thread opens from empty state", async () => {
+    const replayed = [];
+    state.activeThreadStarted = true;
+    state.activeThreadHistoryStatusType = "running";
+    state.activeThreadRolloutPath = "C:\\Users\\yiyou\\.codex\\sessions\\rollout.jsonl";
+    state.activeThreadMessages = [];
+
+    await applyFullHistoryRender({
+      state,
+      threadId: "thread-1",
+      messages: [
+        { role: "user", text: "hi", kind: "" },
+        { role: "assistant", text: "final answer", kind: "" },
+      ],
+      prevMessages: [],
+      box: dom.chatBox,
+      preservedScrollTop: null,
+      inlineCommentaryArchiveCount: 0,
+      renderSig: "thread-1::history",
+      toolCount: 0,
+      forceFullRender: false,
+      options: {},
+      historyCommentary: null,
+      liveCommentarySnapshot: null,
+      deps: {
+        renderMessageBody: (_role, text) => `<span>${String(text || "")}</span>`,
+        addChat: module.addChat,
+        clearChatMessages: module.clearChatMessages,
+        renderChatFull: async () => {},
+        pushLiveDebugEvent() {},
+        scrollChatToBottom() {},
+        canStartChatLiveFollow() {
+          return false;
+        },
+        maybeScheduleChatFollow() {},
+        scrollToBottomReliable() {},
+        scheduleChatLiveFollow() {},
+        finalizeThreadRenderEffects() {},
+        replayAssistantHistoryMessage(node, message, options = {}) {
+          replayed.push({
+            node,
+            text: String(message?.text || ""),
+            fromText: String(options.fromText || ""),
+          });
+        },
+      },
+    });
+
+    expect(replayed).toEqual([
+      expect.objectContaining({
+        text: "final answer",
+        fromText: "",
+      }),
+    ]);
+  });
+
+  it("replays updated assistant history snapshots without clearing the timeline", async () => {
+    const clearCalls = [];
+    const replayed = [];
+    const assistantNode = module.buildMsgNode({ role: "assistant", text: "hello", kind: "" });
+    state.activeThreadStarted = true;
+    state.activeThreadHistoryStatusType = "running";
+    state.activeThreadRolloutPath = "C:\\Users\\yiyou\\.codex\\sessions\\rollout.jsonl";
+    state.activeThreadMessages = [{ role: "assistant", text: "hello", kind: "" }];
+    dom.chatBox.appendChild(assistantNode);
+
+    await applyFullHistoryRender({
+      state,
+      threadId: "thread-1",
+      messages: [{ role: "assistant", text: "hello world", kind: "" }],
+      prevMessages: [{ role: "assistant", text: "hello", kind: "" }],
+      box: dom.chatBox,
+      preservedScrollTop: null,
+      inlineCommentaryArchiveCount: 0,
+      renderSig: "thread-1::history",
+      toolCount: 0,
+      forceFullRender: false,
+      options: {},
+      historyCommentary: null,
+      liveCommentarySnapshot: null,
+      deps: {
+        renderMessageBody: (_role, text) => `<span>${String(text || "")}</span>`,
+        addChat: module.addChat,
+        clearChatMessages(options = {}) {
+          clearCalls.push(options);
+        },
+        renderChatFull: async () => {},
+        pushLiveDebugEvent() {},
+        scrollChatToBottom() {},
+        canStartChatLiveFollow() {
+          return false;
+        },
+        maybeScheduleChatFollow() {},
+        scrollToBottomReliable() {},
+        scheduleChatLiveFollow() {},
+        finalizeThreadRenderEffects() {},
+        replayAssistantHistoryMessage(node, message, options = {}) {
+          replayed.push({
+            sameNode: node === assistantNode,
+            text: String(message?.text || ""),
+            fromText: String(options.fromText || ""),
+          });
+        },
+      },
+    });
+
+    expect(clearCalls).toEqual([]);
+    expect(replayed).toEqual([
+      {
+        sameNode: true,
+        text: "hello world",
+        fromText: "hello",
+      },
+    ]);
   });
 });

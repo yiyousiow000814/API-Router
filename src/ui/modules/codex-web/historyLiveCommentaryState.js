@@ -106,6 +106,11 @@ export function isTerminalHistoryStatus(value) {
   const statusType = String(value || "").trim().toLowerCase();
   if (!statusType) return false;
   return (
+    statusType === "completed" ||
+    statusType === "complete" ||
+    statusType === "succeeded" ||
+    statusType === "success" ||
+    statusType === "done" ||
     statusType === "interrupted" ||
     statusType === "cancelled" ||
     statusType === "failed" ||

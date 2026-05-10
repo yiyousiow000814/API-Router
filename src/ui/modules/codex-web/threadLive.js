@@ -1,4 +1,5 @@
 import { resolveCurrentThreadId } from "./runtimeState.js";
+import { isTerminalHistoryStatus } from "./historyLiveCommentaryState.js";
 import { shouldResumeThreadAfterOpen } from "./threadOpenState.js";
 
 export function resolveThreadAutoRefreshInterval(wsOpen, wsSubscribed, connectedMs, disconnectedMs) {
@@ -36,6 +37,8 @@ export function shouldPollActiveThreadLive({
   activeThreadPendingUserMessage,
   activeThreadPendingAssistantMessage,
   activeThreadOpenState,
+  activeThreadRolloutPath,
+  activeThreadHistoryStatusType,
 }) {
   if (!String(threadId || "").trim()) return false;
   if (String(activeMainTab || "").trim() !== "chat") return false;
@@ -44,6 +47,11 @@ export function shouldPollActiveThreadLive({
   if (String(activeThreadPendingUserMessage || "").trim()) return true;
   if (String(activeThreadPendingAssistantMessage || "").trim()) return true;
   if (shouldResumeThreadAfterOpen(activeThreadOpenState)) return true;
+  if (
+    activeThreadStarted === true &&
+    String(activeThreadRolloutPath || "").trim() &&
+    !isTerminalHistoryStatus(activeThreadHistoryStatusType)
+  ) return true;
   return false;
 }
 
@@ -284,6 +292,8 @@ export function createThreadLiveModule(deps) {
           activeThreadPendingUserMessage: state.activeThreadPendingUserMessage,
           activeThreadPendingAssistantMessage: state.activeThreadPendingAssistantMessage,
           activeThreadOpenState: state.activeThreadOpenState,
+          activeThreadRolloutPath: state.activeThreadRolloutPath,
+          activeThreadHistoryStatusType: state.activeThreadHistoryStatusType,
         })
       ) return;
       const now = Date.now();
