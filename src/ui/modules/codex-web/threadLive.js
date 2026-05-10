@@ -1,4 +1,5 @@
 import { resolveCurrentThreadId } from "./runtimeState.js";
+import { shouldResumeThreadAfterOpen } from "./threadOpenState.js";
 
 export function resolveThreadAutoRefreshInterval(wsOpen, wsSubscribed, connectedMs, disconnectedMs) {
   return wsOpen && wsSubscribed ? connectedMs : disconnectedMs;
@@ -42,7 +43,7 @@ export function shouldPollActiveThreadLive({
   if (activeThreadPendingTurnRunning === true) return true;
   if (String(activeThreadPendingUserMessage || "").trim()) return true;
   if (String(activeThreadPendingAssistantMessage || "").trim()) return true;
-  if (activeThreadOpenState?.resumeRequired === true) return true;
+  if (shouldResumeThreadAfterOpen(activeThreadOpenState)) return true;
   return false;
 }
 

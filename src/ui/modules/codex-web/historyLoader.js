@@ -23,6 +23,7 @@ import {
   getRenderBaseline,
   reportPreparedHistory,
 } from "./historyApplyFlow.js";
+import { shouldResumeThreadAfterOpen } from "./threadOpenState.js";
 import {
   beginHistoryLoad,
   finalizeHistoryLoad,
@@ -147,7 +148,7 @@ function shouldClearTransientConnectionStatusOnExplicitHistoryOpen(state = {}, t
     return false;
   }
   if (String(state.activeThreadOpenState?.threadId || "").trim() !== id) return false;
-  if (state.activeThreadOpenState?.resumeRequired === true) return false;
+  if (shouldResumeThreadAfterOpen(state.activeThreadOpenState)) return false;
   const hasTrackedRuntimeContext =
     (String(state.activeThreadPendingTurnThreadId || "").trim() === id) ||
     (String(state.activeThreadLiveAssistantThreadId || "").trim() === id) ||

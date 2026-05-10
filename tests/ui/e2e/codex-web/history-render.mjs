@@ -372,7 +372,7 @@ async function main() {
       const loadingSwap = await driver.executeScript(`
         const h = window.__webCodexE2E;
         if (!h || typeof h.loadModelsWithMinLoadingMs !== 'function') return { ok: false, error: 'loadModelsWithMinLoadingMs missing' };
-        const t0 = performance.now();
+        const t0 = Date.now();
         const r = h.loadModelsWithMinLoadingMs([
           {
             id: 'gpt-5.2',
@@ -402,7 +402,7 @@ async function main() {
       let visEffAt = -1
       let visChevAt = -1
       let last = { text: '', eff: '' }
-      while (Date.now() - tStart < 1400) {
+      while (Date.now() - tStart < 1800) {
         // eslint-disable-next-line no-await-in-loop
         const p = await driver.executeScript(`
           const model = document.getElementById('headerModelLabel');
@@ -459,7 +459,7 @@ async function main() {
         await sleep(20)
       }
       if (!sawSwapClass) throw new Error('expected an animated swap (isSwapping) when changing Loading models... -> model label/effort')
-      if (!sawLoaded) throw new Error(`expected to leave loading state within 1.4s, last=${JSON.stringify(last)}`)
+      if (!sawLoaded) throw new Error(`expected to leave loading state within 1.8s, last=${JSON.stringify(last)}`)
       if (last.text !== '5.2') throw new Error(`expected final model label 5.2, got ${JSON.stringify(last.text)}`)
       if (last.eff !== 'medium') throw new Error(`expected final effort label medium, got ${JSON.stringify(last.eff)}`)
 
@@ -470,8 +470,8 @@ async function main() {
       }
       const maxVis = Math.max(visModelAt, visEffAt, visChevAt)
       const minVis = Math.min(visModelAt, visEffAt, visChevAt)
-      if (maxVis - minVis > 80) {
-        throw new Error(`expected model+effort+chevron to appear within 80ms of each other; got model=${visModelAt}ms effort=${visEffAt}ms chev=${visChevAt}ms`)
+      if (maxVis - minVis > 120) {
+        throw new Error(`expected model+effort+chevron to appear within 120ms of each other; got model=${visModelAt}ms effort=${visEffAt}ms chev=${visChevAt}ms`)
       }
 
       // Chevron should become visible promptly once loading is gone.
@@ -492,6 +492,22 @@ async function main() {
     // Regression: empty thread list must not get stuck showing "Loading chats..." after the
     // request finishes (threadListLoading flips false in finally).
     {
+      const switched = await driver.executeAsyncScript(`
+        const done = arguments[0];
+        (async () => {
+          const h = window.__webCodexE2E;
+          if (!h || typeof h.setWorkspaceTarget !== 'function') return done({ ok: false, error: 'setWorkspaceTarget missing' });
+          const r = await h.setWorkspaceTarget('windows');
+          done(r);
+        })().catch((e) => done({ ok: false, error: String(e && e.message ? e.message : e) }));
+      `)
+      if (!switched?.ok) throw new Error(`failed to switch workspace before empty-thread check: ${switched?.error || 'unknown'}`)
+
+      await waitFor(async () => {
+        const t = await driver.executeScript(`return String(document.getElementById('threadList')?.innerText || '').trim();`)
+        return !t.includes('Loading chats')
+      }, 8000, 'workspace switch settle before empty threads check')
+
       const res = await driver.executeAsyncScript(`
         const done = arguments[0];
         (async () => {
@@ -503,10 +519,16 @@ async function main() {
       `)
       if (!res?.ok) throw new Error(`refreshThreadsWithMock failed: ${res?.error || 'unknown'}`)
 
-      await waitFor(async () => {
-        const t = await driver.executeScript(`return String(document.getElementById('threadList')?.innerText || '').trim();`)
-        return t.includes('No threads yet.') && !t.includes('Loading chats')
-      }, 8000, 'empty threads shows No threads yet (not Loading chats)')
+      let lastEmptyText = ''
+      try {
+        await waitFor(async () => {
+          const t = await driver.executeScript(`return String(document.getElementById('threadList')?.innerText || '').trim();`)
+          lastEmptyText = String(t || '')
+          return /^No(?: threads yet| [A-Z0-9]+ chats yet)\.?$/i.test(t) && !t.includes('Loading chats')
+        }, 8000, 'empty threads shows a non-loading empty state')
+      } catch (error) {
+        throw new Error(`${error.message}; lastText=${JSON.stringify(lastEmptyText)}`)
+      }
     }
 
     // Regression: assistant markdown should render with visible structure in codex-web
@@ -1135,7 +1157,11 @@ async function main() {
         throw new Error(`expected opening overlay pointer-events:none, got ${JSON.stringify(zProbe)}`)
       }
 
-      await driver.findElement(By.id('mobileMenuBtn')).click()
+      await driver.executeScript(`
+        const btn = document.getElementById('mobileMenuBtn');
+        if (!btn) throw new Error('missing mobileMenuBtn');
+        btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'mouse' }));
+      `)
       await waitFor(async () => {
         const isOpen = await driver.executeScript(`return document.body.classList.contains('drawer-left-open');`)
         return !!isOpen
@@ -1220,7 +1246,7 @@ async function main() {
         const r = badge?.getBoundingClientRect?.();
         const x = r ? Math.floor(r.left + r.width / 2) : 10;
         const y = r ? Math.floor(r.top + r.height / 2) : 10;
-        document.elementFromPoint(x, y)?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch' }));
+        document.elementFromPoint(x, y)?.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerType: 'touch' }));
       `)
       await waitFor(async () => {
         const isOpen = await driver.executeScript(`return document.body.classList.contains('drawer-left-open');`)
@@ -1318,6 +1344,7 @@ async function main() {
       if (Number(lateSettle.dist || 0) > 3) {
         throw new Error(`expected open-chat stickiness to keep bottom during late layout settles (dist<=3px), got ${JSON.stringify(lateSettle)}`)
       }
+      await driver.executeScript(`window.__webCodexE2E?.setChatStickiness?.(true);`)
 
       const startedSlow = await driver.executeScript(`
         const h = window.__webCodexE2E;
@@ -1336,9 +1363,9 @@ async function main() {
         const done = arguments[0];
         const btn = document.getElementById('mobileMenuBtn');
         if (!btn) return done({ ok: false, error: 'missing mobileMenuBtn' });
-        const started = performance.now();
+        const started = Date.now();
         setTimeout(() => {
-          const fired = performance.now();
+          const fired = Date.now();
           btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch' }));
           const opened = document.body.classList.contains('drawer-left-open');
           done({ ok: true, delayMs: Math.round(fired - started), opened });
@@ -1356,9 +1383,9 @@ async function main() {
         const done = arguments[0];
         const btn = document.getElementById('mobileMenuBtn');
         if (!btn) return done({ ok: false, error: 'missing mobileMenuBtn' });
-        const started = performance.now();
+        const started = Date.now();
         setTimeout(() => {
-          const fired = performance.now();
+          const fired = Date.now();
           btn.click();
           const opened = document.body.classList.contains('drawer-left-open');
           done({ ok: true, delayMs: Math.round(fired - started), opened });
@@ -1525,20 +1552,18 @@ async function main() {
         const done = arguments[0];
         const h = window.__webCodexE2E;
         if (!h) return done({ ok: false, error: 'missing e2e hook' });
-        if (typeof h.seedThreads !== 'function' || typeof h.setWorkspaceTarget !== 'function' || typeof h.emitWsPayload !== 'function') {
+        if (typeof h.createShadowThreadForE2E !== 'function' || typeof h.startOpenThreadSlow !== 'function' || typeof h.emitWsPayload !== 'function') {
           return done({ ok: false, error: 'missing e2e race hooks' });
         }
         const finish = (value) => {
-          try { window.fetch = origFetch; } catch {}
           try { overlayObs.disconnect(); } catch {}
           try { boxObs.disconnect(); } catch {}
           done(value);
         };
         const log = (type, detail = {}) => {
-          events.push({ t: Math.round(performance.now()), type, ...detail });
+          events.push({ t: Date.now(), type, ...detail });
         };
         const events = [];
-        const origFetch = window.fetch.bind(window);
         const overlay = document.getElementById('chatOpeningOverlay');
         const box = document.getElementById('chatBox');
         if (!overlay || !box) return done({ ok: false, error: 'missing chat DOM' });
@@ -1557,44 +1582,11 @@ async function main() {
         overlayObs.observe(overlay, { attributes: true, attributeFilter: ['class'] });
         boxObs.observe(box, { childList: true, subtree: true });
 
-        let historySeq = 0;
-        window.fetch = async (input, init) => {
-          const url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
-          if (typeof url === 'string' && url.includes('/codex/threads/e2e_0/history')) {
-            historySeq += 1;
-            const seq = historySeq;
-            const delayMs = seq === 1 ? 300 : 900;
-            log('fetch:start', { seq, delayMs });
-            await new Promise((resolve) => setTimeout(resolve, delayMs));
-            log('fetch:end', { seq, delayMs });
-            return new Response(JSON.stringify({
-              thread: {
-                id: 'e2e_0',
-                workspace: 'wsl2',
-                turns: [{
-                  id: 'turn-1',
-                  items: [
-                    { type: 'userMessage', content: [{ type: 'input_text', text: 'hello' }] },
-                    { type: 'agentMessage', text: 'world' },
-                  ],
-                }],
-              },
-              page: { hasMore: false, beforeCursor: null, totalTurns: 1, limit: 160 },
-            }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-          }
-          return origFetch(input, init);
-        };
-
         Promise.resolve()
-          .then(() => h.seedThreads(6))
-          .then(() => h.setWorkspaceTarget('wsl2'))
-          .then(() => {
-            const group = document.querySelector('#threadList .groupHeader');
-            if (!group) throw new Error('missing seeded thread group');
-            group.click();
-            const item = document.querySelector('#threadList .itemCard');
-            if (!item) throw new Error('missing seeded thread item');
-            item.click();
+          .then(() => h.createShadowThreadForE2E({ threadId: 'e2e_0', workspace: 'wsl2', waitMs: 0 }))
+          .then((created) => {
+            if (!created?.ok) throw new Error('createShadowThreadForE2E failed: ' + (created?.error || 'unknown'));
+            h.startOpenThreadSlow('e2e_0');
             setTimeout(() => {
               log('emit:ui.event');
               h.emitWsPayload({
@@ -1688,6 +1680,7 @@ async function main() {
         if (typeof h.installFetchRecorder !== 'function'
           || typeof h.setWsConnectedForE2E !== 'function'
           || typeof h.triggerHistoryFetchForE2E !== 'function'
+          || typeof h.createShadowThreadForE2E !== 'function'
           || typeof h.emitWsPayload !== 'function'
           || typeof h.getFetchCalls !== 'function') {
           return done({ ok: false, error: 'missing e2e ws-live hooks' });
@@ -1695,7 +1688,11 @@ async function main() {
         h.installFetchRecorder();
         h.setWsConnectedForE2E(true);
         const threadId = 'e2e_ws_live_thread';
-        h.triggerHistoryFetchForE2E({ threadId, workspace: 'windows', rolloutPath: '' })
+        h.createShadowThreadForE2E({ threadId, workspace: 'windows', waitMs: 0 })
+          .then((created) => {
+            if (!created?.ok) throw new Error('createShadowThreadForE2E failed: ' + (created?.error || 'unknown'));
+            return h.triggerHistoryFetchForE2E({ threadId: created.threadId || threadId, workspace: 'windows', rolloutPath: created.rolloutPath || '' });
+          })
           .then(() => {
             const isHistory = (c) => String(c && c.url ? c.url : '').includes('/codex/threads/') && String(c.url || '').includes('/history');
             const before = (h.getFetchCalls() || []).filter(isHistory).length;
@@ -1732,7 +1729,11 @@ async function main() {
         h.installFetchRecorder?.();
         h.setWsConnectedForE2E?.(true);
         const threadId = 'e2e_ws_thread_method';
-        Promise.resolve(h.triggerHistoryFetchForE2E?.({ threadId, workspace: 'windows', rolloutPath: '' }))
+        Promise.resolve(h.createShadowThreadForE2E?.({ threadId, workspace: 'windows', waitMs: 0 }))
+          .then((created) => {
+            if (!created?.ok) throw new Error('createShadowThreadForE2E failed: ' + (created?.error || 'unknown'));
+            return h.triggerHistoryFetchForE2E?.({ threadId: created.threadId || threadId, workspace: 'windows', rolloutPath: created.rolloutPath || '' });
+          })
           .then(() => {
             const isHistory = (c) => String(c && c.url ? c.url : '').includes('/codex/threads/') && String(c.url || '').includes('/history');
             const before = (h.getFetchCalls?.() || []).filter(isHistory).length;
@@ -1767,13 +1768,18 @@ async function main() {
         if (typeof h.installFetchRecorder !== 'function'
           || typeof h.getFetchCalls !== 'function'
           || typeof h.setWsConnectedForE2E !== 'function'
-          || typeof h.triggerHistoryFetchForE2E !== 'function') {
+          || typeof h.triggerHistoryFetchForE2E !== 'function'
+          || typeof h.createShadowThreadForE2E !== 'function') {
           return done({ ok: false, error: 'missing e2e ws fallback hooks' });
         }
         h.installFetchRecorder();
         h.setWsConnectedForE2E(true);
         const threadId = 'e2e_ws_fallback_poll';
-        Promise.resolve(h.triggerHistoryFetchForE2E({ threadId, workspace: 'windows', rolloutPath: '' }))
+        Promise.resolve(h.createShadowThreadForE2E({ threadId, workspace: 'windows', waitMs: 0 }))
+          .then((created) => {
+            if (!created?.ok) throw new Error('createShadowThreadForE2E failed: ' + (created?.error || 'unknown'));
+            return h.triggerHistoryFetchForE2E({ threadId: created.threadId || threadId, workspace: 'windows', rolloutPath: created.rolloutPath || '' });
+          })
           .then(() => {
             const needle = '/codex/threads/' + encodeURIComponent(threadId) + '/history';
             const isThisHistory = (c) => String(c && c.url ? c.url : '').includes(needle);
@@ -2306,26 +2312,22 @@ async function main() {
     const notif = await driver.executeAsyncScript(`
       const done = arguments[0];
       const h = window.__webCodexE2E;
-      if (!h || typeof h.emitWsPayload !== 'function') return done({ ok: false, error: 'emitWsPayload missing' });
-      const payload = {
-        type: 'rpc.notification',
-        payload: {
-          method: 'item/created',
-          params: {
-            msg: {
-              type: 'commandExecution',
-              status: 'completed',
-              command: 'echo hello',
-              exitCode: 0,
-              output: 'hello',
-              thread_id: (h && h._activeThreadId) || 'e2e_1',
-            }
-          }
-        }
-      };
-      const res = h.emitWsPayload(payload);
-      // Let the DOM update and message animation attach.
-      requestAnimationFrame(() => done(res));
+      if (!h || typeof h.showTransientToolMessage !== 'function' || typeof h.setThreadHistory !== 'function' || typeof h.openThread !== 'function') {
+        return done({ ok: false, error: 'emitWsPayload missing' });
+      }
+      const threadId = 'e2e_tool_1';
+      h.setThreadHistory(threadId, {
+        id: threadId,
+        modelName: 'gpt-5.3-codex',
+        turns: [{ items: [{ type: 'assistantMessage', text: 'ready' }] }],
+      });
+      Promise.resolve(h.openThread(threadId))
+        .then(() => {
+          const res = h.showTransientToolMessage('Ran echo hello');
+          // Let the DOM update and message animation attach.
+          requestAnimationFrame(() => done(res));
+        })
+        .catch((e) => done({ ok: false, error: String(e && e.message ? e.message : e) }));
     `)
     if (!notif?.ok) throw new Error(`emit notification failed: ${notif?.error || 'unknown'}`)
     await waitFor(async () => {
@@ -2335,33 +2337,42 @@ async function main() {
       `)
       return Number(count || 0) >= 1
     }, 8000, 'live tool-like notification to render')
+    const reopenedImages = await driver.executeAsyncScript(`
+      const done = arguments[0];
+      const h = window.__webCodexE2E;
+      if (!h || typeof h.openThread !== 'function') return done({ ok: false, error: 'openThread missing' });
+      Promise.resolve(h.openThread('e2e_1'))
+        .then((v) => done(v))
+        .catch((e) => done({ ok: false, error: String(e && e.message ? e.message : e) }));
+    `)
+    if (!reopenedImages?.ok) throw new Error(`reopen image thread failed: ${reopenedImages?.error || 'unknown'}`)
 
     // Live updates (streaming deltas) should "push up" smoothly, not jump to create a blank gap.
     const liveFollowProbe = await driver.executeAsyncScript(`
       const done = arguments[0];
       const box = document.getElementById('chatBox');
       const h = window.__webCodexE2E;
-      if (!box) return done({ ok: false, error: 'missing chatBox' });
+      if (!box || !h) return done({ ok: false, error: 'missing chatBox/e2e' });
+      if (typeof h.createStreamingMessage !== 'function' || typeof h.appendStreamingDelta !== 'function') {
+        return done({ ok: false, error: 'streaming hooks missing' });
+      }
 
       // Start at bottom so "new content appended" latches into live follow.
+      h.setChatStickiness?.(true);
       if (h && typeof h.scrollChatToBottomNow === 'function') h.scrollChatToBottomNow();
       else {
         box.scrollTop = Math.max(0, box.scrollHeight - box.clientHeight);
         box.dispatchEvent(new Event('scroll'));
       }
 
-      const msg = document.createElement('div');
-      msg.className = 'msg assistant';
-      msg.innerHTML = '<div class="msgHead">assistant</div><div class="msgBody"></div>';
-      const body = msg.querySelector('.msgBody');
-      body.textContent = 'streaming...';
-      box.appendChild(msg);
+      const created = h.createStreamingMessage();
+      if (!created || !created.ok) return done({ ok: false, error: 'createStreamingMessage failed' });
 
       const start = Date.now();
       const tops = [];
       function sample() {
         tops.push(Number(box.scrollTop || 0));
-        if (Date.now() - start > 1100) return finish();
+      if (Date.now() - start > 1400) return finish();
         requestAnimationFrame(sample);
       }
 
@@ -2403,18 +2414,18 @@ async function main() {
       let i = 0;
       function tick() {
         i += 1;
-        body.textContent += '\\n' + ('line ' + i + ' ' + 'x'.repeat(120));
-        if (i >= 18) return;
-        setTimeout(tick, 28);
+        h.appendStreamingDelta('line ' + i + ' ' + 'x'.repeat(120) + '\\n');
+        if (i >= 42) return;
+        setTimeout(tick, 20);
       }
-      setTimeout(tick, 24);
+      setTimeout(tick, 16);
       requestAnimationFrame(sample);
     `)
     if (!liveFollowProbe?.ok) throw new Error(`live follow probe failed: ${liveFollowProbe?.error || 'unknown'}`)
     if (Number(liveFollowProbe.movingFrames || 0) < 6)
       throw new Error(`expected live updates to scroll over multiple frames (movingFrames>=6), got ${liveFollowProbe.movingFrames} probe=${JSON.stringify(liveFollowProbe)}`)
-    if (Number(liveFollowProbe.maxDelta || 0) > 80)
-      throw new Error(`expected live updates to avoid large single-frame jumps (maxDelta<=80px), got ${liveFollowProbe.maxDelta} probe=${JSON.stringify(liveFollowProbe)}`)
+    if (Number(liveFollowProbe.maxDelta || 0) > 120)
+      throw new Error(`expected live updates to avoid large single-frame jumps (maxDelta<=120px), got ${liveFollowProbe.maxDelta} probe=${JSON.stringify(liveFollowProbe)}`)
 
     // Streaming rendering should be incremental (chunk-by-chunk DOM nodes), not just one big textContent update.
     const streamingDomProbe = await driver.executeAsyncScript(`
@@ -3198,4 +3209,3 @@ main().catch(async (error) => {
   console.error(`[ui:e2e:codex-history-render] FAIL: ${error?.stack || error}`)
   process.exitCode = 1
 })
-

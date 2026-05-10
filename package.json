@@ -29,6 +29,7 @@
     "ui:e2e:codex-open-thread-history-only": "node tests/ui/e2e/codex-web/open-thread-history-only.mjs",
     "ui:e2e:codex-history-render": "node tests/ui/e2e/codex-web/history-render.mjs",
     "ui:e2e:codex-live-thread-sync": "node tests/ui/e2e/codex-web/live-thread-sync.mjs",
+    "ui:e2e:codex-terminal-turn-live-without-refresh": "node tests/ui/e2e/codex-web/terminal-turn-live-without-refresh.mjs",
     "ui:e2e:codex-commentary-archive": "node tests/ui/e2e/codex-web/commentary-archive.mjs",
     "ui:e2e:codex-plan-interrupt-cleanup": "node tests/ui/e2e/codex-web/plan-interrupt-cleanup.mjs",
     "ui:e2e:codex-runtime-panels-no-reenter": "node tests/ui/e2e/codex-web/runtime-panels-no-reenter.mjs",

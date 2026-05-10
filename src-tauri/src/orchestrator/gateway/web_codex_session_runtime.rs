@@ -417,22 +417,35 @@ fn locate_workspace_thread_runtime_impl(
         return None;
     }
     let guard = lock_registry();
-    guard
-        .values()
-        .filter(|entry| {
-            workspace_target_filter
-                .map(|target| entry.workspace_target == Some(target))
-                .unwrap_or(true)
-        })
-        .filter_map(|entry| {
-            let thread = entry.threads.get(normalized_thread_id)?;
-            Some(WorkspaceThreadRuntimeLocation {
-                workspace_target: entry.workspace_target,
-                home_override: entry.home_override.clone(),
-                updated_at_unix_secs: thread.updated_at_unix_secs,
-            })
-        })
-        .max_by(|a, b| runtime_location_rank(a).cmp(&runtime_location_rank(b)))
+    let mut best_specific = None;
+    let mut best_fallback = None;
+    for entry in guard.values().filter(|entry| {
+        workspace_target_filter
+            .map(|target| entry.workspace_target == Some(target))
+            .unwrap_or(true)
+    }) {
+        let Some(thread) = entry.threads.get(normalized_thread_id) else {
+            continue;
+        };
+        let location = WorkspaceThreadRuntimeLocation {
+            workspace_target: entry.workspace_target,
+            home_override: entry.home_override.clone(),
+            updated_at_unix_secs: thread.updated_at_unix_secs,
+        };
+        let slot = if location.workspace_target.is_some() {
+            &mut best_specific
+        } else {
+            &mut best_fallback
+        };
+        let replace = slot
+            .as_ref()
+            .map(|current| runtime_location_rank(&location) >= runtime_location_rank(current))
+            .unwrap_or(true);
+        if replace {
+            *slot = Some(location);
+        }
+    }
+    best_specific.or(best_fallback)
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -527,6 +540,54 @@ mod tests {
             location.home_override.as_deref(),
             Some("/home/yiyou/.api-router/codex-web-home")
         );
+    }
+
+    #[test]
+    fn locate_workspace_thread_runtime_prefers_workspace_specific_record_over_newer_global_fallback(
+    ) {
+        let _guard = lock_tests();
+        _clear_workspace_runtime_registry_for_test();
+        struct TimeOverrideGuard;
+        impl Drop for TimeOverrideGuard {
+            fn drop(&mut self) {
+                _set_test_current_unix_secs(None);
+            }
+        }
+        let _time_guard = TimeOverrideGuard;
+        _set_test_current_unix_secs(Some(1_700_000_000));
+
+        upsert_workspace_thread_runtime(
+            Some(WorkspaceTarget::Windows),
+            Some("C:\\specific-home"),
+            WorkspaceThreadRuntimeUpdate {
+                thread_id: "thread-1",
+                cwd: None,
+                rollout_path: None,
+                status: Some("running"),
+                last_event_id: None,
+                last_turn_id: Some("turn-specific"),
+                clear_last_turn_id: false,
+            },
+        );
+        _set_test_current_unix_secs(Some(1_700_000_001));
+        upsert_workspace_thread_runtime(
+            None,
+            Some("C:\\fallback-home"),
+            WorkspaceThreadRuntimeUpdate {
+                thread_id: "thread-1",
+                cwd: None,
+                rollout_path: None,
+                status: Some("failed"),
+                last_event_id: None,
+                last_turn_id: Some("turn-fallback"),
+                clear_last_turn_id: false,
+            },
+        );
+
+        let location =
+            locate_workspace_thread_runtime("thread-1").expect("thread runtime location");
+        assert_eq!(location.workspace_target, Some(WorkspaceTarget::Windows));
+        assert_eq!(location.home_override.as_deref(), Some("C:\\specific-home"));
     }
 
     #[test]

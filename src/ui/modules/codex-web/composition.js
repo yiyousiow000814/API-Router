@@ -405,6 +405,7 @@ export function createCodexWebComposition(deps) {
   const debugTools = deps.createDebugToolsModule({
     state: deps.state,
     byId: deps.byId,
+    api,
     addChat: chatTimeline.addChat,
     renderInlineMessageText: deps.renderInlineMessageText,
     findNextInlineCodeSpan: deps.findNextInlineCodeSpan,
@@ -422,6 +423,8 @@ export function createCodexWebComposition(deps) {
     renderPendingLists: connectionFlows.renderPendingLists,
     getVisiblePendingUserInputs: connectionFlows.getVisiblePendingUserInputs,
     renderComposerContextLeft: deps.renderComposerContextLeft,
+    renderThreads: (...args) => renderThreads(...args),
+    showTransientToolMessage: deps.showTransientToolMessage,
     clearChatMessages: chatTimeline.clearChatMessages,
     showWelcomeCard: deps.showWelcomeCard,
     updateHeaderUi: deps.updateHeaderUi,
