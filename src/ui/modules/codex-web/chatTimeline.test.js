@@ -129,6 +129,8 @@ class FakeElement {
   }
 
   insertBefore(child, anchor) {
+    const currentIndex = this.children.indexOf(child);
+    if (currentIndex >= 0) this.children.splice(currentIndex, 1);
     child.parentElement = this;
     const index = anchor ? this.children.indexOf(anchor) : -1;
     if (index < 0) this.children.push(child);
@@ -968,6 +970,34 @@ describe("chatTimeline", () => {
 
     expect(archiveNode).toBeTruthy();
     expect(assistantNode).toBeTruthy();
+    expect(dom.chatBox.children.indexOf(archiveNode)).toBeLessThan(dom.chatBox.children.indexOf(assistantNode));
+  });
+
+  it("re-anchors an existing commentary archive before the final assistant after DOM order changes", () => {
+    state.activeThreadCommentaryArchive = [
+      {
+        threadId: "thread-1",
+        key: "commentary-final-anchor",
+        text: "thinking one",
+        tools: ["Ran `npm test`"],
+      },
+    ];
+    state.activeThreadCommentaryArchiveVisible = true;
+    state.activeThreadCommentaryArchiveExpanded = false;
+    state.activeThreadInlineCommentaryArchiveCount = 0;
+
+    const assistantNode = module.addChat("assistant", "done", { animate: false, scroll: false });
+    module.renderCommentaryArchive();
+    const archiveNode = dom.chatBox.children.find((child) => child.id === "commentaryArchiveMount");
+
+    expect(archiveNode).toBeTruthy();
+    expect(dom.chatBox.children.indexOf(archiveNode)).toBeLessThan(dom.chatBox.children.indexOf(assistantNode));
+
+    dom.chatBox.insertBefore(assistantNode, archiveNode);
+    expect(dom.chatBox.children.indexOf(assistantNode)).toBeLessThan(dom.chatBox.children.indexOf(archiveNode));
+
+    module.renderCommentaryArchive();
+
     expect(dom.chatBox.children.indexOf(archiveNode)).toBeLessThan(dom.chatBox.children.indexOf(assistantNode));
   });
 
