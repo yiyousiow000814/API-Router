@@ -680,8 +680,8 @@ describe("historyLoader", () => {
     });
 
     expect(state.activeThreadMessages).toEqual([
-      { role: "user", text: "hello", kind: "", images: [] },
-      { role: "assistant", text: "same final", kind: "" },
+      expect.objectContaining({ role: "user", text: "hello", kind: "", images: [] }),
+      expect.objectContaining({ role: "assistant", text: "same final", kind: "" }),
     ]);
     expect(added).toEqual([
       { role: "user", text: "hello", kind: "" },
@@ -2439,6 +2439,110 @@ Implement this plan?
     expect(state.activeThreadPendingAssistantMessage).toBe("");
   });
 
+  it("uses the optimistic client message id to collapse a matching server echo", () => {
+    const state = {
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingTurnBaselineUserCount: 1,
+      activeThreadPendingClientMessageId: "client:thread-1:req-1",
+      activeThreadPendingUserMessage: "hi",
+      activeThreadPendingAssistantMessage: "",
+    };
+
+    expect(
+      mergePendingLiveMessages(
+        [
+          {
+            id: "server:user:1",
+            clientMessageId: "client:thread-1:req-1",
+            role: "user",
+            text: "hi",
+            kind: "",
+          },
+        ],
+        state,
+        "thread-1",
+        { historyIncomplete: true, historyTurnCount: 1 }
+      )
+    ).toEqual([
+      {
+        id: "server:user:1",
+        clientMessageId: "client:thread-1:req-1",
+        role: "user",
+        text: "hi",
+        kind: "",
+      },
+    ]);
+  });
+
+  it("keeps the optimistic user before a partial assistant response when the user echo is still missing", () => {
+    const state = {
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingTurnBaselineTurnCount: 0,
+      activeThreadPendingTurnBaselineUserCount: 0,
+      activeThreadPendingClientMessageId: "client:thread-1:req-2",
+      activeThreadPendingUserMessage: "hi",
+      activeThreadPendingAssistantMessage: "",
+    };
+
+    expect(
+      mergePendingLiveMessages(
+        [{ role: "assistant", text: "working", kind: "" }],
+        state,
+        "thread-1",
+        { historyIncomplete: true, historyTurnCount: 1 }
+      )
+    ).toEqual([
+      {
+        id: "client:thread-1:req-2",
+        clientMessageId: "client:thread-1:req-2",
+        role: "user",
+        text: "hi",
+        kind: "",
+        optimistic: true,
+      },
+      { role: "assistant", text: "working", kind: "" },
+    ]);
+  });
+
+  it("keeps the optimistic user before a partial assistant response after prior turns already exist", () => {
+    const state = {
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingTurnBaselineTurnCount: 1,
+      activeThreadPendingTurnBaselineUserCount: 1,
+      activeThreadPendingClientMessageId: "client:thread-1:req-3",
+      activeThreadPendingUserMessage: "hi again",
+      activeThreadPendingAssistantMessage: "",
+    };
+
+    expect(
+      mergePendingLiveMessages(
+        [
+          { role: "user", text: "older", kind: "" },
+          { role: "assistant", text: "older reply", kind: "" },
+          { role: "assistant", text: "working again", kind: "" },
+        ],
+        state,
+        "thread-1",
+        { historyIncomplete: true, historyTurnCount: 2 }
+      )
+    ).toEqual([
+      { role: "user", text: "older", kind: "" },
+      { role: "assistant", text: "older reply", kind: "" },
+      {
+        id: "client:thread-1:req-3",
+        clientMessageId: "client:thread-1:req-3",
+        role: "user",
+        text: "hi again",
+        kind: "",
+        optimistic: true,
+      },
+      { role: "assistant", text: "working again", kind: "" },
+    ]);
+  });
+
   it("does not treat an identical prompt from the baseline turn as a materialized pending user", () => {
     const state = {
       activeThreadPendingTurnThreadId: "thread-1",
@@ -2633,8 +2737,8 @@ Implement this plan?
     await module.applyThreadToChat(staleFailedThread);
 
     expect(state.activeThreadMessages).toEqual([
-      { role: "user", text: "hi", kind: "", images: [] },
-      { role: "user", text: "hi", kind: "" },
+      expect.objectContaining({ role: "user", text: "hi", kind: "", images: [] }),
+      expect.objectContaining({ role: "user", text: "hi", kind: "" }),
     ]);
     expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
     expect(state.activeThreadPendingTurnRunning).toBe(false);
@@ -2643,8 +2747,8 @@ Implement this plan?
     expect(state.activeThreadPendingTurnBaselineUserCount).toBe(1);
     expect(added.filter((entry) => entry.role === "user")).toEqual([]);
     expect(state.activeThreadMessages).toEqual([
-      { role: "user", text: "hi", kind: "", images: [] },
-      { role: "user", text: "hi", kind: "" },
+      expect.objectContaining({ role: "user", text: "hi", kind: "", images: [] }),
+      expect.objectContaining({ role: "user", text: "hi", kind: "" }),
     ]);
     expect(added.some(
       (entry) =>
@@ -4525,8 +4629,8 @@ Implement this plan?
     });
 
     expect(state.activeThreadMessages).toEqual([
-      { role: "user", text: "hi", kind: "", images: [] },
-      { role: "user", text: "hi", kind: "" },
+      expect.objectContaining({ role: "user", text: "hi", kind: "", images: [] }),
+      expect.objectContaining({ role: "user", text: "hi", kind: "" }),
     ]);
     expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
     expect(state.activeThreadPendingUserMessage).toBe("hi");
@@ -4953,6 +5057,7 @@ Implement this plan?
       activeThreadPendingTurnRunning: true,
       activeThreadPendingTurnBaselineTurnCount: 1,
       activeThreadPendingTurnBaselineUserCount: 1,
+      activeThreadPendingClientMessageId: "client:thread-1:req-9",
       activeThreadPendingUserMessage: "hi",
       activeThreadPendingAssistantMessage: "",
       activeThreadStarted: true,
@@ -5048,6 +5153,7 @@ Implement this plan?
     expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
     expect(state.activeThreadPendingTurnId).toBe("turn-2");
     expect(state.activeThreadPendingTurnRunning).toBe(false);
+    expect(state.activeThreadPendingClientMessageId).toBe("client:thread-1:req-9");
     expect(state.activeThreadConnectionStatusKind).toBe("error");
     expect(state.activeThreadConnectionStatusText).toBe(
       "no routable providers available; preferred=aigateway; tried="

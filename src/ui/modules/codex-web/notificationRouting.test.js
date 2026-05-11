@@ -96,11 +96,59 @@ describe("notificationRouting", () => {
       __workspaceQueryTarget: "wsl2",
       source: "live-provisional",
       provisional: true,
+      previewSource: "user",
       updatedAt: 1742340000000,
       path: "/home/yiyou/.codex/sessions/rollout.jsonl",
       preview: "build exe",
       title: "build exe",
     });
+  });
+
+  it("does not use assistant output as provisional thread title text", () => {
+    const item = synthesizeProvisionalThreadItem(
+      {
+        method: "codex/event/agent_message",
+        params: {
+          payload: {
+            type: "agent_message",
+            thread_id: "thread-1",
+            phase: "final_answer",
+            text: "Assistant final answer",
+          },
+        },
+      },
+      "windows",
+      1742340000000
+    );
+
+    expect(item).toEqual(
+      expect.not.objectContaining({
+        title: "Assistant final answer",
+        preview: "Assistant final answer",
+      })
+    );
+  });
+
+  it("does not use tool or status text as provisional thread title text", () => {
+    const item = synthesizeProvisionalThreadItem(
+      {
+        method: "thread/status",
+        params: {
+          threadId: "thread-1",
+          status: "running",
+          message: "Running shell command",
+        },
+      },
+      "windows",
+      1742340000000
+    );
+
+    expect(item).toEqual(
+      expect.not.objectContaining({
+        title: "Running shell command",
+        preview: "Running shell command",
+      })
+    );
   });
 
   it("drops temporary .tmp codex-web threads from live notifications", () => {

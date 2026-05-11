@@ -81,6 +81,9 @@ export function resetTurnPresentationState(state, options = {}) {
 
 export function clearActiveAssistantLiveState(state) {
   state.activeThreadLiveAssistantThreadId = "";
+  state.activeThreadLiveAssistantMessageId = "";
+  state.activeThreadLiveAssistantTurnId = "";
+  state.activeThreadLiveAssistantItemId = "";
   state.activeThreadLiveAssistantIndex = -1;
   state.activeThreadLiveAssistantMsgNode = null;
   state.activeThreadLiveAssistantBodyNode = null;
@@ -142,6 +145,10 @@ export function syncPendingTurnRuntime(state, threadId, options = {}) {
       options.assistantMessage !== undefined
         ? String(options.assistantMessage || "").length
         : String(state.activeThreadPendingAssistantMessage || "").length,
+    clientMessageId:
+      options.clientMessageId !== undefined
+        ? String(options.clientMessageId || "").trim()
+        : String(state.activeThreadPendingClientMessageId || "").trim(),
     baselineTurnCount:
       options.baselineTurnCount !== undefined
         ? Math.max(0, Number(options.baselineTurnCount || 0))
@@ -163,6 +170,9 @@ export function syncPendingTurnRuntime(state, threadId, options = {}) {
   }
   if (options.assistantMessage !== undefined) {
     state.activeThreadPendingAssistantMessage = String(options.assistantMessage || "");
+  }
+  if (options.clientMessageId !== undefined) {
+    state.activeThreadPendingClientMessageId = String(options.clientMessageId || "").trim();
   }
   if (options.baselineTurnCount !== undefined) {
     const baseline = Number(options.baselineTurnCount || 0);
@@ -197,6 +207,7 @@ export function resetPendingTurnRuntime(state, options = {}) {
     preserveThreadId: options.preserveThreadId === true,
     preserveTurnId: options.preserveTurnId === true,
     preserveMessages: options.preserveMessages === true,
+    preserveClientMessageId: options.preserveClientMessageId === true,
     preserveBaselineTurnCount: options.preserveBaselineTurnCount === true,
     preserveBaselineUserCount: options.preserveBaselineUserCount === true,
     nextRunning: options.running === true,
@@ -208,6 +219,9 @@ export function resetPendingTurnRuntime(state, options = {}) {
   if (options.preserveMessages !== true) {
     state.activeThreadPendingUserMessage = "";
     state.activeThreadPendingAssistantMessage = "";
+  }
+  if (options.preserveClientMessageId !== true) {
+    state.activeThreadPendingClientMessageId = "";
   }
   if (options.preserveBaselineTurnCount !== true) {
     state.activeThreadPendingTurnBaselineTurnCount = 0;

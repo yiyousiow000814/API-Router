@@ -275,6 +275,23 @@ async function main() {
       setTimeout(() => done({ ok: true }), 200);
     `)
 
+    await waitFor(async () => {
+      const liveOrder = await driver.executeScript(`
+        const children = Array.from(document.querySelectorAll('#chatBox > .msg, #chatBox > .commentaryArchiveMount'));
+        const archiveIndex = children.findIndex((node) => node.id === 'commentaryArchiveMount');
+        const finalIndex = children.findIndex((node) =>
+          node.classList.contains('assistant') &&
+          String(node.querySelector('.msgBody')?.textContent || '').trim() === 'final answer'
+        );
+        const archiveExpanded = document.querySelector('#commentaryArchiveMount .commentaryArchiveToggle')?.getAttribute('aria-expanded');
+        return { archiveIndex, finalIndex, archiveExpanded };
+      `)
+      return liveOrder.archiveIndex >= 0 &&
+        liveOrder.finalIndex >= 0 &&
+        liveOrder.archiveIndex < liveOrder.finalIndex &&
+        liveOrder.archiveExpanded === 'false'
+    }, 5000, 'live collapsed commentary archive before final answer')
+
     await driver.executeAsyncScript(`
       const done = arguments[0];
       const h = window.__webCodexE2E;
@@ -409,4 +426,3 @@ main().catch((error) => {
   console.error(`[ui:e2e:codex-commentary-archive] FAIL: ${error?.stack || error}`)
   process.exitCode = 1
 })
-

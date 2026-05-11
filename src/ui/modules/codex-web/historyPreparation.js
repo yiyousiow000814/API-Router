@@ -24,8 +24,11 @@ export async function prepareThreadHistoryView(thread, options = {}, deps = {}) 
     ? thread
     : { ...thread, turns: normalizedTurns };
   const mappedMessages = historyItems.length
-    ? await mapSessionHistoryMessages(historyItems)
-    : await mapThreadReadMessages(normalizedThread, { omitIncompleteTurnArtifacts });
+    ? await mapSessionHistoryMessages(historyItems, { includeCanonicalIds: true })
+    : await mapThreadReadMessages(normalizedThread, {
+        omitIncompleteTurnArtifacts,
+        includeCanonicalIds: true,
+      });
   const rawMessages = omitLatestIncompleteTurnArtifacts(mappedMessages, omitIncompleteTurnArtifacts);
   const historyCommentary = extractLatestCommentaryState(thread, { normalizeThreadItemText });
   const turns = normalizedTurns;

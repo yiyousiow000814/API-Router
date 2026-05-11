@@ -228,6 +228,24 @@ function extractNotificationTextPreview(value) {
   return "";
 }
 
+function isUserMessageRecord(value) {
+  const record = toRecord(value);
+  if (!record) return false;
+  const type = normalizeLiveMethod(readString(record?.type) || "");
+  const role = String(record?.role || "").trim().toLowerCase();
+  return (
+    role === "user" ||
+    type === "user_message" ||
+    type === "usermessage" ||
+    (type === "message" && role === "user")
+  );
+}
+
+function extractUserMessageTextPreview(value) {
+  if (!isUserMessageRecord(value)) return "";
+  return extractNotificationTextPreview(value);
+}
+
 function isFilteredTestThreadCwd(raw) {
   const text = String(raw || "").trim().replace(/\//g, "\\").toLowerCase();
   return (
@@ -286,9 +304,9 @@ export function synthesizeProvisionalThreadItem(
     readString(item?.cwd) ||
     "";
   const preview =
-    extractNotificationTextPreview(item) ||
-    extractNotificationTextPreview(thread) ||
-    extractNotificationTextPreview(params) ||
+    extractUserMessageTextPreview(item) ||
+    extractUserMessageTextPreview(thread) ||
+    extractUserMessageTextPreview(params) ||
     "";
   if (isFilteredTestThreadCwd(cwd) || isAuxiliaryThreadPreviewText(preview)) {
     return null;
@@ -309,6 +327,7 @@ export function synthesizeProvisionalThreadItem(
   if (preview) {
     nextItem.preview = preview;
     nextItem.title = preview;
+    nextItem.previewSource = "user";
   }
   if (status) nextItem.status = { type: status };
   return nextItem;

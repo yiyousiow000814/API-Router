@@ -288,7 +288,16 @@ export function createAppPersistenceModule(deps) {
     const items = Array.isArray(files) ? files : [];
     box.toggleAttribute("hidden", items.length === 0);
     box.setAttribute("aria-live", "polite");
-    box.setAttribute("aria-label", items.length ? `${items.length} attachment ready` : "No attachments");
+    const uploadingCount = items.filter((file) => String(file?.uploadState || "").trim().toLowerCase() === "uploading").length;
+    const readyCount = items.length - uploadingCount;
+    const ariaLabel = items.length === 0
+      ? "No attachments"
+      : uploadingCount > 0
+        ? readyCount > 0
+          ? `${readyCount} attachment${readyCount === 1 ? "" : "s"} ready, ${uploadingCount} uploading`
+          : `${uploadingCount} attachment${uploadingCount === 1 ? "" : "s"} uploading`
+        : `${items.length} attachment${items.length === 1 ? "" : "s"} ready`;
+    box.setAttribute("aria-label", ariaLabel);
     items.forEach((file, index) => {
       const node = documentRef.createElement("span");
       const kind = String(file?.kind || file?.type || "").trim().toLowerCase().startsWith("image")
@@ -296,12 +305,17 @@ export function createAppPersistenceModule(deps) {
         : "FILE";
       const label = truncateLabel(file?.name || file?.fileName || "attachment");
       const fullLabel = file?.name || file?.fileName || "attachment";
+      const isUploading = String(file?.uploadState || "").trim().toLowerCase() === "uploading";
+      const hasPath = !!String(file?.path || "").trim();
       const preview = documentRef.createElement("button");
       preview.className = "attachmentPillPreview";
       preview.type = "button";
       preview.setAttribute("data-attachment-action", "preview");
       preview.setAttribute("data-attachment-index", String(index));
       preview.setAttribute("aria-label", `Preview ${fullLabel}`);
+      preview.disabled = isUploading || !hasPath;
+      preview.setAttribute("aria-disabled", preview.disabled ? "true" : "false");
+      preview.title = isUploading ? `${fullLabel} (uploading)` : fullLabel;
       const kindNode = documentRef.createElement("span");
       kindNode.className = "attachmentPillKind";
       kindNode.textContent = kind;
@@ -317,8 +331,8 @@ export function createAppPersistenceModule(deps) {
       remove.setAttribute("data-attachment-action", "remove");
       remove.setAttribute("data-attachment-index", String(index));
       remove.setAttribute("aria-label", `Remove ${fullLabel}`);
-      node.className = "pill attachmentPill mono";
-      node.title = `${kind} ${fullLabel}`;
+      node.className = `pill attachmentPill mono${isUploading ? " is-uploading" : ""}`;
+      node.title = isUploading ? `${kind} ${fullLabel} (uploading)` : `${kind} ${fullLabel}`;
       node.appendChild(preview);
       node.appendChild(remove);
       box.appendChild(node);

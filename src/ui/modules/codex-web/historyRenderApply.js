@@ -33,6 +33,7 @@ function appendMessages(messages, startIndex, addChat, replayContext = {}) {
     const msg = messages[i];
     const node = addChat(msg.role, msg.text, {
       scroll: false,
+      messageKey: String(msg.id || msg.messageKey || "").trim(),
       kind: msg.kind || "",
       attachments: msg.images || [],
       archiveBlocks: msg.archiveBlocks || [],
@@ -43,8 +44,11 @@ function appendMessages(messages, startIndex, addChat, replayContext = {}) {
   }
 }
 
-function updateLastNode(box, role, text, kind, renderMessageBody) {
+function updateLastNode(box, message, renderMessageBody) {
   if (!box) return false;
+  const role = String(message?.role || "").trim();
+  const text = String(message?.text || "");
+  const kind = String(message?.kind || "").trim();
   const nodes = box.querySelectorAll(".msg");
   const last = nodes.length ? nodes[nodes.length - 1] : null;
   if (!last) return false;
@@ -52,6 +56,11 @@ function updateLastNode(box, role, text, kind, renderMessageBody) {
   const body = last.querySelector(".msgBody");
   if (!body) return false;
   body.innerHTML = renderMessageBody(role, text, { kind });
+  const messageKey = String(message?.id || message?.messageKey || "").trim();
+  if (messageKey) {
+    last.setAttribute?.("data-msg-key", messageKey);
+    last.setAttribute?.("data-msg-id", messageKey);
+  }
   return last;
 }
 
@@ -206,7 +215,7 @@ export function applyWindowedHistoryRender(params = {}) {
 
   if (strategy === "window_update_last") {
     const nextLast = messages[messages.length - 1];
-    const updated = updateLastNode(box, nextLast?.role, nextLast?.text, nextLast?.kind || "", renderMessageBody);
+    const updated = updateLastNode(box, nextLast, renderMessageBody);
     if (updated) {
       const previousLast = prevAll[prevAll.length - 1];
       maybeReplayAssistantHistoryMessage(updated, nextLast, replayContext, {
@@ -338,7 +347,7 @@ export async function applyFullHistoryRender(params = {}) {
 
   if (strategy === "full_update_last") {
     const nextLast = messages[messages.length - 1];
-    const updated = updateLastNode(box, nextLast.role, nextLast.text, nextLast.kind || "", renderMessageBody);
+    const updated = updateLastNode(box, nextLast, renderMessageBody);
     const previousLast = prevMessages[prevMessages.length - 1];
     maybeReplayAssistantHistoryMessage(updated, nextLast, replayContext, {
       fromText: previousLast?.text,
