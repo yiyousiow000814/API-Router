@@ -6,9 +6,11 @@ function createFakeNode({ className = "", id = "", text = "" } = {}) {
   const body = String(className || "").split(/\s+/).includes("msg")
     ? { innerHTML: "", parentElement: null }
     : null;
+  const attrs = new Map();
   const node = {
     className,
     id,
+    attrs,
     textContent: text,
     parentElement: null,
     children: [],
@@ -19,7 +21,12 @@ function createFakeNode({ className = "", id = "", text = "" } = {}) {
       if (index >= 0) this.parentElement.children.splice(index, 1);
       this.parentElement = null;
     },
-    setAttribute() {},
+    getAttribute(name) {
+      return this.attrs.get(String(name)) || "";
+    },
+    setAttribute(name, value) {
+      this.attrs.set(String(name), String(value));
+    },
     querySelector(selector) {
       if (selector === ".msgBody") return this.body || null;
       return null;
@@ -168,7 +175,7 @@ describe("historyRenderApply", () => {
       messages: [
         { role: "user", text: "hi", kind: "" },
         { role: "system", kind: "commentaryArchive", archiveBlocks: [{ text: "tools ran" }] },
-        { role: "assistant", text: "final answer", kind: "" },
+        { role: "assistant", text: "final answer", kind: "", id: "assistant:turn-1:item-1" },
       ],
       prevMessages: [
         { role: "user", text: "hi", kind: "" },
@@ -228,6 +235,96 @@ describe("historyRenderApply", () => {
       "msg user",
       "commentaryArchiveMount",
       "msg assistant",
+    ]);
+  });
+
+  it("does not append a duplicate final when the DOM has a live assistant that state missed", async () => {
+    const userNode = createFakeNode({ className: "msg user", text: "hi" });
+    const liveAssistantNode = createFakeNode({ className: "msg assistant", text: "final answer" });
+    const box = createFakeBox([userNode, liveAssistantNode]);
+    const appended = [];
+    const clearCalls = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRolloutPath: "C:\\repo\\.codex\\sessions\\rollout.jsonl",
+      activeThreadStarted: true,
+      activeThreadMessages: [{ role: "user", text: "hi", kind: "" }],
+      chatShouldStickToBottom: false,
+    };
+
+    await applyFullHistoryRender({
+      state,
+      threadId: "thread-1",
+      messages: [
+        { role: "user", text: "hi", kind: "" },
+        { role: "system", kind: "commentaryArchive", archiveBlocks: [{ text: "tools ran" }] },
+        { role: "assistant", text: "final answer", kind: "", id: "assistant:turn-1:item-1" },
+      ],
+      prevMessages: [{ role: "user", text: "hi", kind: "" }],
+      box,
+      preservedScrollTop: null,
+      inlineCommentaryArchiveCount: 0,
+      renderSig: "thread-1::history",
+      toolCount: 0,
+      forceFullRender: false,
+      options: {},
+      historyCommentary: null,
+      liveCommentarySnapshot: null,
+      deps: {
+        renderMessageBody() {
+          return "";
+        },
+        addChat(role, text, options = {}) {
+          const className =
+            options.kind === "commentaryArchive"
+              ? "commentaryArchiveMount"
+              : `msg ${role}${options.kind ? ` kind-${options.kind}` : ""}`;
+          const node = createFakeNode({ className, text });
+          if (options.kind === "commentaryArchive") {
+            node.id = "commentaryArchiveMount";
+          }
+          box.appendChild(node);
+          appended.push({ role, text, options });
+          return node;
+        },
+        buildMsgNode(msg) {
+          return createFakeNode({
+            className: msg?.kind === "commentaryArchive" ? "commentaryArchiveMount" : `msg ${msg?.role || ""}`,
+            text: String(msg?.text || ""),
+          });
+        },
+        clearChatMessages(options = {}) {
+          clearCalls.push(options);
+          box.children = [];
+        },
+        renderChatFull: async () => {},
+        pushLiveDebugEvent() {},
+        scrollChatToBottom() {},
+        canStartChatLiveFollow() {
+          return false;
+        },
+        maybeScheduleChatFollow() {},
+        replayAssistantHistoryMessage() {
+          return false;
+        },
+        finalizeThreadRenderEffects() {},
+      },
+    });
+
+    expect(appended).toEqual([]);
+    expect(clearCalls).toEqual([]);
+    expect(box.children.map((child) => child.className)).toEqual([
+      "msg user",
+      "commentaryArchiveMount",
+      "msg assistant",
+    ]);
+    expect(box.children.filter((child) => child.classList.contains("assistant"))).toHaveLength(1);
+    expect(box.children[2]).toBe(liveAssistantNode);
+    expect(liveAssistantNode.getAttribute("data-msg-key")).toBe("assistant:turn-1:item-1");
+    expect(state.activeThreadMessages).toEqual([
+      expect.objectContaining({ role: "user", text: "hi" }),
+      expect.objectContaining({ role: "system", kind: "commentaryArchive" }),
+      expect.objectContaining({ role: "assistant", text: "final answer", id: "assistant:turn-1:item-1" }),
     ]);
   });
 });

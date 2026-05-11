@@ -1101,28 +1101,96 @@ export function createLiveNotificationsModule(deps) {
 
   function resolveAssistantLiveIdentity(threadId, options = {}) {
     const normalizedThreadId = String(threadId || "").trim();
-    const turnId = String(
+    let turnId = String(
       options.turnId ||
       state.activeThreadLiveAssistantTurnId ||
       state.activeThreadPendingTurnId ||
       ""
     ).trim();
-    const itemId = String(
+    let itemId = String(
       options.itemId ||
       state.activeThreadLiveAssistantItemId ||
       ""
     ).trim();
-    const id = String(
+    let id = String(
       options.id ||
       options.messageId ||
       state.activeThreadLiveAssistantMessageId ||
-      ((turnId || itemId) ? `assistant:${turnId || normalizedThreadId}:${itemId || "message"}` : "")
+      ""
     ).trim();
+    // Reuse the canonical assistant identity already present in the timeline.
+    const existingIdentity = findCanonicalAssistantIdentity(normalizedThreadId, {
+      id,
+      turnId,
+      itemId,
+    });
+    if (existingIdentity) {
+      id = existingIdentity.id || id;
+      turnId = turnId || existingIdentity.turnId || "";
+      itemId = itemId || existingIdentity.itemId || "";
+    }
+    if (!id && (turnId || itemId)) {
+      id = `assistant:${turnId || normalizedThreadId}:${itemId || "message"}`;
+    }
     const identity = { id, threadId: normalizedThreadId, turnId, itemId };
     if (id) state.activeThreadLiveAssistantMessageId = id;
     if (turnId) state.activeThreadLiveAssistantTurnId = turnId;
     if (itemId) state.activeThreadLiveAssistantItemId = itemId;
     return identity;
+  }
+
+  function readCanonicalAssistantIdentity(message) {
+    if (!message || typeof message !== "object") return null;
+    if (String(message.role || "").trim() !== "assistant") return null;
+    if (String(message.kind || "").trim()) return null;
+    const id = String(message.id || message.messageKey || message.messageId || "").trim();
+    const turnId = String(message.turnId || message.turn_id || "").trim();
+    const itemId = String(message.itemId || message.item_id || message.messageItemId || "").trim();
+    const threadId = String(message.threadId || message.thread_id || "").trim();
+    if (!id && !turnId && !itemId) return null;
+    return { id, turnId, itemId, threadId };
+  }
+
+  function assistantIdentityMatchesSeed(identity, seed) {
+    if (!identity) return false;
+    const id = String(identity.id || "").trim();
+    const turnId = String(identity.turnId || "").trim();
+    const itemId = String(identity.itemId || "").trim();
+    const seedId = String(seed.id || "").trim();
+    const seedTurnId = String(seed.turnId || "").trim();
+    const seedItemId = String(seed.itemId || "").trim();
+    if (seedId && id === seedId) return true;
+    if (seedTurnId && turnId === seedTurnId) {
+      if (!seedItemId || !itemId || itemId === seedItemId) return true;
+    }
+    if (seedTurnId && id.startsWith(`assistant:${seedTurnId}:`)) {
+      if (!seedItemId || id.endsWith(`:${seedItemId}`)) return true;
+    }
+    if (seedItemId && itemId === seedItemId) return true;
+    return !!(seedItemId && id.endsWith(`:${seedItemId}`));
+  }
+
+  function findCanonicalAssistantIdentity(threadId, seed = {}) {
+    const normalizedThreadId = String(threadId || "").trim();
+    const hasSeed =
+      !!String(seed.id || "").trim() ||
+      !!String(seed.turnId || "").trim() ||
+      !!String(seed.itemId || "").trim();
+    if (!hasSeed) return null;
+    const messages = Array.isArray(state.activeThreadMessages) ? state.activeThreadMessages : [];
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const identity = readCanonicalAssistantIdentity(messages[index]);
+      if (!identity) continue;
+      if (
+        normalizedThreadId &&
+        identity.threadId &&
+        identity.threadId !== normalizedThreadId
+      ) {
+        continue;
+      }
+      if (assistantIdentityMatchesSeed(identity, seed)) return identity;
+    }
+    return null;
   }
 
   function attachAssistantLiveIdentity(node, identity = {}) {
@@ -1641,7 +1709,21 @@ export function createLiveNotificationsModule(deps) {
       toRecord,
     });
     const notificationTurnId = String(
-      params?.turnId || params?.turn_id || params?.turn?.id || params?.id || ""
+      params?.turnId ||
+      params?.turn_id ||
+      params?.turn?.id ||
+      params?.turn?.turnId ||
+      params?.turn?.turn_id ||
+      params?.item?.turnId ||
+      params?.item?.turn_id ||
+      params?.payload?.turnId ||
+      params?.payload?.turn_id ||
+      (
+        /(^|[\/_])(turn|task)([\/_]|$)/.test(method)
+          ? params?.id
+          : ""
+      ) ||
+      ""
     ).trim();
     const connectionStatusMethod =
       method.includes("thread/status/changed") ||
