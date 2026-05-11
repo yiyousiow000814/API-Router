@@ -494,6 +494,23 @@ fn history_error_allows_runtime_fallback(detail: &str) -> bool {
         || lower.contains("cannot find the file")
 }
 
+fn sanitize_failed_runtime_turn(
+    manager: &CodexSessionManager,
+    thread_id: &str,
+    thread: &mut Value,
+) -> bool {
+    let Some(snapshot) = manager.thread_runtime_snapshot(thread_id) else {
+        return false;
+    };
+    if snapshot.status.as_deref() != Some("failed") {
+        return false;
+    }
+    let Some(turn_id) = snapshot.last_turn_id.as_deref() else {
+        return false;
+    };
+    crate::codex_app_server::sanitize_failed_turn_thread_payload(thread, turn_id)
+}
+
 async fn known_rollout_path_for_resolved_thread(
     manager: &CodexSessionManager,
     thread_id: &str,
@@ -944,19 +961,7 @@ pub(super) async fn codex_thread_history(
                 &mut page.thread,
             )
             .await;
-            if let Some(snapshot) = crate::orchestrator::gateway::web_codex_session_manager::workspace_thread_runtime_snapshot_for_home(
-                runtime_manager.home_override(),
-                &id,
-            ) {
-                if snapshot.status.as_deref() == Some("failed") {
-                    if let Some(turn_id) = snapshot.last_turn_id.as_deref() {
-                        let _ = crate::codex_app_server::sanitize_failed_turn_thread_payload(
-                            &mut page.thread,
-                            turn_id,
-                        );
-                    }
-                }
-            }
+            let _ = sanitize_failed_runtime_turn(&runtime_manager, &id, &mut page.thread);
             if resolved_workspace.is_some() {
                 let _ = runtime_manager
                     .overlay_runtime_thread(&id, &mut page.thread)
@@ -981,19 +986,7 @@ pub(super) async fn codex_thread_history(
                         &mut page.thread,
                     )
                     .await;
-                    if let Some(snapshot) = crate::orchestrator::gateway::web_codex_session_manager::workspace_thread_runtime_snapshot_for_home(
-                        runtime_manager.home_override(),
-                        &id,
-                    ) {
-                        if snapshot.status.as_deref() == Some("failed") {
-                            if let Some(turn_id) = snapshot.last_turn_id.as_deref() {
-                                let _ = crate::codex_app_server::sanitize_failed_turn_thread_payload(
-                                    &mut page.thread,
-                                    turn_id,
-                                );
-                            }
-                        }
-                    }
+                    let _ = sanitize_failed_runtime_turn(&runtime_manager, &id, &mut page.thread);
                     Json(json!({ "thread": page.thread, "page": page.page })).into_response()
                 }
                 Err(runtime_error) => api_error_detail(
@@ -1189,6 +1182,45 @@ mod tests {
         let path = known_rollout_path_for_resolved_thread(&manager, "thread-1").await;
 
         assert_eq!(path.as_deref(), Some(rollout_path));
+    }
+
+    #[test]
+    fn sanitize_failed_runtime_turn_uses_resolved_manager_snapshot() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        crate::orchestrator::gateway::_clear_workspace_runtime_registry_for_test();
+        let runtime_home = "/home/yiyou/.api-router/thread-runtime-home";
+        crate::orchestrator::gateway::web_codex_session_runtime::upsert_workspace_thread_runtime(
+            Some(WorkspaceTarget::Wsl2),
+            Some(runtime_home),
+            crate::orchestrator::gateway::web_codex_session_runtime::WorkspaceThreadRuntimeUpdate {
+                thread_id: "thread-1",
+                cwd: Some("/home/yiyou/repo"),
+                rollout_path: Some("/home/yiyou/.codex/sessions/rollout-thread-1.jsonl"),
+                status: Some("failed"),
+                last_event_id: None,
+                last_turn_id: Some("turn-1"),
+                clear_last_turn_id: false,
+            },
+        );
+        let manager = resolve_thread_session_manager(None, "thread-1");
+        let mut thread = json!({
+            "id": "thread-1",
+            "turns": [{
+                "id": "turn-1",
+                "items": [
+                    { "type": "userMessage", "text": "retry" },
+                    { "type": "assistantMessage", "text": "stale answer" }
+                ]
+            }]
+        });
+
+        let changed = sanitize_failed_runtime_turn(&manager, "thread-1", &mut thread);
+
+        assert!(changed);
+        let items = thread["turns"][0]["items"].as_array().expect("items");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["type"].as_str(), Some("userMessage"));
+        assert_eq!(thread["status"]["type"].as_str(), Some("failed"));
     }
 
     #[test]
