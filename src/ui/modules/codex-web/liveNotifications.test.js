@@ -1179,6 +1179,95 @@ Implement this plan?
     expect(state.activeThreadPendingAssistantMessage).toBe("");
   });
 
+  it("passes an explicit anchor key when finalizing commentary before a visible final assistant snapshot", () => {
+    const renderArgs = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [],
+      activeThreadCommentaryCurrent: {
+        threadId: "thread-1",
+        key: "commentary-1",
+        text: "thinking",
+        tools: [],
+        toolKeys: [],
+        plan: null,
+      },
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingUserMessage: "hello",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadLiveAssistantThreadId: "",
+      activeThreadLiveAssistantIndex: -1,
+      activeThreadLiveAssistantMsgNode: null,
+      activeThreadLiveAssistantBodyNode: null,
+      activeThreadLiveAssistantText: "",
+      activeThreadLastFinalAssistantThreadId: "",
+      activeThreadLastFinalAssistantText: "",
+      activeThreadLastFinalAssistantAt: 0,
+      activeThreadLastFinalAssistantEpoch: 0,
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId(id) {
+        if (id !== "chatBox") return null;
+        return {
+          appendChild() {},
+          insertBefore() {},
+          querySelector() {
+            return null;
+          },
+        };
+      },
+      addChat() {},
+      scheduleChatLiveFollow() {},
+      renderCommentaryArchive(options = {}) {
+        renderArgs.push(options);
+      },
+      createAssistantStreamingMessage() {
+        return { msg: null, body: null };
+      },
+      appendStreamingDelta() {},
+      finalizeAssistantMessage() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || notification?.params?.item?.thread_id || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "item.completed",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        item: {
+          id: "assistant-1",
+          type: "agent_message",
+          phase: "final_answer",
+          text: "final answer",
+        },
+      },
+    });
+
+    expect(renderArgs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          anchorMessageKey: "assistant:turn-1:assistant-1",
+        }),
+      ])
+    );
+  });
+
   it("records pending turn baseline state when an external turn starts", () => {
     const state = {
       activeThreadId: "thread-1",

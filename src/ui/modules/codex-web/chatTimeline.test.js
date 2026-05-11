@@ -1001,6 +1001,42 @@ describe("chatTimeline", () => {
     expect(dom.chatBox.children.indexOf(archiveNode)).toBeLessThan(dom.chatBox.children.indexOf(assistantNode));
   });
 
+  it("anchors a commentary archive to the matching assistant message key instead of the last assistant", () => {
+    state.activeThreadCommentaryArchive = [
+      {
+        threadId: "thread-1",
+        key: "commentary-explicit-anchor",
+        text: "thinking one",
+        tools: ["Ran `npm test`"],
+      },
+    ];
+    state.activeThreadCommentaryArchiveVisible = true;
+    state.activeThreadCommentaryArchiveExpanded = false;
+    state.activeThreadInlineCommentaryArchiveCount = 0;
+
+    const targetAssistant = module.addChat("assistant", "target final", {
+      animate: false,
+      scroll: false,
+      messageKey: "assistant:turn-1:item-1",
+    });
+    const laterAssistant = module.addChat("assistant", "later assistant", {
+      animate: false,
+      scroll: false,
+      messageKey: "assistant:turn-2:item-1",
+    });
+
+    module.renderCommentaryArchive({ anchorMessageKey: "assistant:turn-1:item-1" });
+
+    const visibleNodes = dom.chatBox.children.filter(
+      (child) => child.classList.contains("msg") || child.classList.contains("commentaryArchiveMount")
+    );
+    const archiveNode = dom.chatBox.children.find((child) => child.id === "commentaryArchiveMount");
+
+    expect(archiveNode).toBeTruthy();
+    expect(visibleNodes.indexOf(archiveNode)).toBeLessThan(visibleNodes.indexOf(targetAssistant));
+    expect(visibleNodes.indexOf(targetAssistant)).toBeLessThan(visibleNodes.indexOf(laterAssistant));
+  });
+
   it("preserves the toggle viewport position when expanding a commentary archive away from bottom", () => {
     const rafQueue = [];
     const module = createChatTimelineModule({

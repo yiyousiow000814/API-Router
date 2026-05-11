@@ -973,7 +973,7 @@ export function createLiveNotificationsModule(deps) {
     });
   }
 
-  function finalizeCommentaryArchive(anchorNode = null) {
+  function finalizeCommentaryArchive(anchorNode = null, options = {}) {
     ensureCommentaryState();
     if (state.activeThreadCommentaryCurrent) {
       archiveCommentaryBlock(state.activeThreadCommentaryCurrent);
@@ -997,10 +997,25 @@ export function createLiveNotificationsModule(deps) {
       text: "",
       tools: [],
     });
+    const anchorMessageKey = String(
+      options.anchorMessageKey ||
+      options.anchorMessageId ||
+      anchorNode?.getAttribute?.("data-msg-key") ||
+      anchorNode?.getAttribute?.("data-msg-id") ||
+      state.activeThreadLiveAssistantMessageId ||
+      ""
+    ).trim();
     if (state.activeThreadCommentaryArchiveVisible) {
-      renderCommentaryArchive({ anchorNode });
+      renderCommentaryArchive({
+        ...options,
+        anchorNode,
+        anchorMessageKey,
+      });
     } else {
-      renderCommentaryArchive();
+      renderCommentaryArchive({
+        ...options,
+        anchorMessageKey,
+      });
     }
   }
 
@@ -1408,7 +1423,15 @@ export function createLiveNotificationsModule(deps) {
     const msg = state.activeThreadLiveAssistantMsgNode;
     const body = state.activeThreadLiveAssistantBodyNode;
     const text = String(state.activeThreadLiveAssistantText || "");
-    finalizeCommentaryArchive(msg || null);
+    const anchorMessageKey = String(
+      state.activeThreadLiveAssistantMessageId ||
+      msg?.getAttribute?.("data-msg-key") ||
+      msg?.getAttribute?.("data-msg-id") ||
+      ""
+    ).trim();
+    finalizeCommentaryArchive(msg || null, {
+      anchorMessageKey,
+    });
     if (msg && body) finalizeAssistantMessage(msg, body, text);
     rememberFinalAssistant(threadId, text);
     clearActiveAssistantLiveState();
@@ -1474,8 +1497,8 @@ export function createLiveNotificationsModule(deps) {
     return true;
   }
 
-  function collapseLiveRuntimeBeforeVisibleAssistant(threadId, anchorNode = null) {
-    finalizeCommentaryArchive(anchorNode);
+  function collapseLiveRuntimeBeforeVisibleAssistant(threadId, anchorNode = null, options = {}) {
+    finalizeCommentaryArchive(anchorNode, options);
     clearTransientToolMessages();
     clearTransientThinkingMessages();
     finalizeRuntimeState(threadId);
@@ -2071,9 +2094,16 @@ export function createLiveNotificationsModule(deps) {
         scheduleChatLiveFollow(700);
         return;
       }
+      const liveAssistantIdentity = resolveAssistantLiveIdentity(threadId, {
+        turnId: notificationTurnId,
+        itemId: assistantUpdate.itemId,
+      });
       collapseLiveRuntimeBeforeVisibleAssistant(
         threadId,
-        state.activeThreadLiveAssistantMsgNode || null
+        state.activeThreadLiveAssistantMsgNode || null,
+        {
+          anchorMessageKey: liveAssistantIdentity.id,
+        }
       );
       const proposedPlan = extractProposedPlanArtifacts(assistantUpdate.text, {
         threadId,
@@ -2117,6 +2147,7 @@ export function createLiveNotificationsModule(deps) {
           final: isFinalAssistantUpdate,
           turnId: notificationTurnId,
           itemId: String(assistantUpdate.itemId || "").trim(),
+          id: liveAssistantIdentity.id,
         });
       }
       if (proposedPlan.planMessage?.plan && isFinalAssistantUpdate) {
