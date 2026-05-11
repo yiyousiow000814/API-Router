@@ -914,6 +914,7 @@ export function createChatTimelineModule(deps) {
       text: fromText,
       targetText,
     };
+    renderAssistantLiveBody(msgNode, bodyNode, fromText);
 
     const step = () => {
       if (bodyNode.__webCodexHistoryReplayToken !== token) return;
