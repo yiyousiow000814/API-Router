@@ -2793,6 +2793,93 @@ describe("turnActions", () => {
     ]);
   });
 
+  it("ignores duplicate sendTurn calls while a new thread send is already starting", async () => {
+    const createdThread = createDeferred();
+    const apiCalls = [];
+    const chatCalls = [];
+    const state = {
+      activeThreadId: "",
+      activeThreadWorkspace: "windows",
+      activeThreadRolloutPath: "",
+      activeThreadStarted: false,
+      activeThreadMessages: [],
+      pendingThreadResumes: new Map(),
+      chatShouldStickToBottom: false,
+      selectedModel: "",
+      selectedReasoningEffort: "",
+      permissionPresetByWorkspace: { windows: "/permission auto" },
+      ws: null,
+      activeThreadPendingTurnRunning: false,
+      pendingAttachments: [],
+    };
+    const module = createTurnActionsModule({
+      state,
+      byId: () => ({ value: "" }),
+      api: async (path, options = {}) => {
+        apiCalls.push({ path, method: options.method || "GET", body: options.body || null });
+        if (path === "/codex/threads") return createdThread.promise;
+        if (path === "/codex/turns/start") return { threadId: "thread-1", turnId: "turn-1" };
+        throw new Error(`unexpected api call: ${path}`);
+      },
+      wsSend: () => false,
+      wsCall: async () => ({}),
+      nextReqId: () => `req-${apiCalls.length + 1}`,
+      connectWs: () => {},
+      syncEventSubscription: () => {},
+      getPromptValue: () => "hello from mobile",
+      getWorkspaceTarget: () => "windows",
+      getStartCwdForWorkspace: () => "C:\\repo",
+      waitPendingThreadResume: async () => {},
+      registerPendingThreadResume: () => {},
+      updateHeaderUi: () => {},
+      addChat: (role, text, options = {}) => {
+        chatCalls.push({ role, text, options });
+      },
+      clearChatMessages: () => {},
+      hideWelcomeCard: () => {},
+      showWelcomeCard: () => {},
+      clearPromptValue: () => {},
+      renderComposerContextLeft: () => {},
+      scrollToBottomReliable: () => {},
+      scheduleChatLiveFollow: () => {},
+      createAssistantStreamingMessage: () => ({ msg: null, body: null }),
+      appendStreamingDelta: () => {},
+      finalizeAssistantMessage: () => {},
+      normalizeTextPayload: (value) => value,
+      maybeNotifyTurnDone: () => {},
+      renderAttachmentPills: () => {},
+      refreshThreads: async () => {},
+      refreshHosts: async () => {},
+      refreshPending: async () => {},
+      setStatus: () => {},
+      setActiveThread: (id) => {
+        state.activeThreadId = id;
+      },
+      setMainTab: () => {},
+      setMobileTab: () => {},
+      setChatOpening: () => {},
+      updateMobileComposerState: () => {},
+      refreshRuntimeForWorkspace: () => {},
+      blockInSandbox: () => false,
+    });
+
+    const first = module.sendTurn();
+    const second = module.sendTurn();
+    await Promise.resolve();
+
+    expect(apiCalls.filter((call) => call.path === "/codex/threads")).toHaveLength(1);
+
+    createdThread.resolve({
+      id: "thread-1",
+      path: "C:\\repo\\.codex\\sessions\\rollout.jsonl",
+    });
+    await Promise.all([first, second]);
+
+    expect(apiCalls.filter((call) => call.path === "/codex/turns/start")).toHaveLength(1);
+    expect(chatCalls.filter((call) => call.role === "user")).toHaveLength(1);
+    expect(state.activeThreadMessages.filter((message) => message.role === "user")).toHaveLength(1);
+  });
+
   it("clears the previous live connection status before sending a new turn", async () => {
     const clears = [];
     const state = {

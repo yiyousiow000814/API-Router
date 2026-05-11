@@ -15,6 +15,12 @@ import {
   syncPendingTurnRuntime as syncPendingTurnRuntimeState,
   syncPendingAssistantState as syncPendingAssistantStateRuntime,
 } from "./runtimeState.js";
+import {
+  appendActiveTimelineMessage,
+  ensureActiveTimelineMessages,
+  removeActiveTimelineMessageAt,
+  updateActiveTimelineMessageAt,
+} from "./activeTimelineState.js";
 
 export function workspaceKeyOfThread(thread) {
   const raw = thread.cwd || thread.workspace || thread.project || thread.directory || thread.path || "";
@@ -1326,7 +1332,7 @@ export function createLiveNotificationsModule(deps) {
       index < state.activeThreadMessages.length &&
       state.activeThreadMessages[index];
     if (!hasValidIndex) {
-      if (!Array.isArray(state.activeThreadMessages)) state.activeThreadMessages = [];
+      ensureActiveTimelineMessages(state);
       const currentText = String(
         state.activeThreadLiveAssistantText ||
         body?.textContent ||
@@ -1344,12 +1350,15 @@ export function createLiveNotificationsModule(deps) {
           )
       );
       if (index < 0) {
-        index = state.activeThreadMessages.length;
-        state.activeThreadMessages.push(applyAssistantLiveIdentity({
-          role: "assistant",
-          text: currentText,
-          kind: "",
-        }, normalizedIdentity));
+        const result = appendActiveTimelineMessage(
+          state,
+          applyAssistantLiveIdentity({
+            role: "assistant",
+            text: currentText,
+            kind: "",
+          }, normalizedIdentity)
+        );
+        index = result.index;
       }
     }
     state.activeThreadLiveAssistantIndex = index;
@@ -1409,12 +1418,12 @@ export function createLiveNotificationsModule(deps) {
       index < state.activeThreadMessages.length &&
       state.activeThreadMessages[index]
     ) {
-      state.activeThreadMessages[index] = {
+      updateActiveTimelineMessageAt(state, index, {
         ...applyAssistantLiveIdentity(state.activeThreadMessages[index], resolveAssistantLiveIdentity(threadId, options)),
         role: "assistant",
         kind: "",
         text: state.activeThreadLiveAssistantText,
-      };
+      });
     }
     syncPendingAssistantState(threadId, state.activeThreadLiveAssistantText);
     pushLiveDebugEvent("live.render:assistant_delta", {
@@ -1436,12 +1445,12 @@ export function createLiveNotificationsModule(deps) {
       index < state.activeThreadMessages.length &&
       state.activeThreadMessages[index]
     ) {
-      state.activeThreadMessages[index] = {
+      updateActiveTimelineMessageAt(state, index, {
         ...applyAssistantLiveIdentity(state.activeThreadMessages[index], identity),
         role: "assistant",
         kind: "",
         text: state.activeThreadLiveAssistantText,
-      };
+      });
     }
     syncPendingAssistantState(String(state.activeThreadLiveAssistantThreadId || ""), state.activeThreadLiveAssistantText);
   }
@@ -1604,7 +1613,7 @@ export function createLiveNotificationsModule(deps) {
       index >= 0 &&
       index < state.activeThreadMessages.length
     ) {
-      state.activeThreadMessages.splice(index, 1);
+      removeActiveTimelineMessageAt(state, index);
     }
     msg?.remove?.();
     clearActiveAssistantLiveState();
@@ -1632,8 +1641,7 @@ export function createLiveNotificationsModule(deps) {
       plan: planMessage.plan,
       source: "liveProposedPlan",
     });
-    if (!Array.isArray(state.activeThreadMessages)) state.activeThreadMessages = [];
-    state.activeThreadMessages.push({
+    appendActiveTimelineMessage(state, {
       role: "system",
       kind: "planCard",
       text: signature,

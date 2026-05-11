@@ -1,4 +1,5 @@
 import { resetTurnPresentationState, syncPendingTurnRuntime } from "./runtimeState.js";
+import { appendActiveTimelineMessage, ensureActiveTimelineMessages } from "./activeTimelineState.js";
 import {
   resetTransientConnectionStatusForThreadOpen,
   resolveThreadOpenState,
@@ -1568,7 +1569,7 @@ export function createDebugToolsModule(deps) {
           resetTurnPresentationState(state);
           renderCommentaryArchive();
           renderRuntimePanels();
-          if (!Array.isArray(state.activeThreadMessages)) state.activeThreadMessages = [];
+          ensureActiveTimelineMessages(state);
           const last = state.activeThreadMessages.length
             ? state.activeThreadMessages[state.activeThreadMessages.length - 1]
             : null;
@@ -1579,7 +1580,7 @@ export function createDebugToolsModule(deps) {
             String(last.text || "") === prompt;
           if (!alreadyVisible) {
             addChat("user", prompt, { animate: false });
-            state.activeThreadMessages = state.activeThreadMessages.concat([{ role: "user", text: prompt, kind: "" }]);
+            appendActiveTimelineMessage(state, { role: "user", text: prompt, kind: "" });
           }
           scrollToBottomReliable();
           return { ok: true, threadId, prompt };

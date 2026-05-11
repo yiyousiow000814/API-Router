@@ -6,6 +6,8 @@ const WEB_CODEX_INDEX_HTML: &str = include_str!("../../../../codex-web.html");
 const WEB_CODEX_APP_JS: &str = include_str!("../../../../src/ui/codex-web-dev.js");
 const WEB_CODEX_ACTION_BINDINGS_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/actionBindings.js");
+const WEB_CODEX_ACTIVE_TIMELINE_STATE_JS: &str =
+    include_str!("../../../../src/ui/modules/codex-web/activeTimelineState.js");
 const WEB_CODEX_APP_PERSISTENCE_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/appPersistence.js");
 const WEB_CODEX_APP_STATE_JS: &str =
@@ -180,6 +182,7 @@ impl WebCodexModuleAsset {
 fn resolve_web_codex_module_asset(module_path: &str) -> Option<WebCodexModuleAsset> {
     let body = match module_path {
         "codex-web/actionBindings.js" => WEB_CODEX_ACTION_BINDINGS_JS,
+        "codex-web/activeTimelineState.js" => WEB_CODEX_ACTIVE_TIMELINE_STATE_JS,
         "codex-web/appPersistence.js" => WEB_CODEX_APP_PERSISTENCE_JS,
         "codex-web/appState.js" => WEB_CODEX_APP_STATE_JS,
         "codex-web/bootstrapApp.js" => WEB_CODEX_BOOTSTRAP_APP_JS,
@@ -399,6 +402,7 @@ mod tests {
         assert!(body.is_some());
         assert!(body.unwrap().contains("renderInlineMessageText"));
         assert!(resolve_web_codex_module_body("codex-web/actionBindings.js").is_some());
+        assert!(resolve_web_codex_module_body("codex-web/activeTimelineState.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/appPersistence.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/appState.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/bootstrapApp.js").is_some());

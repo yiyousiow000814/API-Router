@@ -22,6 +22,13 @@ import {
   createCanonicalTimelineState,
   reduceTimelineEvent,
 } from "./canonicalTimeline.js";
+import {
+  appendActiveTimelineMessage,
+  ensureActiveTimelineMessages,
+  removeActiveTimelineMessageAt,
+  setActiveTimelineMessages,
+  updateActiveTimelineMessageAt,
+} from "./activeTimelineState.js";
 
 export function buildTurnPayload({
   activeThreadId,
@@ -494,7 +501,7 @@ export function createTurnActionsModule(deps) {
       liveAssistantIndex >= 0 &&
       liveAssistantIndex < state.activeThreadMessages.length
     ) {
-      state.activeThreadMessages.splice(liveAssistantIndex, 1);
+      removeActiveTimelineMessageAt(state, liveAssistantIndex);
     }
     liveAssistantMsgNode?.remove?.();
     resetTurnPresentationState(state, { bumpLiveEpoch: options.bumpLiveEpoch === true });
@@ -554,7 +561,7 @@ export function createTurnActionsModule(deps) {
         !String(last.kind || "").trim() &&
         String(last.text || "") === normalizedPrompt
       ) {
-        state.activeThreadMessages = state.activeThreadMessages.slice(0, -1);
+        setActiveTimelineMessages(state, state.activeThreadMessages.slice(0, -1));
       }
     }
     const box = byId("chatBox");
@@ -588,7 +595,7 @@ export function createTurnActionsModule(deps) {
     const text = String(prompt || "");
     const images = pendingAttachmentImages(attachments);
     if (!text.trim() && !images.length) return;
-    if (!Array.isArray(state.activeThreadMessages)) state.activeThreadMessages = [];
+    ensureActiveTimelineMessages(state);
     const threadId = String(resolveCurrentThreadId(state) || state.activeThreadId || "").trim();
     const canonicalState = reduceTimelineEvent(
       createCanonicalTimelineState(threadId),
@@ -607,7 +614,7 @@ export function createTurnActionsModule(deps) {
       kind: "",
       images,
     };
-    state.activeThreadMessages = state.activeThreadMessages.concat([optimisticMessage]);
+    appendActiveTimelineMessage(state, optimisticMessage);
     const options = {
       animate: false,
       messageKey: String(optimisticMessage.id || clientMessageId || "").trim(),
@@ -988,20 +995,20 @@ export function createTurnActionsModule(deps) {
   }
 
   function syncPendingAssistantMessage(text) {
-    if (!Array.isArray(state.activeThreadMessages)) state.activeThreadMessages = [];
+    ensureActiveTimelineMessages(state);
     const nextText = String(text || "");
     const lastIndex = state.activeThreadMessages.length - 1;
     const last = lastIndex >= 0 ? state.activeThreadMessages[lastIndex] : null;
     if (!last || last.role !== "assistant" || String(last.kind || "").trim()) {
-      state.activeThreadMessages.push({ role: "assistant", text: nextText, kind: "" });
+      appendActiveTimelineMessage(state, { role: "assistant", text: nextText, kind: "" });
       return;
     }
-    state.activeThreadMessages[lastIndex] = {
+    updateActiveTimelineMessageAt(state, lastIndex, {
       ...last,
       role: "assistant",
       kind: "",
       text: nextText,
-    };
+    });
   }
 
   function pushLiveDebugEvent(kind, payload = {}) {
@@ -1241,7 +1248,20 @@ export function createTurnActionsModule(deps) {
     return response;
   }
 
+  let activeSendTurnPromise = null;
+
   async function sendTurn(promptOverride, options = {}) {
+    if (activeSendTurnPromise) return activeSendTurnPromise;
+    const run = sendTurnInternal(promptOverride, options);
+    activeSendTurnPromise = run;
+    try {
+      return await run;
+    } finally {
+      if (activeSendTurnPromise === run) activeSendTurnPromise = null;
+    }
+  }
+
+  async function sendTurnInternal(promptOverride, options = {}) {
     if (blockInSandbox("send turn")) return;
     const prompt = String(promptOverride == null ? getPromptValue() : promptOverride).trim();
     const pendingAttachments = pendingAttachmentList();

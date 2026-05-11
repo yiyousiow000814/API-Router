@@ -10,6 +10,7 @@ import {
   createCanonicalTimelineState,
   reduceTimelineEvent,
 } from "./canonicalTimeline.js";
+import { setActiveTimelineMessages } from "./activeTimelineState.js";
 import {
   extractLatestCommentaryArchive,
   extractLatestCommentaryState,
@@ -1101,7 +1102,7 @@ export function createHistoryLoaderModule(deps) {
       preservePendingTurn: true,
     });
     state.activeThreadInlineCommentaryArchiveCount = messages.filter((message) => message?.kind === "commentaryArchive").length;
-    state.activeThreadMessages = [];
+    setActiveTimelineMessages(state, []);
 
     const slowYield = !!options.slowRender;
     const batchSize = Math.max(6, Math.min(28, Number(options.batchSize || 14)));
@@ -1188,7 +1189,7 @@ export function createHistoryLoaderModule(deps) {
       clearLiveThreadConnectionStatus();
     }
     if (shouldSkipHistoryRender(state, renderSig, options)) {
-      state.activeThreadMessages = messages;
+      setActiveTimelineMessages(state, messages);
       pushLiveDebugEvent("history.render:unchanged", {
         threadId,
         messages: messages.length,

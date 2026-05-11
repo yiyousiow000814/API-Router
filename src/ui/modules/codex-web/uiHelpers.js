@@ -110,14 +110,27 @@ export function createUiHelpersModule(deps) {
   function bindResponsiveClick(id, handler, options = {}) {
     const el = byId(id);
     if (!el) return;
-    const suppressMs = Math.max(0, Number(options.suppressMs || 320));
+    const stateKey = "__webCodexResponsiveClick";
+    const binding = el[stateKey] || {
+      handler: null,
+      suppressMs: 320,
+      suppressNextClick: false,
+      suppressUntil: 0,
+      suppressNextClickUntil: 0,
+      wired: false,
+    };
+    binding.handler = typeof handler === "function" ? handler : () => {};
+    binding.suppressMs = Math.max(0, Number(options.suppressMs || 320));
+    el[stateKey] = binding;
     const run = (event) => {
       try {
-        handler(event);
+        el[stateKey]?.handler?.(event);
       } catch (error) {
         setStatus(error?.message || String(error || "Action failed"), true);
       }
     };
+    if (binding.wired) return;
+    binding.wired = true;
     el.addEventListener(
       "pointerdown",
       (event) => {
@@ -125,18 +138,39 @@ export function createUiHelpersModule(deps) {
           event?.preventDefault?.();
           event?.stopPropagation?.();
         } catch {}
-        el.__responsiveClickSuppressUntil = Date.now() + suppressMs;
+        const current = el[stateKey];
+        if (current) {
+          current.suppressNextClick = true;
+          current.suppressUntil = Date.now() + current.suppressMs;
+          current.suppressNextClickUntil = Date.now() + Math.max(1200, current.suppressMs);
+        }
         run(event);
       },
       { passive: false }
     );
     el.addEventListener("click", (event) => {
-      if (Date.now() <= Number(el.__responsiveClickSuppressUntil || 0)) {
+      const current = el[stateKey];
+      const now = Date.now();
+      const shouldSuppressClick = !!current && (
+        now <= Number(current.suppressUntil || 0) ||
+        (current.suppressNextClick === true && now <= Number(current.suppressNextClickUntil || 0))
+      );
+      if (shouldSuppressClick) {
+        if (current) {
+          current.suppressNextClick = false;
+          current.suppressUntil = 0;
+          current.suppressNextClickUntil = 0;
+        }
         try {
           event?.preventDefault?.();
           event?.stopPropagation?.();
         } catch {}
         return;
+      }
+      if (current) {
+        current.suppressNextClick = false;
+        current.suppressUntil = 0;
+        current.suppressNextClickUntil = 0;
       }
       run(event);
     });

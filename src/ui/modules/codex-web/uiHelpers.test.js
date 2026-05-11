@@ -63,4 +63,138 @@ describe("uiHelpers", () => {
     expect(event.preventDefault).toHaveBeenCalledTimes(1);
     expect(event.stopPropagation).toHaveBeenCalledTimes(1);
   });
+
+  it("runs responsive click once when iOS dispatches a delayed click after pointerdown", () => {
+    vi.useFakeTimers();
+    try {
+      const listeners = new Map();
+      const button = {
+        addEventListener(name, handler) {
+          listeners.set(name, handler);
+        },
+      };
+      const module = createUiHelpersModule({
+        state: { suppressSyntheticClickUntil: 0 },
+        threadAnimDebug: { enabled: false, seq: 0, events: [] },
+        normalizeWorkspaceTarget(value) {
+          return value;
+        },
+        setStatus() {},
+        documentRef: {
+          body: { classList: { contains() { return false; } } },
+          getElementById(id) {
+            return id === "send" ? button : null;
+          },
+        },
+        performanceRef: { now() { return 0; } },
+        windowRef: {},
+      });
+      const handler = vi.fn();
+
+      module.bindResponsiveClick("send", handler);
+      listeners.get("pointerdown")({
+        type: "pointerdown",
+        preventDefault() {},
+        stopPropagation() {},
+      });
+      vi.advanceTimersByTime(650);
+      listeners.get("click")({
+        type: "click",
+        preventDefault() {},
+        stopPropagation() {},
+      });
+
+      expect(handler).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("replaces a responsive click binding instead of stacking duplicate handlers", () => {
+    const listeners = new Map();
+    const button = {
+      addEventListener(name, handler) {
+        const items = listeners.get(name) || [];
+        items.push(handler);
+        listeners.set(name, items);
+      },
+    };
+    const module = createUiHelpersModule({
+      state: { suppressSyntheticClickUntil: 0 },
+      threadAnimDebug: { enabled: false, seq: 0, events: [] },
+      normalizeWorkspaceTarget(value) {
+        return value;
+      },
+      setStatus() {},
+      documentRef: {
+        body: { classList: { contains() { return false; } } },
+        getElementById(id) {
+          return id === "send" ? button : null;
+        },
+      },
+      performanceRef: { now() { return 0; } },
+      windowRef: {},
+    });
+    const first = vi.fn();
+    const second = vi.fn();
+
+    module.bindResponsiveClick("send", first);
+    module.bindResponsiveClick("send", second);
+    for (const handler of listeners.get("pointerdown") || []) {
+      handler({
+        type: "pointerdown",
+        preventDefault() {},
+        stopPropagation() {},
+      });
+    }
+
+    expect(first).not.toHaveBeenCalled();
+    expect(second).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not suppress a later intentional click after a missing synthetic click window expires", () => {
+    vi.useFakeTimers();
+    try {
+      const listeners = new Map();
+      const button = {
+        addEventListener(name, handler) {
+          listeners.set(name, handler);
+        },
+      };
+      const module = createUiHelpersModule({
+        state: { suppressSyntheticClickUntil: 0 },
+        threadAnimDebug: { enabled: false, seq: 0, events: [] },
+        normalizeWorkspaceTarget(value) {
+          return value;
+        },
+        setStatus() {},
+        documentRef: {
+          body: { classList: { contains() { return false; } } },
+          getElementById(id) {
+            return id === "send" ? button : null;
+          },
+        },
+        performanceRef: { now() { return 0; } },
+        windowRef: {},
+      });
+      const handler = vi.fn();
+
+      module.bindResponsiveClick("send", handler);
+      listeners.get("pointerdown")({
+        type: "pointerdown",
+        preventDefault() {},
+        stopPropagation() {},
+      });
+      vi.advanceTimersByTime(2500);
+      listeners.get("click")({
+        type: "click",
+        preventDefault() {},
+        stopPropagation() {},
+      });
+
+      expect(handler).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

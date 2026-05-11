@@ -1,6 +1,7 @@
 import { summarizeChatTimeline } from "./chatTimeline.js";
 import { decideHistoryRenderStrategy } from "./historyRenderStrategy.js";
 import { reconcileTimelineMessages } from "./historyTimelineReconcile.js";
+import { setActiveTimelineMessages } from "./activeTimelineState.js";
 
 function canReplayAssistantHistory({ state, threadId, forceFullRender, previousMessages }) {
   if (forceFullRender) return false;
@@ -148,7 +149,7 @@ export function applyWindowedHistoryRender(params = {}) {
         nextBox.scrollTop = Math.min(preservedScrollTop, maxTop);
       }
     }
-    state.activeThreadMessages = slice;
+    setActiveTimelineMessages(state, slice);
     state.activeThreadRenderSig = renderSig;
     pushLiveDebugEvent("history.render:window", {
       threadId,
@@ -197,7 +198,7 @@ export function applyWindowedHistoryRender(params = {}) {
       })
     : null;
   if (commentaryArchivePatch) {
-    state.activeThreadMessages = visibleMessages;
+    setActiveTimelineMessages(state, visibleMessages);
     state.activeThreadRenderSig = renderSig;
     pushLiveDebugEvent("history.render:archive_patch", {
       threadId,
@@ -231,7 +232,7 @@ export function applyWindowedHistoryRender(params = {}) {
       maybeReplayAssistantHistoryMessage(updated, nextLast, replayContext, {
         fromText: replayStartText,
       });
-      state.activeThreadMessages = messages.slice(Number(state.historyWindowStart || 0));
+      setActiveTimelineMessages(state, messages.slice(Number(state.historyWindowStart || 0)));
       state.activeThreadRenderSig = renderSig;
       pushLiveDebugEvent("history.render:update_last", {
         threadId,
@@ -250,7 +251,7 @@ export function applyWindowedHistoryRender(params = {}) {
 
   if (strategy === "window_append") {
     appendMessages(messages, prevAll.length, addChat, replayContext);
-    state.activeThreadMessages = messages.slice(Number(state.historyWindowStart || 0));
+    setActiveTimelineMessages(state, messages.slice(Number(state.historyWindowStart || 0)));
     state.activeThreadRenderSig = renderSig;
     pushLiveDebugEvent("history.render:append", {
       threadId,
@@ -332,7 +333,7 @@ export async function applyFullHistoryRender(params = {}) {
     : null;
   if (commentaryArchivePatch) {
     state.activeThreadInlineCommentaryArchiveCount = inlineCommentaryArchiveCount;
-    state.activeThreadMessages = messages;
+    setActiveTimelineMessages(state, messages);
     state.activeThreadRenderSig = renderSig;
     pushLiveDebugEvent("history.render:archive_patch", {
       threadId,
@@ -363,7 +364,7 @@ export async function applyFullHistoryRender(params = {}) {
     maybeReplayAssistantHistoryMessage(updated, nextLast, replayContext, {
       fromText: replayStartText,
     });
-    state.activeThreadMessages = messages;
+    setActiveTimelineMessages(state, messages);
     state.activeThreadRenderSig = renderSig;
     pushLiveDebugEvent("history.render:update_last", {
       threadId,
@@ -378,7 +379,7 @@ export async function applyFullHistoryRender(params = {}) {
 
   if (strategy === "full_append") {
     appendMessages(messages, prevMessages.length, addChat, replayContext);
-    state.activeThreadMessages = messages;
+    setActiveTimelineMessages(state, messages);
     state.activeThreadRenderSig = renderSig;
     pushLiveDebugEvent("history.render:append", {
       threadId,
@@ -405,7 +406,7 @@ export async function applyFullHistoryRender(params = {}) {
         box.scrollTop = Math.min(preservedScrollTop, maxTop);
       }
     }
-    state.activeThreadMessages = messages;
+    setActiveTimelineMessages(state, messages);
     state.activeThreadRenderSig = renderSig;
     pushLiveDebugEvent("history.render:full", {
       threadId,
