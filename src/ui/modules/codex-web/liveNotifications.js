@@ -1183,74 +1183,97 @@ export function createLiveNotificationsModule(deps) {
     return null;
   }
 
+  function findAssistantMessageNodeByKey(box, messageKey) {
+    const normalizedKey = String(messageKey || "").trim();
+    if (!box || !normalizedKey) return null;
+    const children = Array.from(box.children || []);
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      const node = children[index];
+      if (!node?.classList?.contains?.("assistant")) continue;
+      const nodeKey = String(
+        node?.getAttribute?.("data-msg-key") ||
+        node?.getAttribute?.("data-msg-id") ||
+        ""
+      ).trim();
+      if (nodeKey === normalizedKey) return node;
+    }
+    return null;
+  }
+
+  function claimAssistantLiveStream(threadId, identity, msg, body) {
+    const normalizedThreadId = String(threadId || "").trim();
+    const normalizedIdentity = resolveAssistantLiveIdentity(normalizedThreadId, identity);
+    attachAssistantLiveIdentity(msg, normalizedIdentity);
+    try {
+      msg.setAttribute?.("data-live-assistant", "1");
+      msg.setAttribute?.("data-live-thread-id", normalizedThreadId);
+    } catch {}
+    state.activeThreadLiveAssistantThreadId = normalizedThreadId;
+    state.activeThreadLiveAssistantMsgNode = msg;
+    state.activeThreadLiveAssistantBodyNode = body;
+    state.activeThreadLiveAssistantText = String(state.activeThreadLiveAssistantText || "");
+
+    let index = Number(state.activeThreadLiveAssistantIndex);
+    const hasValidIndex =
+      Array.isArray(state.activeThreadMessages) &&
+      index >= 0 &&
+      index < state.activeThreadMessages.length &&
+      state.activeThreadMessages[index];
+    if (!hasValidIndex) {
+      if (!Array.isArray(state.activeThreadMessages)) state.activeThreadMessages = [];
+      const currentText = String(
+        state.activeThreadLiveAssistantText ||
+        body?.textContent ||
+        body?.innerHTML ||
+        ""
+      );
+      index = state.activeThreadMessages.findIndex(
+        (message) =>
+          message &&
+          message.role === "assistant" &&
+          !String(message.kind || "").trim() &&
+          (
+            (!!normalizedIdentity.id && String(message.id || message.messageKey || "").trim() === normalizedIdentity.id) ||
+            String(message.text || "") === currentText
+          )
+      );
+      if (index < 0) {
+        index = state.activeThreadMessages.length;
+        state.activeThreadMessages.push(applyAssistantLiveIdentity({
+          role: "assistant",
+          text: currentText,
+          kind: "",
+        }, normalizedIdentity));
+      }
+    }
+    state.activeThreadLiveAssistantIndex = index;
+    return { msg, body };
+  }
+
   function ensureAssistantLiveStream(threadId, identityOptions = {}) {
     const identity = resolveAssistantLiveIdentity(threadId, identityOptions);
     const liveThreadId = String(state.activeThreadLiveAssistantThreadId || "");
     const liveMsg = state.activeThreadLiveAssistantMsgNode;
     const liveBody = state.activeThreadLiveAssistantBodyNode;
     if (liveThreadId === threadId && liveMsg && liveBody) {
-      attachAssistantLiveIdentity(liveMsg, identity);
-      return { msg: liveMsg, body: liveBody };
+      return claimAssistantLiveStream(threadId, identity, liveMsg, liveBody);
     }
     const box = byId("chatBox");
     if (!box) return null;
     const reused = findAssistantLiveStream(box, threadId);
     if (reused) {
-      state.activeThreadLiveAssistantThreadId = threadId;
-      state.activeThreadLiveAssistantMsgNode = reused.msg;
-      state.activeThreadLiveAssistantBodyNode = reused.body;
-      attachAssistantLiveIdentity(reused.msg, identity);
-      let index = Number(state.activeThreadLiveAssistantIndex);
-      const hasValidIndex =
-        Array.isArray(state.activeThreadMessages) &&
-        index >= 0 &&
-        index < state.activeThreadMessages.length &&
-        state.activeThreadMessages[index];
-      if (!hasValidIndex) {
-        if (!Array.isArray(state.activeThreadMessages)) state.activeThreadMessages = [];
-        const currentText = String(state.activeThreadLiveAssistantText || "");
-        index = state.activeThreadMessages.findIndex(
-          (message) =>
-            message &&
-            message.role === "assistant" &&
-            !String(message.kind || "").trim() &&
-            String(message.text || "") === currentText
-        );
-        if (index < 0) {
-          index = state.activeThreadMessages.length;
-          state.activeThreadMessages.push(applyAssistantLiveIdentity({
-            role: "assistant",
-            text: currentText,
-            kind: "",
-          }, identity));
-        }
-      }
-      state.activeThreadLiveAssistantIndex = index;
-      return reused;
+      return claimAssistantLiveStream(threadId, identity, reused.msg, reused.body);
     }
     hideWelcomeCard();
     const created = createAssistantStreamingMessage();
     const msg = created?.msg || null;
     const body = created?.body || null;
     if (!msg || !body) return null;
-    try {
-      msg.setAttribute?.("data-live-assistant", "1");
-      msg.setAttribute?.("data-live-thread-id", threadId);
-    } catch {}
-    attachAssistantLiveIdentity(msg, identity);
     const pendingMount = box.querySelector?.("#pendingInlineMount") || null;
     if (pendingMount && pendingMount.parentElement === box) box.insertBefore(msg, pendingMount);
     else box.appendChild(msg);
-    state.activeThreadLiveAssistantThreadId = threadId;
-    state.activeThreadLiveAssistantIndex = Array.isArray(state.activeThreadMessages)
-      ? state.activeThreadMessages.length
-      : 0;
-    state.activeThreadLiveAssistantMsgNode = msg;
-    state.activeThreadLiveAssistantBodyNode = body;
     state.activeThreadLiveAssistantText = "";
-    if (!Array.isArray(state.activeThreadMessages)) state.activeThreadMessages = [];
-    state.activeThreadMessages.push(applyAssistantLiveIdentity({ role: "assistant", text: "", kind: "" }, identity));
-    return { msg, body };
+    return claimAssistantLiveStream(threadId, identity, msg, body);
   }
 
   function renderAssistantDelta(threadId, delta, options = {}) {
@@ -1366,6 +1389,15 @@ export function createLiveNotificationsModule(deps) {
         rememberFinalAssistant(threadId, nextText);
         settleDuplicateFinalAssistantSnapshot(threadId, "live.assistant_snapshot:materialized_final_duplicate");
         return;
+      }
+    }
+    const finalIdentity = options.final === true ? resolveAssistantLiveIdentity(threadId, options) : null;
+    if (options.final === true && finalIdentity?.id) {
+      const box = byId("chatBox");
+      const keyedAssistant = findAssistantMessageNodeByKey(box, finalIdentity.id);
+      const keyedBody = keyedAssistant?.querySelector?.(".msgBody") || null;
+      if (keyedAssistant && keyedBody) {
+        claimAssistantLiveStream(threadId, finalIdentity, keyedAssistant, keyedBody);
       }
     }
     const live = ensureAssistantLiveStream(threadId, options);

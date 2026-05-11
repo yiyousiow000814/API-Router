@@ -1268,6 +1268,171 @@ Implement this plan?
     );
   });
 
+  it("reuses an existing keyed assistant node instead of creating a duplicate final answer", () => {
+    const created = [];
+    const finalized = [];
+    const existingBody = {
+      innerHTML: "",
+      setAttribute() {},
+      removeAttribute() {},
+    };
+    const existingNode = {
+      parentElement: null,
+      className: "msg assistant",
+      attrs: new Map([
+        ["data-msg-key", "assistant:turn-1:assistant-1"],
+        ["data-msg-id", "assistant:turn-1:assistant-1"],
+      ]),
+      classList: {
+        contains(token) {
+          return ["msg", "assistant"].includes(token);
+        },
+      },
+      getAttribute(name) {
+        return this.attrs.get(name) || "";
+      },
+      setAttribute(name, value) {
+        this.attrs.set(String(name), String(value));
+      },
+      removeAttribute(name) {
+        this.attrs.delete(String(name));
+      },
+      querySelector(selector) {
+        return selector === ".msgBody" ? existingBody : null;
+      },
+    };
+    const chatBox = {
+      children: [existingNode],
+      appendChild(node) {
+        node.parentElement = this;
+        this.children.push(node);
+        return node;
+      },
+      insertBefore(node, anchor) {
+        node.parentElement = this;
+        const index = anchor ? this.children.indexOf(anchor) : -1;
+        if (index < 0) this.children.push(node);
+        else this.children.splice(index, 0, node);
+        return node;
+      },
+      querySelector(selector) {
+        if (selector === "#pendingInlineMount") return null;
+        if (selector === "#commentaryArchiveMount") return null;
+        return null;
+      },
+      querySelectorAll(selector) {
+        if (selector === '.msg.assistant[data-live-assistant="1"]') return [];
+        return [];
+      },
+    };
+    existingNode.parentElement = chatBox;
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [
+        { role: "user", text: "hello", kind: "" },
+      ],
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingUserMessage: "hello",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadLiveAssistantThreadId: "",
+      activeThreadLiveAssistantIndex: -1,
+      activeThreadLiveAssistantMsgNode: null,
+      activeThreadLiveAssistantBodyNode: null,
+      activeThreadLiveAssistantText: "",
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadLastFinalAssistantThreadId: "",
+      activeThreadLastFinalAssistantText: "",
+      activeThreadLastFinalAssistantAt: 0,
+      activeThreadLastFinalAssistantEpoch: 0,
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId(id) {
+        return id === "chatBox" ? chatBox : null;
+      },
+      addChat() {},
+      scheduleChatLiveFollow() {},
+      hideWelcomeCard() {},
+      createAssistantStreamingMessage() {
+        const msg = {
+          parentElement: null,
+          className: "msg assistant",
+          attrs: new Map(),
+          classList: {
+            contains(token) {
+              return ["msg", "assistant"].includes(token);
+            },
+          },
+          setAttribute(name, value) {
+            this.attrs.set(String(name), String(value));
+          },
+          removeAttribute(name) {
+            this.attrs.delete(String(name));
+          },
+          getAttribute(name) {
+            return this.attrs.get(name) || "";
+          },
+          querySelector(selector) {
+            return selector === ".msgBody" ? body : null;
+          },
+        };
+        const body = {
+          parentElement: msg,
+          innerHTML: "",
+          setAttribute() {},
+          removeAttribute() {},
+        };
+        created.push(msg);
+        return { msg, body };
+      },
+      appendStreamingDelta() {},
+      renderAssistantLiveBody(_msg, body, text) {
+        body.innerHTML = String(text || "");
+      },
+      finalizeAssistantMessage(msg, body, text) {
+        finalized.push({ msg, body, text });
+        body.innerHTML = String(text || "");
+      },
+      renderCommentaryArchive() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || notification?.params?.item?.thread_id || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "item.completed",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        item: {
+          id: "assistant-1",
+          type: "agent_message",
+          phase: "final_answer",
+          text: "final answer",
+        },
+      },
+    });
+
+    expect(created).toHaveLength(0);
+    expect(finalized).toHaveLength(1);
+    expect(finalized[0].msg).toBe(existingNode);
+    expect(chatBox.children).toEqual([existingNode]);
+    expect(existingBody.innerHTML).toBe("final answer");
+  });
+
   it("records pending turn baseline state when an external turn starts", () => {
     const state = {
       activeThreadId: "thread-1",
