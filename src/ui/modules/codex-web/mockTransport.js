@@ -784,6 +784,15 @@ export function createMockCodexTransport(deps) {
     const liveRead = skipLiveReadForMockHistory
       ? null
       : await maybeLiveRead(path, options).catch(() => null);
+    try {
+      const recorder = globalThis.__webCodexE2E;
+      if (recorder && typeof recorder._recordApiCall === "function") {
+        recorder._recordApiCall({
+          url,
+          method,
+        });
+      }
+    } catch {}
 
     if (liveRead && url === "/codex/models") return liveRead;
     if (liveRead && url === "/codex/version-info") return liveRead;

@@ -52,6 +52,23 @@ describe("threadLive", () => {
     ).toBe(false);
   });
 
+  it("does not poll a completed rollout-backed thread", () => {
+    expect(
+      shouldPollActiveThreadLive({
+        threadId: "thread-1",
+        activeMainTab: "chat",
+        activeThreadStarted: true,
+        activeThreadHistoryIncomplete: false,
+        activeThreadPendingTurnRunning: false,
+        activeThreadPendingUserMessage: "",
+        activeThreadPendingAssistantMessage: "",
+        activeThreadOpenState: { resumeRequired: false, loaded: false },
+        activeThreadRolloutPath: "C:\\repo\\.codex\\sessions\\rollout.jsonl",
+        activeThreadHistoryStatusType: "completed",
+      })
+    ).toBe(false);
+  });
+
   it("polls active thread history only when chat is active and runtime is still unfinished", () => {
     expect(
       shouldPollActiveThreadLive({
@@ -170,6 +187,106 @@ describe("threadLive", () => {
     } finally {
       Date.now = realNow;
     }
+  });
+
+  it("polls an opened rollout-backed active thread as a websocket fallback", async () => {
+    expect(
+      shouldPollActiveThreadLive({
+        threadId: "thread-1",
+        activeMainTab: "chat",
+        activeThreadStarted: true,
+        activeThreadHistoryIncomplete: false,
+        activeThreadPendingTurnRunning: false,
+        activeThreadPendingUserMessage: "",
+        activeThreadPendingAssistantMessage: "",
+        activeThreadOpenState: { resumeRequired: false, loaded: false },
+        activeThreadRolloutPath: "C:\\repo\\.codex\\sessions\\rollout.jsonl",
+      })
+    ).toBe(true);
+
+    const callbacks = [];
+    const loadCalls = [];
+    let now = 20_000;
+    const realNow = Date.now;
+    Date.now = () => now;
+    const module = createThreadLiveModule({
+      state: {
+        activeThreadId: "thread-1",
+        activeMainTab: "chat",
+        activeThreadStarted: true,
+        ws: { readyState: 1 },
+        wsSubscribedEvents: true,
+        activeThreadHistoryIncomplete: false,
+        activeThreadPendingTurnRunning: false,
+        activeThreadPendingUserMessage: "",
+        activeThreadPendingAssistantMessage: "",
+        activeThreadOpenState: { resumeRequired: false, loaded: false },
+        activeThreadLiveLastPollMs: 0,
+        activeThreadLivePolling: false,
+        activeThreadWorkspace: "windows",
+        activeThreadRolloutPath: "C:\\repo\\.codex\\sessions\\rollout.jsonl",
+      },
+      byId() { return null; },
+      waitMs: async () => {},
+      setStatus() {},
+      refreshThreads: async () => {},
+      getWorkspaceTarget() { return "windows"; },
+      loadThreadMessages: async (...args) => { loadCalls.push(args); },
+      THREAD_PULL_REFRESH_TRIGGER_PX: 44,
+      THREAD_PULL_REFRESH_MAX_PX: 84,
+      THREAD_PULL_REFRESH_MIN_MS: 520,
+      THREAD_PULL_HINT_CLEAR_DELAY_MS: 160,
+      THREAD_AUTO_REFRESH_CONNECTED_MS: 20000,
+      THREAD_AUTO_REFRESH_DISCONNECTED_MS: 3500,
+      ACTIVE_THREAD_LIVE_POLL_MS: 1500,
+      ACTIVE_THREAD_LIVE_POLL_WS_FALLBACK_MS: 3000,
+      WebSocketRef: { OPEN: 1 },
+      setIntervalRef(callback) {
+        callbacks.push(callback);
+        return 1;
+      },
+    });
+
+    try {
+      module.startActiveThreadLivePollLoop();
+      await callbacks[0]();
+      expect(loadCalls).toHaveLength(1);
+      expect(loadCalls[0]).toEqual([
+        "thread-1",
+        {
+          animateBadge: false,
+          workspace: "windows",
+          rolloutPath: "C:\\repo\\.codex\\sessions\\rollout.jsonl",
+        },
+      ]);
+
+      now += 2_000;
+      await callbacks[0]();
+      expect(loadCalls).toHaveLength(1);
+
+      now += 1_001;
+      await callbacks[0]();
+      expect(loadCalls).toHaveLength(2);
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
+  it("does not poll a rollout-backed thread after terminal history failure", () => {
+    expect(
+      shouldPollActiveThreadLive({
+        threadId: "thread-1",
+        activeMainTab: "chat",
+        activeThreadStarted: true,
+        activeThreadHistoryIncomplete: false,
+        activeThreadPendingTurnRunning: false,
+        activeThreadPendingUserMessage: "",
+        activeThreadPendingAssistantMessage: "",
+        activeThreadOpenState: { resumeRequired: false, loaded: false },
+        activeThreadRolloutPath: "C:\\repo\\.codex\\sessions\\rollout.jsonl",
+        activeThreadHistoryStatusType: "failed",
+      })
+    ).toBe(false);
   });
 
   it("polls a resume-required active thread from open-state when activeThreadId is blank", async () => {

@@ -412,9 +412,6 @@ async fn codex_app_server_ws_loop(
             _ = poll_tick.tick(), if initialized => {
                 let batch = manager.replay_notification_batch(notif_cursor, 64, false).await;
                 notif_cursor = batch.next_cursor;
-                if batch.reset {
-                    continue;
-                }
                 for notif in batch.items {
                     let payload = strip_notification_event_id(&notif);
                     if !send_ws_json(&mut socket, &payload).await {
@@ -2438,6 +2435,116 @@ mod tests {
         crate::codex_app_server::_set_test_request_handler(None).await;
         crate::codex_app_server::_clear_notifications_for_test().await;
         test_result.expect("app-server websocket proxy timed out");
+    }
+
+    #[tokio::test]
+    async fn app_server_websocket_proxy_keeps_replayed_notifications_after_cursor_reset() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        crate::codex_app_server::_clear_notifications_for_test().await;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home = tmp.path().join("codex-home");
+        std::fs::create_dir_all(&home).expect("create codex home");
+        let home_text = home.to_string_lossy().to_string();
+        crate::codex_app_server::_set_test_request_handler(Some(Arc::new({
+            let home_text = home_text.clone();
+            move |codex_home, method, params| match method {
+                "thread/read" => {
+                    assert_eq!(codex_home, Some(home_text.as_str()));
+                    assert_eq!(params.get("id").and_then(Value::as_str), Some("thread-1"));
+                    Ok(json!({ "thread": { "id": "thread-1" } }))
+                }
+                other => Err(format!("unsupported test rpc method: {other}")),
+            }
+        })))
+        .await;
+        for index in 0..2049 {
+            let thread_id = if index < 65 {
+                "thread-lost"
+            } else {
+                "thread-kept"
+            };
+            crate::codex_app_server::_push_notification_for_test(
+                Some(&home_text),
+                json!({
+                    "method": "turn/started",
+                    "params": {
+                        "threadId": thread_id
+                    }
+                }),
+            )
+            .await;
+        }
+        let state = build_test_gateway_state(&tmp);
+        let app = build_router(state);
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let test_result = tokio::time::timeout(Duration::from_secs(10), async {
+            let home_query = urlencoding::encode(&home_text);
+            let ws_url = format!(
+                "ws://127.0.0.1:{}/codex/app-server/ws?token=test-token&home={}",
+                addr.port(),
+                home_query
+            );
+            let (mut socket, _) = connect_async(&ws_url).await.expect("connect ws");
+
+            socket
+                .send(WsMessage::Text(
+                    json!({
+                        "id": 1,
+                        "method": "initialize",
+                        "params": {
+                            "clientInfo": {
+                                "name": "codex-tui",
+                                "version": "test"
+                            }
+                        }
+                    })
+                    .to_string(),
+                ))
+                .await
+                .expect("send initialize");
+            let _ = recv_matching_ws_json(&mut socket, json!(1)).await;
+
+            socket
+                .send(WsMessage::Text(
+                    json!({
+                        "method": "initialized",
+                        "params": {}
+                    })
+                    .to_string(),
+                ))
+                .await
+                .expect("send initialized");
+
+            let notif = recv_ws_json(&mut socket).await;
+            assert_eq!(
+                notif.get("method").and_then(Value::as_str),
+                Some("turn/started")
+            );
+            assert_eq!(
+                notif
+                    .get("params")
+                    .and_then(Value::as_object)
+                    .and_then(|params| params.get("threadId"))
+                    .and_then(Value::as_str),
+                Some("thread-lost")
+            );
+            assert!(notif.get("eventId").is_none());
+
+            drop(socket);
+        })
+        .await;
+
+        server.abort();
+        crate::codex_app_server::_set_test_request_handler(None).await;
+        crate::codex_app_server::_clear_notifications_for_test().await;
+        test_result.expect("app-server websocket replay after reset timed out");
     }
 
     #[tokio::test]

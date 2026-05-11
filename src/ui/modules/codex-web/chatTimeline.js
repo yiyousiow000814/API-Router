@@ -7,6 +7,7 @@ import {
 } from "./connectionFlows.js";
 import { renderMessageRichHtml } from "./messageRender.js";
 import { getProposedPlanConfirmation } from "./proposedPlan.js";
+import { splitReplayText } from "./textReplay.js";
 
 import { resetPendingTurnRuntime, resetTurnPresentationState } from "./runtimeState.js";
 
@@ -159,6 +160,14 @@ export function createChatTimelineModule(deps) {
       source: String(options.source || "").trim() || "createMessageNode",
       transient: options.transient === true,
     });
+    const messageKey = String(options.messageKey || options.id || options.messageId || "").trim();
+    if (messageKey) {
+      node.setAttribute("data-msg-key", messageKey);
+    }
+    const messageId = String(options.messageId || options.id || "").trim();
+    if (messageId) {
+      node.setAttribute("data-msg-id", messageId);
+    }
     wireMessageLinks(node);
     wireMessageAttachments(node);
     return node;
@@ -179,6 +188,8 @@ export function createChatTimelineModule(deps) {
     return createMessageNode(msg?.role || "", msg?.text || "", {
       kind: msg?.kind || "",
       attachments: msg?.images || [],
+      messageKey: msg?.id || "",
+      messageId: msg?.id || "",
       source: "buildMsgNode",
     });
   }
@@ -735,6 +746,9 @@ export function createChatTimelineModule(deps) {
       : createMessageNode(role, text, {
           kind: options.kind,
           attachments: options.attachments,
+          messageKey: options.messageKey,
+          messageId: options.messageId,
+          id: options.id,
           source: String(options.source || "").trim() || "addChat",
           transient: options.transient === true,
         });
@@ -791,6 +805,7 @@ export function createChatTimelineModule(deps) {
       scheduleChatLiveFollow(800);
     }
     updateScrollToBottomBtn();
+    return node;
   }
 
   function createAssistantStreamingMessage() {
@@ -868,6 +883,56 @@ export function createChatTimelineModule(deps) {
       source: "renderAssistantLiveBody",
     });
     wireMessageLinks(msgNode);
+  }
+
+  function replayAssistantHistoryMessage(msgNode, message, options = {}) {
+    const role = String(message?.role || msgNode?.__webCodexRole || "").trim();
+    if (role !== "assistant") return false;
+    const bodyNode = msgNode?.querySelector?.(".msgBody") || null;
+    if (!msgNode || !bodyNode) return false;
+    const targetText = String(message?.text || "");
+    const fromText =
+      options.fromText == null
+        ? String(msgNode.__webCodexRawText || "")
+        : String(options.fromText || "");
+    if (!targetText || (fromText && !targetText.startsWith(fromText))) {
+      renderAssistantLiveBody(msgNode, bodyNode, targetText);
+      return false;
+    }
+    const chunks = splitReplayText(targetText.slice(fromText.length), {
+      chunkSize: options.chunkSize,
+      maxChunkSize: 80,
+    });
+    if (!chunks.length) {
+      renderAssistantLiveBody(msgNode, bodyNode, targetText);
+      return false;
+    }
+    const token = ((Number(bodyNode.__webCodexHistoryReplayToken || 0) + 1) | 0) || 1;
+    bodyNode.__webCodexHistoryReplayToken = token;
+    bodyNode.__webCodexHistoryReplay = {
+      index: 0,
+      text: fromText,
+      targetText,
+    };
+
+    const step = () => {
+      if (bodyNode.__webCodexHistoryReplayToken !== token) return;
+      const replay = bodyNode.__webCodexHistoryReplay;
+      if (!replay || replay.targetText !== targetText) return;
+      const nextChunk = chunks[replay.index] || "";
+      replay.index += 1;
+      replay.text = `${String(replay.text || "")}${nextChunk}`;
+      renderAssistantLiveBody(msgNode, bodyNode, replay.text);
+      if (replay.index < chunks.length) {
+        requestAnimationFrameRef(step);
+        return;
+      }
+      renderAssistantLiveBody(msgNode, bodyNode, targetText);
+      bodyNode.__webCodexHistoryReplay = null;
+    };
+
+    step();
+    return true;
   }
 
   function finalizeAssistantMessage(msgNode, bodyNode, text) {
@@ -979,6 +1044,7 @@ export function createChatTimelineModule(deps) {
     flushStreamingBody,
     renderCommentaryArchive,
     renderAssistantLiveBody,
+    replayAssistantHistoryMessage,
     renderPendingInline,
     removeCommentaryArchiveMount,
     removePendingInlineMount,

@@ -2,6 +2,7 @@ import { syncPendingTurnRuntime } from "./runtimeState.js";
 import {
   resetTransientConnectionStatusForThreadOpen,
   resolveThreadOpenState,
+  shouldResumeThreadAfterOpen,
   setThreadOpenState,
 } from "./threadOpenState.js";
 
@@ -144,7 +145,7 @@ export async function resumeThreadLiveOnOpen({
     pendingTurnRunning: state?.activeThreadPendingTurnRunning === true,
     pendingThreadId: state?.activeThreadPendingTurnThreadId,
   });
-  const needsResume = openState.resumeRequired === true;
+  const needsResume = shouldResumeThreadAfterOpen(openState);
   if (!needsResume) {
     setThreadOpenState(state, openState);
     if (workspace === "windows" || workspace === "wsl2") {

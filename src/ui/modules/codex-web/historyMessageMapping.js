@@ -8,6 +8,27 @@ import {
   updateArchiveBlock,
 } from "./historyCommentary.js";
 
+function withCanonicalMessageIds(message, meta = {}, deps = {}) {
+  if (deps.includeCanonicalIds !== true || !message || typeof message !== "object") return message;
+  const threadId = String(meta.threadId || "").trim();
+  const turnId = String(meta.turnId || "").trim();
+  const itemId = String(meta.itemId || "").trim();
+  const role = String(message.role || "").trim();
+  const next = { ...message };
+  if (threadId) next.threadId = threadId;
+  if (turnId) next.turnId = turnId;
+  if (itemId) next.itemId = itemId;
+  if (role === "assistant") {
+    if (!next.id) next.id = `assistant:${turnId || threadId}:${itemId || "message"}`;
+    return next;
+  }
+  if (role === "user") {
+    if (!next.id) next.id = `user:${threadId}:${turnId || "turn"}:${itemId || "message"}`;
+    return next;
+  }
+  return next;
+}
+
 export async function mapThreadReadMessages(thread, deps = {}) {
   const {
     nextFrame,
@@ -17,6 +38,7 @@ export async function mapThreadReadMessages(thread, deps = {}) {
     normalizeThreadItemText,
     pushHistoryMessage,
     isVisibleAssistantHistoryPhase,
+    includeCanonicalIds = false,
     pushLiveDebugEvent = () => {},
   } = deps;
   const turns = Array.isArray(thread?.turns) ? thread.turns : [];
@@ -31,6 +53,7 @@ export async function mapThreadReadMessages(thread, deps = {}) {
       await nextFrame();
     }
     const turn = turns[ti];
+    const threadId = String(thread?.id || "").trim();
     const items = Array.isArray(turn?.items) ? turn.items : [];
     let commentaryBlocks = [];
     let currentCommentaryBlock = null;
@@ -43,11 +66,21 @@ export async function mapThreadReadMessages(thread, deps = {}) {
         const text = parsed.text;
         if (text && isBootstrapAgentsPrompt(text)) continue;
         if (text || parsed.images.length) {
-          pushHistoryMessage(messages, { role: "user", text, kind: "", images: parsed.images });
+          pushHistoryMessage(
+            messages,
+            withCanonicalMessageIds(
+              { role: "user", text, kind: "", images: parsed.images },
+              {
+                threadId,
+                turnId: String(turn?.id || "").trim(),
+                itemId: String(item?.id || item?.messageId || item?.message_id || "").trim(),
+              },
+              { includeCanonicalIds }
+            )
+          );
         }
         continue;
       }
-      const threadId = String(thread?.id || "").trim();
       const planUpdate = extractPlanUpdate(item, { threadId });
       if (planUpdate) {
         if (currentCommentaryBlock) {
@@ -117,13 +150,46 @@ export async function mapThreadReadMessages(thread, deps = {}) {
           cleanedPreview: String(proposedPlan.cleanedText || "").replace(/\s+/g, " ").trim().slice(0, 220),
         });
         if (proposedPlan.cleanedText) {
-          pushHistoryMessage(messages, { role: "assistant", text: proposedPlan.cleanedText, kind: "" });
+          pushHistoryMessage(
+            messages,
+            withCanonicalMessageIds(
+              { role: "assistant", text: proposedPlan.cleanedText, kind: "" },
+              {
+                threadId,
+                turnId: String(turn?.id || "").trim(),
+                itemId: String(item?.id || item?.messageId || item?.message_id || "").trim(),
+              },
+              { includeCanonicalIds }
+            )
+          );
         }
         if (proposedPlan.planMessage?.plan) {
-          pushHistoryMessage(messages, proposedPlan.planMessage);
+          pushHistoryMessage(
+            messages,
+            withCanonicalMessageIds(
+              proposedPlan.planMessage,
+              {
+                threadId,
+                turnId: String(turn?.id || "").trim(),
+                itemId: String(item?.id || item?.messageId || item?.message_id || "").trim(),
+              },
+              { includeCanonicalIds }
+            )
+          );
         }
         if (!proposedPlan.cleanedText && !proposedPlan.planMessage?.plan) {
-          pushHistoryMessage(messages, { role: "assistant", text, kind: "" });
+          pushHistoryMessage(
+            messages,
+            withCanonicalMessageIds(
+              { role: "assistant", text, kind: "" },
+              {
+                threadId,
+                turnId: String(turn?.id || "").trim(),
+                itemId: String(item?.id || item?.messageId || item?.message_id || "").trim(),
+              },
+              { includeCanonicalIds }
+            )
+          );
         }
         continue;
       }
@@ -153,6 +219,7 @@ export async function mapSessionHistoryMessages(items, deps = {}) {
     stripCodexImageBlocks,
     pushHistoryMessage,
     isVisibleAssistantHistoryPhase,
+    includeCanonicalIds = false,
     pushLiveDebugEvent = () => {},
   } = deps;
   const historyItems = Array.isArray(items) ? items : [];
@@ -176,7 +243,18 @@ export async function mapSessionHistoryMessages(items, deps = {}) {
       const text = parsed.text;
       if (text && isBootstrapAgentsPrompt(text)) continue;
       if (text || parsed.images.length) {
-        pushHistoryMessage(messages, { role: "user", text, kind: "", images: parsed.images });
+        pushHistoryMessage(
+          messages,
+          withCanonicalMessageIds(
+            { role: "user", text, kind: "", images: parsed.images },
+            {
+              threadId: String(item?.threadId || item?.thread_id || "").trim(),
+              turnId: String(item?.turnId || item?.turn_id || "").trim(),
+              itemId: String(item?.id || item?.messageId || item?.message_id || "").trim(),
+            },
+            { includeCanonicalIds }
+          )
+        );
       }
       continue;
     }
@@ -197,10 +275,47 @@ export async function mapSessionHistoryMessages(items, deps = {}) {
         rawPreview: String(text || "").replace(/\s+/g, " ").trim().slice(0, 220),
         cleanedPreview: String(proposedPlan.cleanedText || "").replace(/\s+/g, " ").trim().slice(0, 220),
       });
-      if (proposedPlan.cleanedText) pushHistoryMessage(messages, { role: "assistant", text: proposedPlan.cleanedText, kind: "" });
-      if (proposedPlan.planMessage?.plan) pushHistoryMessage(messages, proposedPlan.planMessage);
+      if (proposedPlan.cleanedText) {
+        pushHistoryMessage(
+          messages,
+          withCanonicalMessageIds(
+            { role: "assistant", text: proposedPlan.cleanedText, kind: "" },
+            {
+              threadId: String(item?.threadId || item?.thread_id || "").trim(),
+              turnId: String(item?.turnId || item?.turn_id || "").trim(),
+              itemId: String(item?.id || item?.messageId || item?.message_id || "").trim(),
+            },
+            { includeCanonicalIds }
+          )
+        );
+      }
+      if (proposedPlan.planMessage?.plan) {
+        pushHistoryMessage(
+          messages,
+          withCanonicalMessageIds(
+            proposedPlan.planMessage,
+            {
+              threadId: String(item?.threadId || item?.thread_id || "").trim(),
+              turnId: String(item?.turnId || item?.turn_id || "").trim(),
+              itemId: String(item?.id || item?.messageId || item?.message_id || "").trim(),
+            },
+            { includeCanonicalIds }
+          )
+        );
+      }
       if (text && !proposedPlan.cleanedText && !proposedPlan.planMessage?.plan) {
-        pushHistoryMessage(messages, { role: "assistant", text, kind: "" });
+        pushHistoryMessage(
+          messages,
+          withCanonicalMessageIds(
+            { role: "assistant", text, kind: "" },
+            {
+              threadId: String(item?.threadId || item?.thread_id || "").trim(),
+              turnId: String(item?.turnId || item?.turn_id || "").trim(),
+              itemId: String(item?.id || item?.messageId || item?.message_id || "").trim(),
+            },
+            { includeCanonicalIds }
+          )
+        );
       }
     }
   }

@@ -879,16 +879,17 @@ fn should_finish_codex_account_login_poll(
 }
 
 fn write_codex_auth_to_app(config_path: &std::path::Path, auth_json: &Value) -> Result<(), String> {
-    let app_auth = config_path
-        .parent()
-        .unwrap_or(std::path::Path::new("."))
-        .join("codex-home")
-        .join("auth.json");
-    if let Some(parent) = app_auth.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
     let text = serde_json::to_string_pretty(auth_json).map_err(|e| e.to_string())?;
-    std::fs::write(app_auth, text).map_err(|e| e.to_string())
+    for home in crate::orchestrator::gateway::web_codex_home::web_codex_runtime_auth_homes(
+        config_path,
+    ) {
+        let auth_path = home.join("auth.json");
+        if let Some(parent) = auth_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(&auth_path, &text).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -969,6 +970,45 @@ mod account_switchboard_tests {
             read_codex_access_token_from_app(&config_path).as_deref(),
             Some("chosen-access")
         );
+    }
+
+    #[test]
+    fn write_codex_auth_to_app_persists_selected_profile_into_runtime_home() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let runtime_home = tmp.path().join("runtime-home");
+        let auth_json = serde_json::json!({
+            "tokens": {
+                "access_token": "chosen-access",
+                "refresh_token": "chosen-refresh"
+            }
+        });
+        unsafe {
+            std::env::set_var(
+                "API_ROUTER_WEB_CODEX_CODEX_HOME",
+                runtime_home.to_string_lossy().as_ref(),
+            );
+            std::env::remove_var("CODEX_HOME");
+        }
+
+        write_codex_auth_to_app(&config_path, &auth_json).expect("write selected auth");
+
+        let runtime_auth = runtime_home.join("auth.json");
+        assert_eq!(
+            std::fs::read_to_string(runtime_auth)
+                .ok()
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+                .and_then(|json| json.get("tokens").cloned())
+                .and_then(|tokens| tokens.get("access_token").cloned())
+                .and_then(|value| value.as_str().map(str::to_string))
+                .as_deref(),
+            Some("chosen-access")
+        );
+
+        unsafe {
+            std::env::remove_var("API_ROUTER_WEB_CODEX_CODEX_HOME");
+        }
     }
 
     #[test]

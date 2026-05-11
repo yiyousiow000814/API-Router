@@ -1,12 +1,19 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  isTerminalHistoryStatus,
   isTerminalInterruptedHistory,
   latestTurnContainsPendingUserEcho,
   shouldSuppressStalePendingHistoryLiveState,
 } from "./historyLiveCommentaryState.js";
 
 describe("historyLiveCommentaryState", () => {
+  it("treats successful completed history statuses as terminal", () => {
+    expect(isTerminalHistoryStatus("completed")).toBe(true);
+    expect(isTerminalHistoryStatus("succeeded")).toBe(true);
+    expect(isTerminalHistoryStatus("done")).toBe(true);
+  });
+
   it("treats interrupted history status as stale pending state even after refresh", () => {
     const thread = {
       id: "thread-1",

@@ -3,6 +3,7 @@ import { extractPlanUpdate, renderPlanCardHtml } from "./runtimePlan.js";
 import { clearProposedPlanConfirmation } from "./proposedPlan.js";
 import { extractRequestUserInput } from "./runtimeUserInput.js";
 import { isTerminalHistoryStatus, isTerminalInterruptedHistory } from "./historyLiveCommentaryState.js";
+import { splitReplayText } from "./textReplay.js";
 import {
   buildBranchPickerItemState,
   buildBranchPickerState,
@@ -23,7 +24,6 @@ export function createComposerUiModule(deps) {
     clearPromptInput,
     resolveMobilePromptLayout,
     renderComposerContextLeftInNode,
-    renderInlineMessageText = (value) => String(value || ""),
     toolItemToMessage = () => "",
     normalizeType = (value) => String(value || "").trim().toLowerCase(),
     escapeHtml = (value) => String(value || ""),
@@ -812,13 +812,88 @@ export function createComposerUiModule(deps) {
   }
 
   function renderThinkingHtml(text) {
-    const body = renderInlineMessageText(String(text || "").trim());
+    const body = renderMessageRichHtml(String(text || "").trim());
     if (!body) return "";
     return (
       `<div class="runtimeThinkingCard">` +
         `<div class="runtimeThinkingBody">${body}</div>` +
       `</div>`
     );
+  }
+
+  function setThinkingNodeHtml(node, html) {
+    if (!node) return;
+    const nextHtml = String(html || "");
+    node.innerHTML = nextHtml;
+    node.__runtimeHtml = nextHtml;
+  }
+
+  function renderThinkingNode(thinkingNode, nextText) {
+    if (!thinkingNode) return;
+    const targetText = String(nextText || "").trim();
+    const currentText = String(thinkingNode.__runtimeThinkingText || "");
+    const currentTarget = String(thinkingNode.__runtimeThinkingTarget || "");
+    if (!targetText) {
+      thinkingNode.__runtimeThinkingReplayToken = ((Number(thinkingNode.__runtimeThinkingReplayToken || 0) + 1) | 0) || 1;
+      thinkingNode.__runtimeThinkingReplayActive = false;
+      thinkingNode.__runtimeThinkingTarget = "";
+      thinkingNode.__runtimeThinkingText = "";
+      setThinkingNodeHtml(thinkingNode, "");
+      return;
+    }
+    if (thinkingNode.__runtimeThinkingReplayActive === true && currentTarget === targetText) return;
+    const shouldReplayFromEmpty =
+      !currentText &&
+      state.chatOpening !== true &&
+      state.activeThreadStarted === true &&
+      !!String(state.activeThreadRolloutPath || "").trim();
+    const shouldReplay =
+      (shouldReplayFromEmpty || !!currentText) &&
+      targetText.startsWith(currentText) &&
+      targetText !== currentText;
+    if (!shouldReplay) {
+      thinkingNode.__runtimeThinkingReplayToken = ((Number(thinkingNode.__runtimeThinkingReplayToken || 0) + 1) | 0) || 1;
+      thinkingNode.__runtimeThinkingReplayActive = false;
+      thinkingNode.__runtimeThinkingTarget = targetText;
+      thinkingNode.__runtimeThinkingText = targetText;
+      setThinkingNodeHtml(thinkingNode, renderThinkingHtml(targetText));
+      return;
+    }
+
+    const token = ((Number(thinkingNode.__runtimeThinkingReplayToken || 0) + 1) | 0) || 1;
+    const chunks = splitReplayText(targetText.slice(currentText.length), {
+      maxChunkSize: 48,
+    });
+    if (!chunks.length) {
+      thinkingNode.__runtimeThinkingReplayToken = token;
+      thinkingNode.__runtimeThinkingReplayActive = false;
+      thinkingNode.__runtimeThinkingTarget = targetText;
+      thinkingNode.__runtimeThinkingText = targetText;
+      setThinkingNodeHtml(thinkingNode, renderThinkingHtml(targetText));
+      return;
+    }
+
+    thinkingNode.__runtimeThinkingReplayToken = token;
+    thinkingNode.__runtimeThinkingReplayActive = true;
+    thinkingNode.__runtimeThinkingTarget = targetText;
+
+    let renderedText = currentText;
+    const renderStep = () => {
+      if (thinkingNode.__runtimeThinkingReplayToken !== token) return;
+      const nextChunk = chunks.shift() || "";
+      renderedText = `${renderedText}${nextChunk}`;
+      thinkingNode.__runtimeThinkingText = renderedText;
+      setThinkingNodeHtml(thinkingNode, renderThinkingHtml(renderedText));
+      if (chunks.length > 0) {
+        scheduleFrame(renderStep);
+        return;
+      }
+      thinkingNode.__runtimeThinkingReplayActive = false;
+      thinkingNode.__runtimeThinkingText = targetText;
+      setThinkingNodeHtml(thinkingNode, renderThinkingHtml(targetText));
+    };
+
+    renderStep();
   }
 
   function animateRuntimeSectionRefresh(node) {
@@ -1005,7 +1080,7 @@ export function createComposerUiModule(deps) {
       setRuntimeSectionVisible(planNode, !!plan);
     }
     if (thinkingNode) {
-      updateHtmlIfChanged(thinkingNode, thinkingText ? renderThinkingHtml(thinkingText) : "");
+      renderThinkingNode(thinkingNode, thinkingText);
       setRuntimeSectionVisible(thinkingNode, !!thinkingText);
     }
     if (commandNode) {

@@ -680,8 +680,8 @@ describe("historyLoader", () => {
     });
 
     expect(state.activeThreadMessages).toEqual([
-      { role: "user", text: "hello", kind: "", images: [] },
-      { role: "assistant", text: "same final", kind: "" },
+      expect.objectContaining({ role: "user", text: "hello", kind: "", images: [] }),
+      expect.objectContaining({ role: "assistant", text: "same final", kind: "" }),
     ]);
     expect(added).toEqual([
       { role: "user", text: "hello", kind: "" },
@@ -2439,6 +2439,73 @@ Implement this plan?
     expect(state.activeThreadPendingAssistantMessage).toBe("");
   });
 
+  it("uses the optimistic client message id to collapse a matching server echo", () => {
+    const state = {
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingTurnBaselineUserCount: 1,
+      activeThreadPendingClientMessageId: "client:thread-1:req-1",
+      activeThreadPendingUserMessage: "hi",
+      activeThreadPendingAssistantMessage: "",
+    };
+
+    expect(
+      mergePendingLiveMessages(
+        [
+          {
+            id: "server:user:1",
+            clientMessageId: "client:thread-1:req-1",
+            role: "user",
+            text: "hi",
+            kind: "",
+          },
+        ],
+        state,
+        "thread-1",
+        { historyIncomplete: true, historyTurnCount: 1 }
+      )
+    ).toEqual([
+      {
+        id: "server:user:1",
+        clientMessageId: "client:thread-1:req-1",
+        role: "user",
+        text: "hi",
+        kind: "",
+      },
+    ]);
+  });
+
+  it("keeps the optimistic user before a partial assistant response when the user echo is still missing", () => {
+    const state = {
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingTurnBaselineTurnCount: 0,
+      activeThreadPendingTurnBaselineUserCount: 0,
+      activeThreadPendingClientMessageId: "client:thread-1:req-2",
+      activeThreadPendingUserMessage: "hi",
+      activeThreadPendingAssistantMessage: "",
+    };
+
+    expect(
+      mergePendingLiveMessages(
+        [{ role: "assistant", text: "working", kind: "" }],
+        state,
+        "thread-1",
+        { historyIncomplete: true, historyTurnCount: 1 }
+      )
+    ).toEqual([
+      {
+        id: "client:thread-1:req-2",
+        clientMessageId: "client:thread-1:req-2",
+        role: "user",
+        text: "hi",
+        kind: "",
+        optimistic: true,
+      },
+      { role: "assistant", text: "working", kind: "" },
+    ]);
+  });
+
   it("does not treat an identical prompt from the baseline turn as a materialized pending user", () => {
     const state = {
       activeThreadPendingTurnThreadId: "thread-1",
@@ -2633,8 +2700,8 @@ Implement this plan?
     await module.applyThreadToChat(staleFailedThread);
 
     expect(state.activeThreadMessages).toEqual([
-      { role: "user", text: "hi", kind: "", images: [] },
-      { role: "user", text: "hi", kind: "" },
+      expect.objectContaining({ role: "user", text: "hi", kind: "", images: [] }),
+      expect.objectContaining({ role: "user", text: "hi", kind: "" }),
     ]);
     expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
     expect(state.activeThreadPendingTurnRunning).toBe(false);
@@ -2643,8 +2710,8 @@ Implement this plan?
     expect(state.activeThreadPendingTurnBaselineUserCount).toBe(1);
     expect(added.filter((entry) => entry.role === "user")).toEqual([]);
     expect(state.activeThreadMessages).toEqual([
-      { role: "user", text: "hi", kind: "", images: [] },
-      { role: "user", text: "hi", kind: "" },
+      expect.objectContaining({ role: "user", text: "hi", kind: "", images: [] }),
+      expect.objectContaining({ role: "user", text: "hi", kind: "" }),
     ]);
     expect(added.some(
       (entry) =>
@@ -3483,6 +3550,175 @@ Implement this plan?
       }),
     ]);
     expect(state.activeThreadInlineCommentaryArchiveCount).toBe(2);
+  });
+
+  it("inserts commentary archives without clearing the chat when they are the only new history messages", async () => {
+    const clearCalls = [];
+    const order = [];
+    const makeNode = (label, classes) => ({
+      label,
+      classList: {
+        contains(name) {
+          return classes.includes(name);
+        },
+      },
+      parentElement: null,
+      remove() {
+        if (!this.parentElement || !Array.isArray(this.parentElement.children)) return;
+        this.parentElement.children = this.parentElement.children.filter((item) => item !== this);
+        this.parentElement = null;
+      },
+    });
+    const userNode = makeNode("user:hello", ["msg", "user"]);
+    const assistantNode = makeNode("assistant:done one", ["msg", "assistant"]);
+    const chatBox = {
+      children: [userNode, assistantNode],
+      appendChild(node) {
+        node.parentElement = this;
+        this.children.push(node);
+        order.push(`append:${node.label || node.className || "node"}`);
+        return node;
+      },
+      insertBefore(node, anchor) {
+        node.parentElement = this;
+        const index = anchor ? this.children.indexOf(anchor) : -1;
+        if (index < 0) this.children.push(node);
+        else this.children.splice(index, 0, node);
+        order.push(`insert:${node.label || node.className || "node"}:${anchor?.label || anchor?.className || "end"}`);
+        return node;
+      },
+      querySelector(selector) {
+        if (selector === "#loadOlderBtn") return null;
+        return null;
+      },
+      querySelectorAll(selector) {
+        if (selector === ".msg") return this.children.filter((node) => node.classList.contains("msg"));
+        if (selector === ".assistant") return this.children.filter((node) => node.classList.contains("assistant"));
+        return [];
+      },
+      get scrollHeight() {
+        return 0;
+      },
+      get clientHeight() {
+        return 0;
+      },
+      scrollTop: 0,
+    };
+    userNode.parentElement = chatBox;
+    assistantNode.parentElement = chatBox;
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "old",
+      activeThreadMessages: [
+        { role: "user", text: "hello", kind: "" },
+        { role: "assistant", text: "done one", kind: "" },
+      ],
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: true,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadInlineCommentaryArchiveCount: 0,
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId(id) {
+        return id === "chatBox" ? chatBox : null;
+      },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: {
+        createDocumentFragment() {
+          return {
+            children: [],
+            appendChild(node) {
+              this.children.push(node);
+              return node;
+            },
+          };
+        },
+        createElement(tagName) {
+          return makeNode(tagName, ["msg", tagName]);
+        },
+      },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase(); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat() {},
+      buildMsgNode(msg) {
+        if (msg?.kind === "commentaryArchive") {
+          return makeNode(`archive:${msg.archiveKey || "turn"}`, ["commentaryArchiveMount"]);
+        }
+        return makeNode(`${msg?.role || "msg"}:${String(msg?.text || "")}`, ["msg", String(msg?.role || "msg")]);
+      },
+      clearChatMessages(options = {}) {
+        clearCalls.push(options);
+      },
+      renderChatFull: async () => {},
+      syncEventSubscription() {},
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      page: { incomplete: false },
+      turns: [
+        {
+          id: "turn-1",
+          items: [
+            { type: "userMessage", content: [{ type: "input_text", text: "hello" }] },
+            { type: "agentMessage", id: "commentary-1", phase: "commentary", text: "thinking one" },
+            { type: "commandExecution", command: "npm test", status: "completed" },
+            { type: "assistantMessage", phase: "final_answer", text: "done one" },
+          ],
+        },
+      ],
+    });
+
+    expect(clearCalls).toEqual([]);
+    expect(order).toContain("insert:archive:turn-1:assistant:done one");
+    expect(chatBox.children.map((node) => node.label)).toEqual([
+      "user:hello",
+      "archive:turn-1",
+      "assistant:done one",
+    ]);
   });
 
   it("captures plan updates into completed turn commentary archives", async () => {
@@ -4356,8 +4592,8 @@ Implement this plan?
     });
 
     expect(state.activeThreadMessages).toEqual([
-      { role: "user", text: "hi", kind: "", images: [] },
-      { role: "user", text: "hi", kind: "" },
+      expect.objectContaining({ role: "user", text: "hi", kind: "", images: [] }),
+      expect.objectContaining({ role: "user", text: "hi", kind: "" }),
     ]);
     expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
     expect(state.activeThreadPendingUserMessage).toBe("hi");

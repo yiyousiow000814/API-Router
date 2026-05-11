@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { prepareThreadHistoryView } from "./historyPreparation.js";
+import { mapThreadReadMessages } from "./historyMessageMapping.js";
 
 describe("historyPreparation", () => {
   it("prepares canonical render inputs from thread history", async () => {
@@ -99,6 +100,86 @@ describe("historyPreparation", () => {
     ]);
     expect(prepared.messages).toEqual([
       { role: "user", text: "我们继续上次未完成的 plan", kind: "", images: [] },
+    ]);
+  });
+
+  it("prepares assistant history messages with stable turn and item ids", async () => {
+    const prepared = await prepareThreadHistoryView(
+      {
+        id: "thread-1",
+        turns: [
+          {
+            id: "turn-1",
+            items: [
+              {
+                id: "item-1",
+                type: "assistantMessage",
+                phase: "final_answer",
+                text: "done",
+              },
+            ],
+          },
+        ],
+      },
+      { workspace: "windows" },
+      {
+        state: {
+          activeThreadId: "thread-1",
+          activeThreadPendingTurnThreadId: "",
+          activeThreadPendingUserMessage: "",
+          activeThreadPendingAssistantMessage: "",
+        },
+        async mapSessionHistoryMessages() {
+          return [];
+        },
+        async mapThreadReadMessages(thread, options = {}) {
+          return mapThreadReadMessages(thread, {
+            ...options,
+            nextFrame: async () => {},
+            performanceRef: { now: () => 0 },
+            parseUserMessageParts() {
+              return { text: "", images: [] };
+            },
+            isBootstrapAgentsPrompt() {
+              return false;
+            },
+            normalizeThreadItemText(item) {
+              return String(item?.text || "");
+            },
+            pushHistoryMessage(messages, message) {
+              messages.push(message);
+            },
+            isVisibleAssistantHistoryPhase(phase) {
+              const value = String(phase || "").trim().toLowerCase();
+              return !value || value === "final_answer";
+            },
+          });
+        },
+        normalizeThreadItemText() {
+          return "";
+        },
+        captureLiveCommentarySnapshot() {
+          return null;
+        },
+        normalizeThreadTokenUsage(value) {
+          return value ?? null;
+        },
+        detectThreadWorkspaceTarget() {
+          return "windows";
+        },
+      }
+    );
+
+    expect(prepared.messages).toEqual([
+      expect.objectContaining({
+        id: "assistant:turn-1:item-1",
+        threadId: "thread-1",
+        turnId: "turn-1",
+        itemId: "item-1",
+        role: "assistant",
+        text: "done",
+        kind: "",
+      }),
     ]);
   });
 });

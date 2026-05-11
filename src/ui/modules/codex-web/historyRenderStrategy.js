@@ -2,8 +2,24 @@ function messageShapeMatches(a, b) {
   return !!a && !!b && a.role === b.role && a.kind === b.kind;
 }
 
+function messageIdentity(message) {
+  const id = String(message?.id || "").trim();
+  if (id) return id;
+  const role = String(message?.role || "").trim();
+  const turnId = String(message?.turnId || message?.turn_id || "").trim();
+  const itemId = String(message?.itemId || message?.item_id || "").trim();
+  if (!role || (!turnId && !itemId)) return "";
+  return `${role}:${turnId}:${itemId}`;
+}
+
+function messageIdentityConflicts(a, b) {
+  const left = messageIdentity(a);
+  const right = messageIdentity(b);
+  return !!left && !!right && left !== right;
+}
+
 function messageFullyMatches(a, b) {
-  return messageShapeMatches(a, b) && a.text === b.text;
+  return messageShapeMatches(a, b) && a.text === b.text && !messageIdentityConflicts(a, b);
 }
 
 function allButLastMatch(previous, next) {
@@ -27,7 +43,10 @@ function shouldUpdateLastMessage(previous, next) {
   if (!allButLastMatch(previous, next)) return false;
   const previousLast = previous[previous.length - 1];
   const nextLast = next[next.length - 1];
-  return messageShapeMatches(previousLast, nextLast) && previousLast.text !== nextLast.text;
+  return (
+    messageShapeMatches(previousLast, nextLast) &&
+    (previousLast.text !== nextLast.text || messageIdentityConflicts(previousLast, nextLast))
+  );
 }
 
 export function decideHistoryRenderStrategy({

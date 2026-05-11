@@ -7,6 +7,10 @@ import {
   syncPendingTurnRuntime,
 } from "./runtimeState.js";
 import {
+  createCanonicalTimelineState,
+  reduceTimelineEvent,
+} from "./canonicalTimeline.js";
+import {
   extractLatestCommentaryArchive,
   extractLatestCommentaryState,
 } from "./historyCommentary.js";
@@ -23,6 +27,7 @@ import {
   getRenderBaseline,
   reportPreparedHistory,
 } from "./historyApplyFlow.js";
+import { shouldResumeThreadAfterOpen } from "./threadOpenState.js";
 import {
   beginHistoryLoad,
   finalizeHistoryLoad,
@@ -147,7 +152,7 @@ function shouldClearTransientConnectionStatusOnExplicitHistoryOpen(state = {}, t
     return false;
   }
   if (String(state.activeThreadOpenState?.threadId || "").trim() !== id) return false;
-  if (state.activeThreadOpenState?.resumeRequired === true) return false;
+  if (shouldResumeThreadAfterOpen(state.activeThreadOpenState)) return false;
   const hasTrackedRuntimeContext =
     (String(state.activeThreadPendingTurnThreadId || "").trim() === id) ||
     (String(state.activeThreadLiveAssistantThreadId || "").trim() === id) ||
@@ -177,10 +182,52 @@ function messageMatches(a, b) {
   return !!a && !!b && a.role === b.role && a.kind === b.kind && a.text === b.text;
 }
 
+function readMessageClientMessageId(message) {
+  return String(
+    message?.clientMessageId ||
+    message?.client_message_id ||
+    message?.correlation?.clientMessageId ||
+    message?.correlation?.client_message_id ||
+    ""
+  ).trim();
+}
+
+function buildPendingUserMessage(state = {}, threadId = "", text = "") {
+  const clientMessageId = String(state.activeThreadPendingClientMessageId || "").trim();
+  if (!clientMessageId) return { role: "user", text, kind: "" };
+  const timeline = reduceTimelineEvent(
+    createCanonicalTimelineState(threadId),
+    {
+      type: "optimistic-user",
+      threadId,
+      clientMessageId,
+      text,
+    }
+  );
+  const message = timeline.messages[0] || {};
+  return {
+    id: String(message.id || clientMessageId).trim(),
+    clientMessageId: String(message.clientMessageId || clientMessageId).trim(),
+    role: "user",
+    text,
+    kind: "",
+    optimistic: true,
+  };
+}
+
 function findLatestMaterializedPendingUserIndex(messages, pendingUser, options = {}) {
   const items = Array.isArray(messages) ? messages : [];
   const pendingText = String(pendingUser || "");
   if (!pendingText) return -1;
+  const pendingClientMessageId = String(options.pendingClientMessageId || "").trim();
+  if (pendingClientMessageId) {
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      const entry = items[index];
+      if (String(entry?.role || "").trim() !== "user") continue;
+      if (String(entry?.id || "").trim() === pendingClientMessageId) return index;
+      if (readMessageClientMessageId(entry) === pendingClientMessageId) return index;
+    }
+  }
   const baselineUserCount = Math.max(0, Number(options.baselineUserCount || 0));
   const historyUserCount = Math.max(0, Number(options.historyUserCount || 0));
   if (historyUserCount <= baselineUserCount) return -1;
@@ -203,6 +250,7 @@ export function mergePendingLiveMessages(messages, state = {}, threadId = "", op
 
   const pendingUser = String(state.activeThreadPendingUserMessage || "");
   const pendingAssistant = String(state.activeThreadPendingAssistantMessage || "");
+  const pendingClientMessageId = String(state.activeThreadPendingClientMessageId || "").trim();
   const hasPendingUser = !!pendingUser.trim();
   const hasPendingAssistant = !!pendingAssistant.trim();
   const finalAssistantThreadId = String(state.activeThreadLastFinalAssistantThreadId || "").trim();
@@ -219,13 +267,14 @@ export function mergePendingLiveMessages(messages, state = {}, threadId = "", op
     !hasPendingAssistant &&
     state.activeThreadPendingTurnRunning === true;
   const pending = [];
-  if (hasPendingUser) pending.push({ role: "user", text: pendingUser, kind: "" });
+  if (hasPendingUser) pending.push(buildPendingUserMessage(state, threadId, pendingUser));
   if (hasPendingAssistant) pending.push({ role: "assistant", text: pendingAssistant, kind: "" });
   if (!pending.length) return out;
   const materializedPendingUserIndex = hasPendingUser
     ? findLatestMaterializedPendingUserIndex(out, pendingUser, {
         historyUserCount,
         baselineUserCount,
+        pendingClientMessageId,
       })
     : -1;
   if (materializedPendingUserIndex >= 0) {
@@ -288,6 +337,21 @@ export function mergePendingLiveMessages(messages, state = {}, threadId = "", op
   ) {
     appendFrom = 1;
   }
+  const baselineTurnCount = Math.max(0, Number(state.activeThreadPendingTurnBaselineTurnCount || 0));
+  const historyTurnCount = Math.max(0, Number(options.historyTurnCount || 0));
+  const shouldPlacePendingUserBeforePartialCurrentTurn =
+    hasPendingUser &&
+    !hasPendingAssistant &&
+    !!pendingClientMessageId &&
+    historyIncomplete &&
+    baselineTurnCount === 0 &&
+    historyTurnCount > baselineTurnCount &&
+    historyUserCount <= baselineUserCount &&
+    out.some((entry) => String(entry?.role || "").trim() === "assistant") &&
+    !out.some((entry) => String(entry?.role || "").trim() === "user");
+  if (shouldPlacePendingUserBeforePartialCurrentTurn) {
+    return pending.slice(0, 1).concat(out);
+  }
   return out.concat(pending.slice(appendFrom));
 }
 
@@ -307,6 +371,9 @@ export function buildHistoryRenderSig(threadId, turns, messages) {
   const items = Array.isArray(messages) ? messages : [];
   pushChunk(items.length);
   for (const message of items) {
+    pushChunk(message?.id || "");
+    pushChunk(message?.turnId || "");
+    pushChunk(message?.itemId || "");
     pushChunk(message?.role || "");
     pushChunk(message?.kind || "");
     pushChunk(message?.text || "");
@@ -750,11 +817,13 @@ export function createHistoryLoaderModule(deps) {
     renderMessageBody,
     addChat,
     buildMsgNode,
+    replayAssistantHistoryMessage,
     clearChatMessages,
     showTransientToolMessage = () => {},
     showTransientThinkingMessage = () => {},
     clearTransientToolMessages = () => {},
     clearTransientThinkingMessages = () => {},
+    renderRuntimePanels = () => {},
     clearRuntimeState = () => {},
     renderCommentaryArchive = () => {},
     syncRuntimeStateFromHistory = () => {},
@@ -878,8 +947,10 @@ export function createHistoryLoaderModule(deps) {
     }
     if (String(state.activeThreadCommentaryCurrent?.text || "").trim()) {
       showTransientThinkingMessage(state.activeThreadCommentaryCurrent.text);
+      renderRuntimePanels();
     } else {
       clearTransientThinkingMessages();
+      renderRuntimePanels();
     }
     const box = byId("chatBox");
     const assistantNodes = Array.from(box?.querySelectorAll?.(".assistant") || []);
@@ -949,7 +1020,7 @@ export function createHistoryLoaderModule(deps) {
     if (canStartChatLiveFollow()) scheduleChatLiveFollow(delayMs);
   }
 
-  async function mapThreadReadMessages(thread) {
+  async function mapThreadReadMessages(thread, options = {}) {
     return mapThreadReadMessagesImpl(thread, {
       nextFrame,
       performanceRef,
@@ -958,11 +1029,12 @@ export function createHistoryLoaderModule(deps) {
       normalizeThreadItemText,
       pushHistoryMessage,
       isVisibleAssistantHistoryPhase,
+      includeCanonicalIds: options.includeCanonicalIds === true,
       pushLiveDebugEvent,
     });
   }
 
-  async function mapSessionHistoryMessages(items) {
+  async function mapSessionHistoryMessages(items, options = {}) {
     return mapSessionHistoryMessagesImpl(items, {
       nextFrame,
       performanceRef,
@@ -973,6 +1045,7 @@ export function createHistoryLoaderModule(deps) {
       stripCodexImageBlocks,
       pushHistoryMessage,
       isVisibleAssistantHistoryPhase,
+      includeCanonicalIds: options.includeCanonicalIds === true,
       pushLiveDebugEvent,
     });
   }
@@ -1153,6 +1226,7 @@ export function createHistoryLoaderModule(deps) {
           scheduleChatLiveFollow,
           scrollChatToBottom,
           maybeScheduleChatFollow,
+          replayAssistantHistoryMessage,
           finalizeThreadRenderEffects: (nextHistoryCommentary, nextLiveCommentarySnapshot, extra = {}) =>
             finalizeThreadRenderEffects(thread, options, nextHistoryCommentary, nextLiveCommentarySnapshot, extra),
         },
@@ -1183,12 +1257,14 @@ export function createHistoryLoaderModule(deps) {
       deps: {
         renderMessageBody,
         addChat,
+        buildMsgNode,
         clearChatMessages,
         renderChatFull,
         pushLiveDebugEvent,
         scrollChatToBottom,
         canStartChatLiveFollow,
         maybeScheduleChatFollow,
+        replayAssistantHistoryMessage,
         scrollToBottomReliable,
         scheduleChatLiveFollow,
         finalizeThreadRenderEffects: (nextHistoryCommentary, nextLiveCommentarySnapshot, extra = {}) =>

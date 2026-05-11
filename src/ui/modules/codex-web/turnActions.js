@@ -14,9 +14,14 @@ import {
 } from "./proposedPlan.js";
 import {
   resolveThreadOpenState,
+  shouldResumeThreadBeforeSend,
   setThreadOpenState,
 } from "./threadOpenState.js";
 import { resolveActionErrorMessage } from "./actionBindings.js";
+import {
+  createCanonicalTimelineState,
+  reduceTimelineEvent,
+} from "./canonicalTimeline.js";
 
 export function buildTurnPayload({
   activeThreadId,
@@ -160,6 +165,45 @@ function pendingAttachmentImages(attachments) {
   return normalizeTurnAttachments(attachments)
     .map(attachmentPreviewForMessage)
     .filter(Boolean);
+}
+
+function isUploadingAttachment(attachment) {
+  return String(attachment?.uploadState || "").trim().toLowerCase() === "uploading";
+}
+
+function encodeAttachmentBytesToBase64(bytes) {
+  const chunkSize = 0x8000;
+  const binaryChunks = [];
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binaryChunks.push(String.fromCharCode(...bytes.subarray(offset, offset + chunkSize)));
+  }
+  const binary = binaryChunks.join("");
+  if (typeof globalThis.btoa === "function") return globalThis.btoa(binary);
+  if (globalThis.Buffer?.from) return globalThis.Buffer.from(binary, "binary").toString("base64");
+  throw new Error("attachment upload failed: base64 encoder unavailable");
+}
+
+async function readAttachmentBase64Data(file) {
+  if (typeof globalThis.FileReader === "function" && typeof globalThis.Blob === "function" && file instanceof globalThis.Blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new globalThis.FileReader();
+      reader.onerror = () => {
+        reject(reader.error || new Error("attachment upload failed: file read error"));
+      };
+      reader.onload = () => {
+        const result = String(reader.result || "");
+        const comma = result.indexOf(",");
+        if (comma < 0) {
+          reject(new Error("attachment upload failed: invalid data URL"));
+          return;
+        }
+        resolve(result.slice(comma + 1));
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  return encodeAttachmentBytesToBase64(bytes);
 }
 
 function assertUploadableAttachment(file) {
@@ -336,8 +380,8 @@ export function createTurnActionsModule(deps) {
 
   function activeThreadRequiresResume() {
     const openState = state.activeThreadOpenState;
-    if (openState && openState.loaded !== true) return true;
-    return (openState || resolveThreadOpenState()).resumeRequired === true;
+    if (openState) return shouldResumeThreadBeforeSend(openState);
+    return resolveThreadOpenState().resumeRequired === true;
   }
 
   function shouldMirrorPendingResolutionToChat() {
@@ -383,6 +427,33 @@ export function createTurnActionsModule(deps) {
     const target = String(workspace || "").trim().toLowerCase();
     if (target !== "windows" && target !== "wsl2") return Promise.resolve(null);
     return refreshWorkspaceRuntimeState(target, { silent: true, updateHeader: true }).catch(() => null);
+  }
+
+  function pendingAttachmentList() {
+    return Array.isArray(state.pendingAttachments) ? state.pendingAttachments : [];
+  }
+
+  function replacePendingAttachment(uploadId, nextAttachment) {
+    const id = String(uploadId || "").trim();
+    if (!id) return false;
+    const current = pendingAttachmentList();
+    let replaced = false;
+    state.pendingAttachments = current.map((attachment) => {
+      if (String(attachment?.id || "").trim() !== id) return attachment;
+      replaced = true;
+      return { ...nextAttachment, id };
+    });
+    return replaced;
+  }
+
+  function removePendingAttachmentById(uploadId) {
+    const id = String(uploadId || "").trim();
+    if (!id) return false;
+    const current = pendingAttachmentList();
+    const next = current.filter((attachment) => String(attachment?.id || "").trim() !== id);
+    if (next.length === current.length) return false;
+    state.pendingAttachments = next;
+    return true;
   }
 
   function resetLiveTurnStateForNewTurn() {
@@ -505,14 +576,41 @@ export function createTurnActionsModule(deps) {
     updateMobileComposerState();
   }
 
-  function appendOptimisticUserMessage(prompt, attachments = []) {
+  function buildOptimisticClientMessageId(threadId) {
+    const normalizedThreadId = String(threadId || "").trim();
+    if (!normalizedThreadId) return "";
+    const requestId = String(nextReqId?.() || Date.now()).trim();
+    if (!requestId) return "";
+    return `client:${normalizedThreadId}:${requestId}`;
+  }
+
+  function appendOptimisticUserMessage(prompt, attachments = [], clientMessageId = "") {
     const text = String(prompt || "");
     const images = pendingAttachmentImages(attachments);
     if (!text.trim() && !images.length) return;
     if (!Array.isArray(state.activeThreadMessages)) state.activeThreadMessages = [];
-    state.activeThreadMessages = state.activeThreadMessages.concat([{ role: "user", text, kind: "", images }]);
+    const threadId = String(resolveCurrentThreadId(state) || state.activeThreadId || "").trim();
+    const canonicalState = reduceTimelineEvent(
+      createCanonicalTimelineState(threadId),
+      {
+        type: "optimistic-user",
+        threadId,
+        clientMessageId,
+        text,
+      }
+    );
+    const optimisticMessage = {
+      ...(canonicalState.messages[0] || {
+        role: "user",
+        text,
+      }),
+      kind: "",
+      images,
+    };
+    state.activeThreadMessages = state.activeThreadMessages.concat([optimisticMessage]);
     const options = {
       animate: false,
+      messageKey: String(optimisticMessage.id || clientMessageId || "").trim(),
       source: "turnSendOptimisticUser",
     };
     if (images.length) options.attachments = images;
@@ -1146,7 +1244,11 @@ export function createTurnActionsModule(deps) {
   async function sendTurn(promptOverride, options = {}) {
     if (blockInSandbox("send turn")) return;
     const prompt = String(promptOverride == null ? getPromptValue() : promptOverride).trim();
-    const hasPendingAttachments = normalizeTurnAttachments(state.pendingAttachments).length > 0;
+    const pendingAttachments = pendingAttachmentList();
+    if (pendingAttachments.some(isUploadingAttachment)) {
+      throw new Error("Wait for attachment uploads to finish before sending.");
+    }
+    const hasPendingAttachments = normalizeTurnAttachments(pendingAttachments).length > 0;
     const preservedDraftValue =
       options.fromQueuedTurn === true ? String(byId("mobilePromptInput")?.value || "") : "";
     if (!prompt && !hasPendingAttachments) {
@@ -1256,11 +1358,13 @@ export function createTurnActionsModule(deps) {
     const shouldAnimateWorkspaceBadge = !state.activeThreadStarted;
     state.activeThreadStarted = true;
     state.activeThreadWorkspace = workspace;
+    const clientMessageId = buildOptimisticClientMessageId(activeThreadId);
     syncPendingTurnRuntime(state, activeThreadId, {
       turnId: "",
       running: true,
       userMessage: prompt,
       assistantMessage: "",
+      clientMessageId,
       baselineTurnCount: activeThreadHistoryTurnCount(state, activeThreadId),
       baselineUserCount: Math.max(
         activeThreadHistoryUserCount(state, activeThreadId),
@@ -1272,7 +1376,7 @@ export function createTurnActionsModule(deps) {
     }
     updateHeaderUi(shouldAnimateWorkspaceBadge);
     hideWelcomeCard();
-    appendOptimisticUserMessage(prompt, turnAttachments);
+    appendOptimisticUserMessage(prompt, turnAttachments, clientMessageId);
     state.chatShouldStickToBottom = true;
     scrollToBottomReliable();
     setMainTab("chat");
@@ -1321,6 +1425,7 @@ export function createTurnActionsModule(deps) {
         running: true,
         userMessage: prompt,
         assistantMessage: "",
+        clientMessageId,
       });
       setActiveThreadOpenState(
         resolveThreadOpenState({
@@ -1349,34 +1454,50 @@ export function createTurnActionsModule(deps) {
       setStatus(resolveActionErrorMessage(error), true);
       throw error;
     }
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    let binary = "";
-    for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
-    const base64Data = btoa(binary);
-    const data = await api("/codex/attachments/upload", {
-      method: "POST",
-      body: {
-        threadId: resolveCurrentThreadId(state) || "unassigned",
-        fileName: file.name,
-        mimeType: file.type || "application/octet-stream",
-        kind,
-        base64Data,
-      },
-    });
-    const uploaded = {
-      kind: String(data.kind || kind || "file").trim() === "image" ? "image" : "file",
-      fileName: String(data.fileName || file.name).trim(),
-      mimeType: String(data.mimeType || file.type || "application/octet-stream").trim(),
-      path: String(data.path || "").trim(),
+    const uploadId = `attachment-upload-${String(nextReqId?.() || Date.now()).trim()}`;
+    const draft = {
+      id: uploadId,
+      kind,
+      fileName: String(file.name || "").trim(),
+      mimeType: String(file.type || "application/octet-stream").trim(),
+      path: "",
+      uploadState: "uploading",
     };
-    if (!uploaded.path) throw new Error("attachment upload failed: missing path");
-    state.pendingAttachments = [
-      ...(Array.isArray(state.pendingAttachments) ? state.pendingAttachments : []),
-      uploaded,
-    ];
+    state.pendingAttachments = [...pendingAttachmentList(), draft];
     renderAttachmentPills(state.pendingAttachments);
     updateMobileComposerState();
-    setStatus(`Attachment uploaded: ${data.fileName || file.name}`);
+    setStatus(`Uploading attachment: ${file.name || "attachment"}`);
+    try {
+      const base64Data = await readAttachmentBase64Data(file);
+      const data = await api("/codex/attachments/upload", {
+        method: "POST",
+        body: {
+          threadId: resolveCurrentThreadId(state) || "unassigned",
+          fileName: file.name,
+          mimeType: file.type || "application/octet-stream",
+          kind,
+          base64Data,
+        },
+      });
+      const uploaded = {
+        kind: String(data.kind || kind || "file").trim() === "image" ? "image" : "file",
+        fileName: String(data.fileName || file.name).trim(),
+        mimeType: String(data.mimeType || file.type || "application/octet-stream").trim(),
+        path: String(data.path || "").trim(),
+      };
+      if (!uploaded.path) throw new Error("attachment upload failed: missing path");
+      if (!replacePendingAttachment(uploadId, uploaded)) return;
+      renderAttachmentPills(state.pendingAttachments);
+      updateMobileComposerState();
+      setStatus(`Attachment uploaded: ${data.fileName || file.name}`);
+    } catch (error) {
+      if (removePendingAttachmentById(uploadId)) {
+        renderAttachmentPills(state.pendingAttachments);
+        updateMobileComposerState();
+        setStatus(resolveActionErrorMessage(error), true);
+      }
+      throw error;
+    }
   }
 
   function refreshPendingAttachmentUi(message = "") {
@@ -1398,10 +1519,14 @@ export function createTurnActionsModule(deps) {
 
   function previewPendingAttachment(index) {
     const idx = Number(index);
-    const attachments = normalizeTurnAttachments(state.pendingAttachments);
+    const attachments = pendingAttachmentList();
     const attachment = attachments[idx];
     if (!attachment) return false;
     const label = attachment.fileName || "attachment";
+    if (isUploadingAttachment(attachment) || !String(attachment.path || "").trim()) {
+      setStatus(`Attachment is still uploading: ${label}`);
+      return false;
+    }
     if (attachment.kind === "image") {
       const gallery = pendingAttachmentImages(attachments);
       const currentSrc = `/codex/file?path=${encodeURIComponent(attachment.path)}`;
