@@ -877,6 +877,87 @@ Implement this plan?
     );
   });
 
+  it("keys a live final assistant snapshot by turn and item identity", () => {
+    const attrs = {};
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [],
+      activeThreadLiveAssistantThreadId: "",
+      activeThreadLiveAssistantIndex: -1,
+      activeThreadLiveAssistantMsgNode: null,
+      activeThreadLiveAssistantBodyNode: null,
+      activeThreadLiveAssistantText: "",
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingUserMessage: "hi",
+      activeThreadPendingAssistantMessage: "",
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId(id) {
+        if (id !== "chatBox") return null;
+        return {
+          appendChild() {},
+          querySelector() { return null; },
+        };
+      },
+      addChat() {},
+      scheduleChatLiveFollow() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || notification?.params?.item?.thread_id || "");
+      },
+      hideWelcomeCard() {},
+      createAssistantStreamingMessage() {
+        return {
+          msg: {
+            setAttribute(name, value) {
+              attrs[name] = value;
+            },
+          },
+          body: {},
+        };
+      },
+      appendStreamingDelta() {},
+      finalizeAssistantMessage() {},
+    });
+
+    module.renderLiveNotification({
+      method: "item.completed",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        item: {
+          id: "item-1",
+          type: "agent_message",
+          thread_id: "thread-1",
+          phase: "final_answer",
+          text: "done",
+        },
+      },
+    });
+
+    expect(attrs["data-msg-key"]).toBe("assistant:turn-1:item-1");
+    expect(state.activeThreadMessages).toEqual([
+      expect.objectContaining({
+        id: "assistant:turn-1:item-1",
+        turnId: "turn-1",
+        itemId: "item-1",
+        role: "assistant",
+        text: "done",
+        kind: "",
+      }),
+    ]);
+  });
+
   it("settles pending runtime when a final assistant snapshot was already rendered by history", () => {
     const finalizedRuntime = [];
     const statuses = [];
@@ -2402,7 +2483,7 @@ Implement this plan?
       }),
     ]);
     expect(state.activeThreadMessages).toEqual([
-      { role: "assistant", text: "Done.", kind: "" },
+      expect.objectContaining({ role: "assistant", text: "Done.", kind: "" }),
     ]);
     expect(finalized).toHaveLength(1);
     expect(finalized[0].text).toBe("Done.");

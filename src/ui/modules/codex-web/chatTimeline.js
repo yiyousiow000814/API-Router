@@ -160,6 +160,14 @@ export function createChatTimelineModule(deps) {
       source: String(options.source || "").trim() || "createMessageNode",
       transient: options.transient === true,
     });
+    const messageKey = String(options.messageKey || options.id || options.messageId || "").trim();
+    if (messageKey) {
+      node.setAttribute("data-msg-key", messageKey);
+    }
+    const messageId = String(options.messageId || options.id || "").trim();
+    if (messageId) {
+      node.setAttribute("data-msg-id", messageId);
+    }
     wireMessageLinks(node);
     wireMessageAttachments(node);
     return node;
@@ -180,6 +188,8 @@ export function createChatTimelineModule(deps) {
     return createMessageNode(msg?.role || "", msg?.text || "", {
       kind: msg?.kind || "",
       attachments: msg?.images || [],
+      messageKey: msg?.id || "",
+      messageId: msg?.id || "",
       source: "buildMsgNode",
     });
   }
@@ -736,6 +746,9 @@ export function createChatTimelineModule(deps) {
       : createMessageNode(role, text, {
           kind: options.kind,
           attachments: options.attachments,
+          messageKey: options.messageKey,
+          messageId: options.messageId,
+          id: options.id,
           source: String(options.source || "").trim() || "addChat",
           transient: options.transient === true,
         });

@@ -1084,6 +1084,52 @@ export function createLiveNotificationsModule(deps) {
     resetPendingTurnRuntimeRuntime(state, options);
   }
 
+  function resolveAssistantLiveIdentity(threadId, options = {}) {
+    const normalizedThreadId = String(threadId || "").trim();
+    const turnId = String(
+      options.turnId ||
+      state.activeThreadLiveAssistantTurnId ||
+      state.activeThreadPendingTurnId ||
+      ""
+    ).trim();
+    const itemId = String(
+      options.itemId ||
+      state.activeThreadLiveAssistantItemId ||
+      ""
+    ).trim();
+    const id = String(
+      options.id ||
+      options.messageId ||
+      state.activeThreadLiveAssistantMessageId ||
+      ((turnId || itemId) ? `assistant:${turnId || normalizedThreadId}:${itemId || "message"}` : "")
+    ).trim();
+    const identity = { id, threadId: normalizedThreadId, turnId, itemId };
+    if (id) state.activeThreadLiveAssistantMessageId = id;
+    if (turnId) state.activeThreadLiveAssistantTurnId = turnId;
+    if (itemId) state.activeThreadLiveAssistantItemId = itemId;
+    return identity;
+  }
+
+  function attachAssistantLiveIdentity(node, identity = {}) {
+    const id = String(identity.id || "").trim();
+    if (!node || !id) return;
+    try {
+      node.setAttribute?.("data-msg-key", id);
+      node.setAttribute?.("data-msg-id", id);
+    } catch {}
+  }
+
+  function applyAssistantLiveIdentity(message, identity = {}) {
+    const id = String(identity.id || "").trim();
+    if (!id || !message || typeof message !== "object") return message;
+    const next = { ...message, id, threadId: String(identity.threadId || "").trim() };
+    const turnId = String(identity.turnId || "").trim();
+    const itemId = String(identity.itemId || "").trim();
+    if (turnId) next.turnId = turnId;
+    if (itemId) next.itemId = itemId;
+    return next;
+  }
+
   function settlePendingTurnFailure(threadId, reason = "", options = {}) {
     const normalizedThreadId = String(threadId || "").trim();
     const pendingThreadId = String(state.activeThreadPendingTurnThreadId || "").trim();
@@ -1122,11 +1168,13 @@ export function createLiveNotificationsModule(deps) {
     return null;
   }
 
-  function ensureAssistantLiveStream(threadId) {
+  function ensureAssistantLiveStream(threadId, identityOptions = {}) {
+    const identity = resolveAssistantLiveIdentity(threadId, identityOptions);
     const liveThreadId = String(state.activeThreadLiveAssistantThreadId || "");
     const liveMsg = state.activeThreadLiveAssistantMsgNode;
     const liveBody = state.activeThreadLiveAssistantBodyNode;
     if (liveThreadId === threadId && liveMsg && liveBody) {
+      attachAssistantLiveIdentity(liveMsg, identity);
       return { msg: liveMsg, body: liveBody };
     }
     const box = byId("chatBox");
@@ -1136,6 +1184,7 @@ export function createLiveNotificationsModule(deps) {
       state.activeThreadLiveAssistantThreadId = threadId;
       state.activeThreadLiveAssistantMsgNode = reused.msg;
       state.activeThreadLiveAssistantBodyNode = reused.body;
+      attachAssistantLiveIdentity(reused.msg, identity);
       let index = Number(state.activeThreadLiveAssistantIndex);
       const hasValidIndex =
         Array.isArray(state.activeThreadMessages) &&
@@ -1154,11 +1203,11 @@ export function createLiveNotificationsModule(deps) {
         );
         if (index < 0) {
           index = state.activeThreadMessages.length;
-          state.activeThreadMessages.push({
+          state.activeThreadMessages.push(applyAssistantLiveIdentity({
             role: "assistant",
             text: currentText,
             kind: "",
-          });
+          }, identity));
         }
       }
       state.activeThreadLiveAssistantIndex = index;
@@ -1173,6 +1222,7 @@ export function createLiveNotificationsModule(deps) {
       msg.setAttribute?.("data-live-assistant", "1");
       msg.setAttribute?.("data-live-thread-id", threadId);
     } catch {}
+    attachAssistantLiveIdentity(msg, identity);
     const pendingMount = box.querySelector?.("#pendingInlineMount") || null;
     if (pendingMount && pendingMount.parentElement === box) box.insertBefore(msg, pendingMount);
     else box.appendChild(msg);
@@ -1184,17 +1234,17 @@ export function createLiveNotificationsModule(deps) {
     state.activeThreadLiveAssistantBodyNode = body;
     state.activeThreadLiveAssistantText = "";
     if (!Array.isArray(state.activeThreadMessages)) state.activeThreadMessages = [];
-    state.activeThreadMessages.push({ role: "assistant", text: "", kind: "" });
+    state.activeThreadMessages.push(applyAssistantLiveIdentity({ role: "assistant", text: "", kind: "" }, identity));
     return { msg, body };
   }
 
-  function renderAssistantDelta(threadId, delta) {
+  function renderAssistantDelta(threadId, delta, options = {}) {
     const text = String(delta || "");
     if (!text) {
       pushLiveDebugEvent("live.drop:empty_assistant_delta", { threadId: String(threadId || "") });
       return;
     }
-    const live = ensureAssistantLiveStream(threadId);
+    const live = ensureAssistantLiveStream(threadId, options);
     if (!live) {
       pushLiveDebugEvent("live.drop:no_live_assistant_stream", {
         threadId: String(threadId || ""),
@@ -1216,7 +1266,7 @@ export function createLiveNotificationsModule(deps) {
       state.activeThreadMessages[index]
     ) {
       state.activeThreadMessages[index] = {
-        ...state.activeThreadMessages[index],
+        ...applyAssistantLiveIdentity(state.activeThreadMessages[index], resolveAssistantLiveIdentity(threadId, options)),
         role: "assistant",
         kind: "",
         text: state.activeThreadLiveAssistantText,
@@ -1231,8 +1281,10 @@ export function createLiveNotificationsModule(deps) {
     scheduleChatLiveFollow(700);
   }
 
-  function syncLiveAssistantState(text) {
+  function syncLiveAssistantState(text, options = {}) {
     state.activeThreadLiveAssistantText = String(text || "");
+    const threadId = String(state.activeThreadLiveAssistantThreadId || "").trim();
+    const identity = resolveAssistantLiveIdentity(threadId, options);
     const index = Number(state.activeThreadLiveAssistantIndex);
     if (
       Array.isArray(state.activeThreadMessages) &&
@@ -1241,7 +1293,7 @@ export function createLiveNotificationsModule(deps) {
       state.activeThreadMessages[index]
     ) {
       state.activeThreadMessages[index] = {
-        ...state.activeThreadMessages[index],
+        ...applyAssistantLiveIdentity(state.activeThreadMessages[index], identity),
         role: "assistant",
         kind: "",
         text: state.activeThreadLiveAssistantText,
@@ -1301,7 +1353,7 @@ export function createLiveNotificationsModule(deps) {
         return;
       }
     }
-    const live = ensureAssistantLiveStream(threadId);
+    const live = ensureAssistantLiveStream(threadId, options);
     if (!live) {
       pushLiveDebugEvent("live.drop:no_live_assistant_snapshot_stream", {
         threadId: String(threadId || ""),
@@ -1320,7 +1372,7 @@ export function createLiveNotificationsModule(deps) {
       } else {
         finalizeAssistantMessage(live.msg, live.body, nextText);
       }
-      syncLiveAssistantState(nextText);
+      syncLiveAssistantState(nextText, options);
     }
     if (options.final === true) {
       pushLiveDebugEvent("live.render:assistant_snapshot_final", {
@@ -1994,7 +2046,10 @@ export function createLiveNotificationsModule(deps) {
     }
 
     if (method.includes("turn/assistant/delta")) {
-      renderAssistantDelta(threadId, params?.delta);
+      renderAssistantDelta(threadId, params?.delta, {
+        turnId: notificationTurnId,
+        itemId: String(params?.item?.id || params?.item?.itemId || params?.item?.item_id || "").trim(),
+      });
       return;
     }
     if (assistantUpdate?.text) {
@@ -2058,7 +2113,11 @@ export function createLiveNotificationsModule(deps) {
         finishPendingTurnRun(threadId);
         resetPendingTurnRuntime({ reason: "live.assistant_update:plan_only_final" });
       } else {
-        renderAssistantSnapshot(threadId, nextAssistantText, { final: isFinalAssistantUpdate });
+        renderAssistantSnapshot(threadId, nextAssistantText, {
+          final: isFinalAssistantUpdate,
+          turnId: notificationTurnId,
+          itemId: String(assistantUpdate.itemId || "").trim(),
+        });
       }
       if (proposedPlan.planMessage?.plan && isFinalAssistantUpdate) {
         appendPlanCardMessage(threadId, proposedPlan.planMessage);

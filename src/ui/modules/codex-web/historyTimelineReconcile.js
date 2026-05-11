@@ -51,6 +51,11 @@ function updateTimelineMessageNode(node, message, renderMessageBody) {
     node.__webCodexRole = String(message?.role || "").trim();
     node.__webCodexKind = String(message?.kind || "").trim();
     node.__webCodexRawText = String(message?.text || "");
+    const messageKey = String(message?.id || message?.messageKey || "").trim();
+    if (messageKey) {
+      node.setAttribute?.("data-msg-key", messageKey);
+      node.setAttribute?.("data-msg-id", messageKey);
+    }
   } catch {}
   return node;
 }

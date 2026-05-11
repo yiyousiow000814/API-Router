@@ -116,6 +116,66 @@ describe("appPersistence", () => {
     expect(children[0].children[1].attrs["data-attachment-action"]).toBe("remove");
   });
 
+  it("marks uploading attachment pills as unavailable until upload finishes", () => {
+    const children = [];
+    const box = {
+      hidden: true,
+      attrs: {},
+      innerHTML: "seed",
+      setAttribute(key, value) {
+        this.attrs[key] = value;
+      },
+      toggleAttribute(name, force) {
+        if (name === "hidden") this.hidden = !!force;
+      },
+      appendChild(node) {
+        children.push(node);
+      },
+    };
+    const createElement = vi.fn(() => ({
+      className: "",
+      textContent: "",
+      title: "",
+      attrs: {},
+      children: [],
+      setAttribute(key, value) {
+        this.attrs[key] = value;
+      },
+      appendChild(node) {
+        this.children.push(node);
+      },
+    }));
+    const module = createAppPersistenceModule({
+      state: {},
+      byId: (id) => (id === "attachmentPills" ? box : null),
+      api: async () => ({}),
+      setStatus: () => {},
+      updateWorkspaceAvailability: () => {},
+      getEmbeddedToken: () => "",
+      ensureArrayItems: (value) => (Array.isArray(value) ? value : []),
+      normalizeModelOption: (item) => item,
+      pickLatestModelId: () => "",
+      buildThreadRenderSig: () => "",
+      sortThreadsByNewest: (items) => items,
+      isThreadListActuallyVisible: () => false,
+      MODELS_CACHE_KEY: "models",
+      CODEX_VERSION_CACHE_KEY: "versions",
+      THREADS_CACHE_KEY: "threads",
+      REASONING_EFFORT_KEY: "effort",
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      documentRef: { createElement },
+    });
+
+    module.renderAttachmentPills([{ kind: "image", fileName: "screen.png", uploadState: "uploading" }]);
+
+    expect(box.hidden).toBe(false);
+    expect(box.attrs["aria-label"]).toBe("1 attachment uploading");
+    expect(children[0].className).toContain("is-uploading");
+    expect(children[0].title).toBe("IMG screen.png (uploading)");
+    expect(children[0].children[0].disabled).toBe(true);
+    expect(children[0].children[0].attrs["aria-disabled"]).toBe("true");
+  });
+
   it("restores version info from local cache without calling the API", () => {
     const apiCalls = [];
     const availabilityUpdates = [];
