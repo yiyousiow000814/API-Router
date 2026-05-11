@@ -28,10 +28,18 @@ function maybeReplayAssistantHistoryMessage(node, message, replayContext = {}, o
   });
 }
 
+function getAssistantHistoryReplayStartText(message, replayContext = {}, fromText = "") {
+  if (!replayContext.enabled || !isReplayableAssistantMessage(message)) {
+    return String(message?.text || "");
+  }
+  return String(fromText || "");
+}
+
 function appendMessages(messages, startIndex, addChat, replayContext = {}) {
   for (let i = startIndex; i < messages.length; i += 1) {
     const msg = messages[i];
-    const node = addChat(msg.role, msg.text, {
+    const initialText = getAssistantHistoryReplayStartText(msg, replayContext, "");
+    const node = addChat(msg.role, initialText, {
       scroll: false,
       messageKey: String(msg.id || msg.messageKey || "").trim(),
       kind: msg.kind || "",
@@ -40,11 +48,11 @@ function appendMessages(messages, startIndex, addChat, replayContext = {}) {
       archiveKey: msg.archiveKey || "",
       source: "historyRender",
     });
-    maybeReplayAssistantHistoryMessage(node, msg, replayContext, { fromText: "" });
+    maybeReplayAssistantHistoryMessage(node, msg, replayContext, { fromText: initialText });
   }
 }
 
-function updateLastNode(box, message, renderMessageBody) {
+function updateLastNode(box, message, renderMessageBody, initialText = null) {
   if (!box) return false;
   const role = String(message?.role || "").trim();
   const text = String(message?.text || "");
@@ -55,7 +63,8 @@ function updateLastNode(box, message, renderMessageBody) {
   if (!last.classList.contains(role)) return false;
   const body = last.querySelector(".msgBody");
   if (!body) return false;
-  body.innerHTML = renderMessageBody(role, text, { kind });
+  const renderText = initialText === null ? text : String(initialText || "");
+  body.innerHTML = renderMessageBody(role, renderText, { kind });
   const messageKey = String(message?.id || message?.messageKey || "").trim();
   if (messageKey) {
     last.setAttribute?.("data-msg-key", messageKey);
@@ -215,11 +224,12 @@ export function applyWindowedHistoryRender(params = {}) {
 
   if (strategy === "window_update_last") {
     const nextLast = messages[messages.length - 1];
-    const updated = updateLastNode(box, nextLast, renderMessageBody);
+    const previousLast = prevAll[prevAll.length - 1];
+    const replayStartText = getAssistantHistoryReplayStartText(nextLast, replayContext, previousLast?.text);
+    const updated = updateLastNode(box, nextLast, renderMessageBody, replayStartText);
     if (updated) {
-      const previousLast = prevAll[prevAll.length - 1];
       maybeReplayAssistantHistoryMessage(updated, nextLast, replayContext, {
-        fromText: previousLast?.text,
+        fromText: replayStartText,
       });
       state.activeThreadMessages = messages.slice(Number(state.historyWindowStart || 0));
       state.activeThreadRenderSig = renderSig;
@@ -347,10 +357,11 @@ export async function applyFullHistoryRender(params = {}) {
 
   if (strategy === "full_update_last") {
     const nextLast = messages[messages.length - 1];
-    const updated = updateLastNode(box, nextLast, renderMessageBody);
     const previousLast = prevMessages[prevMessages.length - 1];
+    const replayStartText = getAssistantHistoryReplayStartText(nextLast, replayContext, previousLast?.text);
+    const updated = updateLastNode(box, nextLast, renderMessageBody, replayStartText);
     maybeReplayAssistantHistoryMessage(updated, nextLast, replayContext, {
-      fromText: previousLast?.text,
+      fromText: replayStartText,
     });
     state.activeThreadMessages = messages;
     state.activeThreadRenderSig = renderSig;
