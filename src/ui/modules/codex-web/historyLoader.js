@@ -344,13 +344,16 @@ export function mergePendingLiveMessages(messages, state = {}, threadId = "", op
     !hasPendingAssistant &&
     !!pendingClientMessageId &&
     historyIncomplete &&
-    baselineTurnCount === 0 &&
     historyTurnCount > baselineTurnCount &&
     historyUserCount <= baselineUserCount &&
-    out.some((entry) => String(entry?.role || "").trim() === "assistant") &&
-    !out.some((entry) => String(entry?.role || "").trim() === "user");
+    out.some((entry) => String(entry?.role || "").trim() === "assistant");
   if (shouldPlacePendingUserBeforePartialCurrentTurn) {
-    return pending.slice(0, 1).concat(out);
+    for (let index = out.length - 1; index >= 0; index -= 1) {
+      if (String(out[index]?.role || "").trim() !== "assistant") continue;
+      return out
+        .slice(0, index)
+        .concat(pending.slice(0, 1), out.slice(index));
+    }
   }
   return out.concat(pending.slice(appendFrom));
 }
@@ -568,6 +571,7 @@ function materializeTerminalConnectionErrorFromHistory(thread, state = {}, setSt
       preserveThreadId: true,
       preserveTurnId: true,
       preserveMessages: true,
+      preserveClientMessageId: true,
       preserveBaselineTurnCount: true,
       preserveBaselineUserCount: true,
       reason: "history.connection:materialize_terminal_error",
@@ -658,6 +662,7 @@ function syncPendingTurnStateFromIncompleteHistory(thread, state = {}, parseUser
           preserveThreadId: true,
           preserveTurnId: true,
           preserveMessages: true,
+          preserveClientMessageId: true,
           preserveBaselineTurnCount: true,
           preserveBaselineUserCount: true,
           reason: "history.sync:terminal_preserve_pending_user",
@@ -691,6 +696,7 @@ function syncPendingTurnStateFromIncompleteHistory(thread, state = {}, parseUser
         ? {
             preserveThreadId: true,
             preserveMessages: true,
+            preserveClientMessageId: true,
             preserveBaselineTurnCount: true,
             preserveBaselineUserCount: true,
             reason: "history.sync:not_incomplete_or_terminal_preserve_pending_user",
