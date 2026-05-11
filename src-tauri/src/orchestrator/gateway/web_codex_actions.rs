@@ -122,7 +122,7 @@ pub(super) fn build_turn_start_params(thread_id: &str, req: &TurnStartRequest) -
                 .starts_with("image/")
         {
             input.push(json!({
-                "type": "local_image",
+                "type": "localImage",
                 "path": attachment.path
             }));
         } else {
@@ -1758,7 +1758,7 @@ mod tests {
 
         assert_eq!(params["input"][0]["type"], "text");
         assert_eq!(params["input"][0]["text"], "describe these");
-        assert_eq!(params["input"][1]["type"], "local_image");
+        assert_eq!(params["input"][1]["type"], "localImage");
         assert_eq!(params["input"][1]["path"], "C:\\uploads\\screen.png");
         assert_eq!(params["input"][2]["type"], "mention");
         assert_eq!(params["input"][2]["path"], "C:\\uploads\\notes.md");

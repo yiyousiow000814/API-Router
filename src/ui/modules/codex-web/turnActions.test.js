@@ -1,10 +1,20 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   buildThreadCreatePayload,
   buildTurnPayload,
   createTurnActionsModule,
 } from "./turnActions.js";
+
+function createDeferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
 
 describe("turnActions", () => {
   it("builds payload for new threads with cwd and model info", () => {
@@ -237,9 +247,10 @@ describe("turnActions", () => {
     expect(apiCalls).toEqual([]);
   });
 
-  it("shows uploaded attachments and refreshes mobile composer metrics", async () => {
+  it("shows uploaded attachments immediately while upload finishes in the background", async () => {
     const renderedPills = [];
     let mobileComposerUpdates = 0;
+    const upload = createDeferred();
     const state = { activeThreadId: "thread-1", pendingAttachments: [] };
     const module = createTurnActionsModule({
       state,
@@ -252,13 +263,7 @@ describe("turnActions", () => {
           mimeType: "image/png",
           kind: "image",
         });
-        return {
-          ok: true,
-          kind: "image",
-          fileName: "screen.png",
-          mimeType: "image/png",
-          path: "C:\\uploads\\screen.png",
-        };
+        return upload.promise;
       },
       wsSend: () => false,
       wsCall: async () => ({}),
@@ -283,7 +288,7 @@ describe("turnActions", () => {
       finalizeAssistantMessage: () => {},
       normalizeTextPayload: (value) => value,
       maybeNotifyTurnDone: () => {},
-      renderAttachmentPills: (items) => renderedPills.push(items),
+      renderAttachmentPills: (items) => renderedPills.push(items.map((item) => ({ ...item }))),
       refreshThreads: async () => {},
       refreshHosts: async () => {},
       refreshPending: async () => {},
@@ -298,7 +303,7 @@ describe("turnActions", () => {
       blockInSandbox: () => false,
     });
 
-    await module.uploadAttachment({
+    const uploadPromise = module.uploadAttachment({
       name: "screen.png",
       type: "image/png",
       size: 1024,
@@ -307,6 +312,30 @@ describe("turnActions", () => {
 
     expect(state.pendingAttachments).toEqual([
       {
+        id: "attachment-upload-req-1",
+        kind: "image",
+        fileName: "screen.png",
+        mimeType: "image/png",
+        path: "",
+        uploadState: "uploading",
+      },
+    ]);
+    expect(renderedPills.at(-1)).toEqual(state.pendingAttachments);
+    expect(mobileComposerUpdates).toBe(1);
+
+    upload.resolve({
+          ok: true,
+          kind: "image",
+          fileName: "screen.png",
+          mimeType: "image/png",
+          path: "C:\\uploads\\screen.png",
+    });
+
+    await uploadPromise;
+
+    expect(state.pendingAttachments).toEqual([
+      {
+        id: "attachment-upload-req-1",
         kind: "image",
         fileName: "screen.png",
         mimeType: "image/png",
@@ -314,7 +343,90 @@ describe("turnActions", () => {
       },
     ]);
     expect(renderedPills.at(-1)).toEqual(state.pendingAttachments);
-    expect(mobileComposerUpdates).toBe(1);
+    expect(mobileComposerUpdates).toBe(2);
+  });
+
+  it("waits for attachment uploads before starting a turn", async () => {
+    const apiCalls = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadWorkspace: "windows",
+      activeThreadOpenState: { threadId: "thread-1", loaded: true, resumeRequired: false },
+      activeThreadStarted: true,
+      activeThreadMessages: [],
+      pendingThreadResumes: new Map(),
+      pendingAttachments: [
+        {
+          id: "attachment-upload-req-1",
+          kind: "image",
+          fileName: "screen.png",
+          mimeType: "image/png",
+          path: "",
+          uploadState: "uploading",
+        },
+      ],
+      selectedModel: "",
+      selectedReasoningEffort: "",
+      ws: null,
+      permissionPresetByWorkspace: { windows: "/permission auto" },
+      chatShouldStickToBottom: false,
+      planModeEnabled: false,
+      fastModeEnabled: false,
+    };
+    const module = createTurnActionsModule({
+      state,
+      byId: () => null,
+      api: async (path, options) => {
+        apiCalls.push({ path, options });
+        throw new Error(`unexpected api call: ${path}`);
+      },
+      wsSend: () => false,
+      wsCall: async () => ({}),
+      nextReqId: () => "req-1",
+      connectWs: () => {},
+      syncEventSubscription: () => {},
+      getPromptValue: () => "describe this image",
+      getWorkspaceTarget: () => "windows",
+      getStartCwdForWorkspace: () => "C:\\repo",
+      waitPendingThreadResume: async () => {},
+      updateHeaderUi: () => {},
+      addChat: () => {},
+      clearChatMessages: () => {},
+      hideWelcomeCard: () => {},
+      showWelcomeCard: () => {},
+      clearPromptValue: () => {},
+      renderComposerContextLeft: () => {},
+      scrollToBottomReliable: () => {},
+      scheduleChatLiveFollow: () => {},
+      createAssistantStreamingMessage: () => ({}),
+      appendStreamingDelta: () => {},
+      finalizeAssistantMessage: () => {},
+      normalizeTextPayload: (value) => value,
+      maybeNotifyTurnDone: () => {},
+      renderAttachmentPills: () => {},
+      refreshThreads: async () => {},
+      refreshHosts: async () => {},
+      refreshPending: async () => {},
+      refreshWorkspaceRuntimeState: async () => null,
+      setStatus: () => {},
+      setActiveThread: (id) => {
+        state.activeThreadId = id;
+      },
+      setMainTab: () => {},
+      setMobileTab: () => {},
+      setChatOpening: () => {},
+      syncPendingTurnUi: () => {},
+      updateMobileComposerState: () => {},
+      clearTransientToolMessages: () => {},
+      clearTransientThinkingMessages: () => {},
+      clearLiveThreadConnectionStatus: () => {},
+      blockInSandbox: () => false,
+    });
+
+    await expect(module.sendTurn()).rejects.toThrow(
+      "Wait for attachment uploads to finish before sending."
+    );
+    expect(apiCalls).toEqual([]);
   });
 
   it("removes pending attachments from the send payload state", () => {
@@ -543,6 +655,98 @@ describe("turnActions", () => {
       },
     ]);
     expect(state.pendingAttachments).toEqual([]);
+  });
+
+  it("creates a stable optimistic user id and stores it in pending runtime state", async () => {
+    const chatCalls = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadWorkspace: "windows",
+      activeThreadOpenState: { threadId: "thread-1", loaded: true, resumeRequired: false },
+      activeThreadStarted: true,
+      activeThreadMessages: [],
+      pendingThreadResumes: new Map(),
+      pendingAttachments: [],
+      selectedModel: "",
+      selectedReasoningEffort: "",
+      ws: null,
+      permissionPresetByWorkspace: { windows: "/permission auto" },
+      chatShouldStickToBottom: false,
+      planModeEnabled: false,
+      fastModeEnabled: false,
+    };
+    const module = createTurnActionsModule({
+      state,
+      byId: () => null,
+      api: async (path) => {
+        if (path === "/codex/turns/start") return { threadId: "thread-1", turnId: "turn-1" };
+        throw new Error(`unexpected api call: ${path}`);
+      },
+      wsSend: () => false,
+      wsCall: async () => ({}),
+      nextReqId: () => "req-canonical-1",
+      connectWs: () => {},
+      syncEventSubscription: () => {},
+      getPromptValue: () => "Explain the screenshots",
+      getWorkspaceTarget: () => "windows",
+      getStartCwdForWorkspace: () => "C:\\repo",
+      waitPendingThreadResume: async () => {},
+      updateHeaderUi: () => {},
+      addChat: (role, text, options = {}) => chatCalls.push({ role, text, options }),
+      clearChatMessages: () => {},
+      hideWelcomeCard: () => {},
+      showWelcomeCard: () => {},
+      clearPromptValue: () => {},
+      renderComposerContextLeft: () => {},
+      scrollToBottomReliable: () => {},
+      scheduleChatLiveFollow: () => {},
+      createAssistantStreamingMessage: () => ({}),
+      appendStreamingDelta: () => {},
+      finalizeAssistantMessage: () => {},
+      normalizeTextPayload: (value) => value,
+      maybeNotifyTurnDone: () => {},
+      renderAttachmentPills: () => {},
+      refreshThreads: async () => {},
+      refreshHosts: async () => {},
+      refreshPending: async () => {},
+      refreshWorkspaceRuntimeState: async () => null,
+      setStatus: () => {},
+      setActiveThread: (id) => {
+        state.activeThreadId = id;
+      },
+      setMainTab: () => {},
+      setMobileTab: () => {},
+      setChatOpening: () => {},
+      syncPendingTurnUi: () => {},
+      updateMobileComposerState: () => {},
+      clearTransientToolMessages: () => {},
+      clearTransientThinkingMessages: () => {},
+      clearLiveThreadConnectionStatus: () => {},
+      blockInSandbox: () => false,
+    });
+
+    await module.sendTurn();
+
+    expect(state.activeThreadPendingClientMessageId).toBe("client:thread-1:req-canonical-1");
+    expect(state.activeThreadMessages[0]).toEqual(
+      expect.objectContaining({
+        id: "client:thread-1:req-canonical-1",
+        clientMessageId: "client:thread-1:req-canonical-1",
+        optimistic: true,
+        role: "user",
+        text: "Explain the screenshots",
+      })
+    );
+    expect(chatCalls[0]).toEqual(
+      expect.objectContaining({
+        role: "user",
+        text: "Explain the screenshots",
+        options: expect.objectContaining({
+          messageKey: "client:thread-1:req-canonical-1",
+          source: "turnSendOptimisticUser",
+        }),
+      })
+    );
   });
 
   it("executes slash commands through the slash endpoint instead of starting a turn", async () => {
@@ -2578,6 +2782,7 @@ describe("turnActions", () => {
         text: "hello",
         options: {
           animate: false,
+          messageKey: "client:thread-1:req-1",
           source: "turnSendOptimisticUser",
         },
       },

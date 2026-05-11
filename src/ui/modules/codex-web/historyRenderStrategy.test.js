@@ -115,4 +115,19 @@ describe("historyRenderStrategy", () => {
       })
     ).toBe("full_rerender");
   });
+
+  it("treats same-text assistant messages with different ids as a last-message update", () => {
+    expect(
+      decideHistoryRenderStrategy({
+        previousMessages: [
+          { role: "user", kind: "", text: "hello", id: "user:1" },
+          { role: "assistant", kind: "", text: "done", id: "assistant:live:1" },
+        ],
+        nextMessages: [
+          { role: "user", kind: "", text: "hello", id: "user:1" },
+          { role: "assistant", kind: "", text: "done", id: "assistant:history:1" },
+        ],
+      })
+    ).toBe("full_update_last");
+  });
 });

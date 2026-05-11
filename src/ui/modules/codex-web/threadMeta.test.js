@@ -100,6 +100,55 @@ describe("threadMeta", () => {
     expect(merged.updatedAt).toBe("2026-03-19T00:00:00Z");
   });
 
+  it("does not let provisional assistant text overwrite a canonical thread title", () => {
+    const merged = mergeThreadItem(
+      {
+        id: "thread-1",
+        title: "Build exe",
+        preview: "Build exe",
+        provisional: false,
+        source: "thread-list",
+      },
+      {
+        id: "thread-1",
+        title: "Assistant final answer",
+        preview: "Assistant final answer",
+        previewSource: "assistant",
+        provisional: true,
+        source: "live-provisional",
+      }
+    );
+
+    expect(merged.title).toBe("Build exe");
+    expect(merged.preview).toBe("Build exe");
+    expect(merged.source).toBe("thread-list");
+  });
+
+  it("lets canonical backend metadata replace a user-message provisional preview", () => {
+    const merged = mergeThreadItem(
+      {
+        id: "thread-1",
+        title: "build exe",
+        preview: "build exe",
+        previewSource: "user",
+        provisional: true,
+        source: "live-provisional",
+      },
+      {
+        id: "thread-1",
+        title: "Canonical build thread",
+        preview: "Canonical build thread",
+        provisional: false,
+        source: "thread-list",
+      }
+    );
+
+    expect(merged.title).toBe("Canonical build thread");
+    expect(merged.preview).toBe("Canonical build thread");
+    expect(merged.provisional).toBe(false);
+    expect(merged.source).toBe("thread-list");
+  });
+
   it("upserts thread items by id and keeps newest order", () => {
     const next = upsertThreadItem(
       [

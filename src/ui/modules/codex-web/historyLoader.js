@@ -7,6 +7,10 @@ import {
   syncPendingTurnRuntime,
 } from "./runtimeState.js";
 import {
+  createCanonicalTimelineState,
+  reduceTimelineEvent,
+} from "./canonicalTimeline.js";
+import {
   extractLatestCommentaryArchive,
   extractLatestCommentaryState,
 } from "./historyCommentary.js";
@@ -178,10 +182,52 @@ function messageMatches(a, b) {
   return !!a && !!b && a.role === b.role && a.kind === b.kind && a.text === b.text;
 }
 
+function readMessageClientMessageId(message) {
+  return String(
+    message?.clientMessageId ||
+    message?.client_message_id ||
+    message?.correlation?.clientMessageId ||
+    message?.correlation?.client_message_id ||
+    ""
+  ).trim();
+}
+
+function buildPendingUserMessage(state = {}, threadId = "", text = "") {
+  const clientMessageId = String(state.activeThreadPendingClientMessageId || "").trim();
+  if (!clientMessageId) return { role: "user", text, kind: "" };
+  const timeline = reduceTimelineEvent(
+    createCanonicalTimelineState(threadId),
+    {
+      type: "optimistic-user",
+      threadId,
+      clientMessageId,
+      text,
+    }
+  );
+  const message = timeline.messages[0] || {};
+  return {
+    id: String(message.id || clientMessageId).trim(),
+    clientMessageId: String(message.clientMessageId || clientMessageId).trim(),
+    role: "user",
+    text,
+    kind: "",
+    optimistic: true,
+  };
+}
+
 function findLatestMaterializedPendingUserIndex(messages, pendingUser, options = {}) {
   const items = Array.isArray(messages) ? messages : [];
   const pendingText = String(pendingUser || "");
   if (!pendingText) return -1;
+  const pendingClientMessageId = String(options.pendingClientMessageId || "").trim();
+  if (pendingClientMessageId) {
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      const entry = items[index];
+      if (String(entry?.role || "").trim() !== "user") continue;
+      if (String(entry?.id || "").trim() === pendingClientMessageId) return index;
+      if (readMessageClientMessageId(entry) === pendingClientMessageId) return index;
+    }
+  }
   const baselineUserCount = Math.max(0, Number(options.baselineUserCount || 0));
   const historyUserCount = Math.max(0, Number(options.historyUserCount || 0));
   if (historyUserCount <= baselineUserCount) return -1;
@@ -204,6 +250,7 @@ export function mergePendingLiveMessages(messages, state = {}, threadId = "", op
 
   const pendingUser = String(state.activeThreadPendingUserMessage || "");
   const pendingAssistant = String(state.activeThreadPendingAssistantMessage || "");
+  const pendingClientMessageId = String(state.activeThreadPendingClientMessageId || "").trim();
   const hasPendingUser = !!pendingUser.trim();
   const hasPendingAssistant = !!pendingAssistant.trim();
   const finalAssistantThreadId = String(state.activeThreadLastFinalAssistantThreadId || "").trim();
@@ -220,13 +267,14 @@ export function mergePendingLiveMessages(messages, state = {}, threadId = "", op
     !hasPendingAssistant &&
     state.activeThreadPendingTurnRunning === true;
   const pending = [];
-  if (hasPendingUser) pending.push({ role: "user", text: pendingUser, kind: "" });
+  if (hasPendingUser) pending.push(buildPendingUserMessage(state, threadId, pendingUser));
   if (hasPendingAssistant) pending.push({ role: "assistant", text: pendingAssistant, kind: "" });
   if (!pending.length) return out;
   const materializedPendingUserIndex = hasPendingUser
     ? findLatestMaterializedPendingUserIndex(out, pendingUser, {
         historyUserCount,
         baselineUserCount,
+        pendingClientMessageId,
       })
     : -1;
   if (materializedPendingUserIndex >= 0) {
@@ -289,6 +337,24 @@ export function mergePendingLiveMessages(messages, state = {}, threadId = "", op
   ) {
     appendFrom = 1;
   }
+  const baselineTurnCount = Math.max(0, Number(state.activeThreadPendingTurnBaselineTurnCount || 0));
+  const historyTurnCount = Math.max(0, Number(options.historyTurnCount || 0));
+  const shouldPlacePendingUserBeforePartialCurrentTurn =
+    hasPendingUser &&
+    !hasPendingAssistant &&
+    !!pendingClientMessageId &&
+    historyIncomplete &&
+    historyTurnCount > baselineTurnCount &&
+    historyUserCount <= baselineUserCount &&
+    out.some((entry) => String(entry?.role || "").trim() === "assistant");
+  if (shouldPlacePendingUserBeforePartialCurrentTurn) {
+    for (let index = out.length - 1; index >= 0; index -= 1) {
+      if (String(out[index]?.role || "").trim() !== "assistant") continue;
+      return out
+        .slice(0, index)
+        .concat(pending.slice(0, 1), out.slice(index));
+    }
+  }
   return out.concat(pending.slice(appendFrom));
 }
 
@@ -308,6 +374,9 @@ export function buildHistoryRenderSig(threadId, turns, messages) {
   const items = Array.isArray(messages) ? messages : [];
   pushChunk(items.length);
   for (const message of items) {
+    pushChunk(message?.id || "");
+    pushChunk(message?.turnId || "");
+    pushChunk(message?.itemId || "");
     pushChunk(message?.role || "");
     pushChunk(message?.kind || "");
     pushChunk(message?.text || "");
@@ -502,6 +571,7 @@ function materializeTerminalConnectionErrorFromHistory(thread, state = {}, setSt
       preserveThreadId: true,
       preserveTurnId: true,
       preserveMessages: true,
+      preserveClientMessageId: true,
       preserveBaselineTurnCount: true,
       preserveBaselineUserCount: true,
       reason: "history.connection:materialize_terminal_error",
@@ -592,6 +662,7 @@ function syncPendingTurnStateFromIncompleteHistory(thread, state = {}, parseUser
           preserveThreadId: true,
           preserveTurnId: true,
           preserveMessages: true,
+          preserveClientMessageId: true,
           preserveBaselineTurnCount: true,
           preserveBaselineUserCount: true,
           reason: "history.sync:terminal_preserve_pending_user",
@@ -625,6 +696,7 @@ function syncPendingTurnStateFromIncompleteHistory(thread, state = {}, parseUser
         ? {
             preserveThreadId: true,
             preserveMessages: true,
+            preserveClientMessageId: true,
             preserveBaselineTurnCount: true,
             preserveBaselineUserCount: true,
             reason: "history.sync:not_incomplete_or_terminal_preserve_pending_user",
@@ -954,7 +1026,7 @@ export function createHistoryLoaderModule(deps) {
     if (canStartChatLiveFollow()) scheduleChatLiveFollow(delayMs);
   }
 
-  async function mapThreadReadMessages(thread) {
+  async function mapThreadReadMessages(thread, options = {}) {
     return mapThreadReadMessagesImpl(thread, {
       nextFrame,
       performanceRef,
@@ -963,11 +1035,12 @@ export function createHistoryLoaderModule(deps) {
       normalizeThreadItemText,
       pushHistoryMessage,
       isVisibleAssistantHistoryPhase,
+      includeCanonicalIds: options.includeCanonicalIds === true,
       pushLiveDebugEvent,
     });
   }
 
-  async function mapSessionHistoryMessages(items) {
+  async function mapSessionHistoryMessages(items, options = {}) {
     return mapSessionHistoryMessagesImpl(items, {
       nextFrame,
       performanceRef,
@@ -978,6 +1051,7 @@ export function createHistoryLoaderModule(deps) {
       stripCodexImageBlocks,
       pushHistoryMessage,
       isVisibleAssistantHistoryPhase,
+      includeCanonicalIds: options.includeCanonicalIds === true,
       pushLiveDebugEvent,
     });
   }
