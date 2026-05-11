@@ -2506,6 +2506,43 @@ Implement this plan?
     ]);
   });
 
+  it("keeps the optimistic user before a partial assistant response after prior turns already exist", () => {
+    const state = {
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingTurnBaselineTurnCount: 1,
+      activeThreadPendingTurnBaselineUserCount: 1,
+      activeThreadPendingClientMessageId: "client:thread-1:req-3",
+      activeThreadPendingUserMessage: "hi again",
+      activeThreadPendingAssistantMessage: "",
+    };
+
+    expect(
+      mergePendingLiveMessages(
+        [
+          { role: "user", text: "older", kind: "" },
+          { role: "assistant", text: "older reply", kind: "" },
+          { role: "assistant", text: "working again", kind: "" },
+        ],
+        state,
+        "thread-1",
+        { historyIncomplete: true, historyTurnCount: 2 }
+      )
+    ).toEqual([
+      { role: "user", text: "older", kind: "" },
+      { role: "assistant", text: "older reply", kind: "" },
+      {
+        id: "client:thread-1:req-3",
+        clientMessageId: "client:thread-1:req-3",
+        role: "user",
+        text: "hi again",
+        kind: "",
+        optimistic: true,
+      },
+      { role: "assistant", text: "working again", kind: "" },
+    ]);
+  });
+
   it("does not treat an identical prompt from the baseline turn as a materialized pending user", () => {
     const state = {
       activeThreadPendingTurnThreadId: "thread-1",
@@ -5020,6 +5057,7 @@ Implement this plan?
       activeThreadPendingTurnRunning: true,
       activeThreadPendingTurnBaselineTurnCount: 1,
       activeThreadPendingTurnBaselineUserCount: 1,
+      activeThreadPendingClientMessageId: "client:thread-1:req-9",
       activeThreadPendingUserMessage: "hi",
       activeThreadPendingAssistantMessage: "",
       activeThreadStarted: true,
@@ -5115,6 +5153,7 @@ Implement this plan?
     expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
     expect(state.activeThreadPendingTurnId).toBe("turn-2");
     expect(state.activeThreadPendingTurnRunning).toBe(false);
+    expect(state.activeThreadPendingClientMessageId).toBe("client:thread-1:req-9");
     expect(state.activeThreadConnectionStatusKind).toBe("error");
     expect(state.activeThreadConnectionStatusText).toBe(
       "no routable providers available; preferred=aigateway; tried="

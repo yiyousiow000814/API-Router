@@ -458,12 +458,14 @@ export function createChatTimelineModule(deps) {
 
   function buildCommentaryArchiveRenderSig(archive, options = {}, box = null) {
     const assistantCount = Array.from(box?.querySelectorAll?.(".assistant") || []).length;
+    const anchorMessageKey = String(options.anchorMessageKey || options.anchorMessageId || "").trim();
     return JSON.stringify({
       inlineArchiveCount: Math.max(0, Number(state.activeThreadInlineCommentaryArchiveCount || 0)),
       visible: state.activeThreadCommentaryArchiveVisible === true && Array.isArray(archive) && archive.length > 0,
       expanded: state.activeThreadCommentaryArchiveExpanded === true,
       assistantCount,
       explicitAnchor: !!(options.anchorNode && options.anchorNode.parentElement === box),
+      anchorMessageKey,
       archive: Array.isArray(archive)
         ? archive.map((block) => ({
             key: String(block?.key || ""),
@@ -681,9 +683,36 @@ export function createChatTimelineModule(deps) {
     const visible = state.activeThreadCommentaryArchiveVisible === true && archive.length > 0;
     const renderSig = buildCommentaryArchiveRenderSig(archive, options, box);
     const existingMount = byId("commentaryArchiveMount");
+    const explicitAnchorNode = options.anchorNode && options.anchorNode.parentElement === box ? options.anchorNode : null;
+    const anchorMessageKey = String(options.anchorMessageKey || options.anchorMessageId || "").trim();
+    const keyedAnchorNode = anchorMessageKey
+      ? (findMessageNodesByKey(box, anchorMessageKey).slice(-1)[0] || null)
+      : null;
+    const explicitAnchorRequested = !!explicitAnchorNode || !!anchorMessageKey;
+    const fallbackAssistantAnchor = (() => {
+      const assistantNodes = Array.from(box.querySelectorAll(".assistant"));
+      return assistantNodes.length ? assistantNodes[assistantNodes.length - 1] : null;
+    })();
+    const anchorNode =
+      explicitAnchorNode ||
+      keyedAnchorNode ||
+      (!explicitAnchorRequested ? fallbackAssistantAnchor : null) ||
+      box.querySelector("#runtimeChatPanels") ||
+      box.querySelector("#pendingInlineMount") ||
+      null;
     if (lastCommentaryArchiveRenderSig === renderSig) {
       if ((!visible || inlineArchiveCount > 0) && !existingMount) return;
-      if (visible && inlineArchiveCount === 0 && existingMount) return;
+      if (visible && inlineArchiveCount === 0 && existingMount) {
+        const children = Array.from(box.children || []);
+        const mountIndex = children.indexOf(existingMount);
+        const anchorIndex = anchorNode ? children.indexOf(anchorNode) : -1;
+        if (mountIndex >= 0 && anchorIndex >= 0 && mountIndex + 1 === anchorIndex) return;
+        if (anchorNode) {
+          box.insertBefore(existingMount, anchorNode);
+          return;
+        }
+        return;
+      }
     }
     lastCommentaryArchiveRenderSig = renderSig;
     removeCommentaryArchiveMount();
@@ -711,15 +740,6 @@ export function createChatTimelineModule(deps) {
     }
     syncExpandedUi();
 
-    const fallbackAssistantAnchor = (() => {
-      const assistantNodes = Array.from(box.querySelectorAll(".assistant"));
-      return assistantNodes.length ? assistantNodes[assistantNodes.length - 1] : null;
-    })();
-    const anchorNode =
-      (options.anchorNode && options.anchorNode.parentElement === box ? options.anchorNode : null) ||
-      fallbackAssistantAnchor ||
-      box.querySelector("#runtimeChatPanels") ||
-      null;
     const pendingMount = byId("pendingInlineMount");
     if (anchorNode) box.insertBefore(mount, anchorNode);
     else if (pendingMount && pendingMount.parentElement === box) box.insertBefore(mount, pendingMount);

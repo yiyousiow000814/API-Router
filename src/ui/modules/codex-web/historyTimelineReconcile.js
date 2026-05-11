@@ -6,6 +6,60 @@ function isCommentaryArchiveMessage(message) {
   return String(message?.kind || "").trim() === "commentaryArchive";
 }
 
+function classNameTokens(node) {
+  return String(node?.className || "")
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+}
+
+function hasClass(node, token) {
+  return !!node?.classList?.contains?.(token) || classNameTokens(node).includes(token);
+}
+
+function roleFromNode(node) {
+  const explicitRole = String(node?.__webCodexRole || "").trim();
+  if (explicitRole) return explicitRole;
+  if (hasClass(node, "assistant")) return "assistant";
+  if (hasClass(node, "user")) return "user";
+  if (hasClass(node, "system") || hasClass(node, "commentaryArchiveMount")) return "system";
+  return "";
+}
+
+function kindFromNode(node) {
+  const explicitKind = String(node?.__webCodexKind || "").trim();
+  if (explicitKind) return explicitKind;
+  if (hasClass(node, "commentaryArchiveMount")) return "commentaryArchive";
+  const kindToken = classNameTokens(node).find((token) => token.startsWith("kind-"));
+  return kindToken ? kindToken.slice("kind-".length) : "";
+}
+
+function textFromNode(node) {
+  const rawText = node?.__webCodexRawText;
+  if (typeof rawText === "string") return rawText;
+  const textContent = node?.textContent;
+  if (typeof textContent === "string") return textContent;
+  const label = String(node?.label || "");
+  const separatorIndex = label.indexOf(":");
+  return separatorIndex >= 0 ? label.slice(separatorIndex + 1) : label;
+}
+
+function messageFromTimelineNode(node) {
+  const role = roleFromNode(node);
+  const kind = kindFromNode(node);
+  if (!role && !kind) return null;
+  return {
+    role,
+    kind,
+    text: textFromNode(node),
+  };
+}
+
+function nodeMatchesMessage(node, message) {
+  const nodeMessage = messageFromTimelineNode(node);
+  return messageMatches(nodeMessage, message);
+}
+
 export function findCommentaryArchivePatch(previousMessages = [], nextMessages = []) {
   const previous = Array.isArray(previousMessages) ? previousMessages : [];
   const next = Array.isArray(nextMessages) ? nextMessages : [];
@@ -36,8 +90,12 @@ export function findCommentaryArchivePatch(previousMessages = [], nextMessages =
 
 function getTimelineDomNodes(box) {
   return Array.from(box?.children || []).filter((node) =>
-    node?.classList?.contains?.("msg") || node?.classList?.contains?.("commentaryArchiveMount")
+    hasClass(node, "msg") || hasClass(node, "commentaryArchiveMount")
   );
+}
+
+function getTimelineDomMessages(domNodes = []) {
+  return domNodes.map(messageFromTimelineNode).filter(Boolean);
 }
 
 function updateTimelineMessageNode(node, message, renderMessageBody) {
@@ -60,6 +118,93 @@ function updateTimelineMessageNode(node, message, renderMessageBody) {
   return node;
 }
 
+function syncTimelineMessageNodeMeta(node, message) {
+  if (!node || !message) return false;
+  try {
+    node.__webCodexRole = String(message?.role || "").trim();
+    node.__webCodexKind = String(message?.kind || "").trim();
+    node.__webCodexRawText = String(message?.text || "");
+    const messageKey = String(message?.id || message?.messageKey || "").trim();
+    if (messageKey) {
+      node.setAttribute?.("data-msg-key", messageKey);
+      node.setAttribute?.("data-msg-id", messageKey);
+    }
+  } catch {}
+  return true;
+}
+
+function resolvePatchSource(previousMessages, nextMessages, domNodes) {
+  const previous = Array.isArray(previousMessages) ? previousMessages : [];
+  const domMessages = getTimelineDomMessages(domNodes);
+  if (domMessages.length && domMessages.length !== previous.length) {
+    const domPatch = findCommentaryArchivePatch(domMessages, nextMessages);
+    if (domPatch) return { patch: domPatch, previous: domMessages, source: "dom" };
+  }
+  const statePatch = findCommentaryArchivePatch(previous, nextMessages);
+  if (statePatch) return { patch: statePatch, previous, source: "state" };
+  if (domMessages.length) {
+    const domPatch = findCommentaryArchivePatch(domMessages, nextMessages);
+    if (domPatch) return { patch: domPatch, previous: domMessages, source: "dom" };
+  }
+  return null;
+}
+
+function planTimelinePatch({ previousMessages, nextMessages, domNodes }) {
+  const previous = Array.isArray(previousMessages) ? previousMessages : [];
+  const next = Array.isArray(nextMessages) ? nextMessages : [];
+  const operations = [];
+  let previousIndex = 0;
+  let domIndex = 0;
+  for (const message of next) {
+    const previousMessage = previous[previousIndex] || null;
+    if (!isCommentaryArchiveMessage(message)) {
+      const node = domNodes[domIndex] || null;
+      if (!node) return null;
+      if (previousMessage && (previousMessage.role !== message.role || previousMessage.kind !== message.kind)) {
+        return null;
+      }
+      if (previousMessage && !nodeMatchesMessage(node, previousMessage)) return null;
+      if (previousMessage && previousMessage.text !== message.text) {
+        if (previousIndex !== previous.length - 1) return null;
+        operations.push({
+          type: "update",
+          node,
+          message,
+          fromText: previousMessage.text,
+        });
+      } else {
+        operations.push({
+          type: "sync",
+          node,
+          message,
+        });
+      }
+      previousIndex += 1;
+      domIndex += 1;
+      continue;
+    }
+    if (isCommentaryArchiveMessage(previousMessage)) {
+      const node = domNodes[domIndex] || null;
+      if (!node || !messageMatches(previousMessage, message) || !nodeMatchesMessage(node, previousMessage)) return null;
+      operations.push({
+        type: "sync",
+        node,
+        message,
+      });
+      previousIndex += 1;
+      domIndex += 1;
+      continue;
+    }
+    operations.push({
+      type: "insert",
+      anchorNode: domNodes[domIndex] || null,
+      message,
+    });
+  }
+  if (previousIndex !== previous.length) return null;
+  return operations;
+}
+
 export function reconcileTimelineMessages(params = {}) {
   const {
     box,
@@ -70,54 +215,43 @@ export function reconcileTimelineMessages(params = {}) {
     replayMessage = () => false,
   } = params;
   if (!box || typeof buildMsgNode !== "function") return null;
-  const patch = findCommentaryArchivePatch(previousMessages, nextMessages);
-  if (!patch) return null;
+  const next = Array.isArray(nextMessages) ? nextMessages : [];
   const liveArchiveMount = typeof box.querySelector === "function" ? box.querySelector("#commentaryArchiveMount") : null;
+  const domNodes = getTimelineDomNodes(box).filter((node) => node !== liveArchiveMount);
+  const patchSource = resolvePatchSource(previousMessages, next, domNodes);
+  if (!patchSource) return null;
+  const operations = planTimelinePatch({
+    previousMessages: patchSource.previous,
+    nextMessages: next,
+    domNodes,
+  });
+  if (!operations) return null;
   if (liveArchiveMount && liveArchiveMount.parentElement === box && typeof liveArchiveMount.remove === "function") {
     liveArchiveMount.remove();
   }
-  const domNodes = getTimelineDomNodes(box);
-  const previous = Array.isArray(previousMessages) ? previousMessages : [];
-  const next = Array.isArray(nextMessages) ? nextMessages : [];
-  let previousIndex = 0;
-  let domIndex = 0;
   let inserted = 0;
   let updated = 0;
-  for (const message of next) {
-    const previousMessage = previous[previousIndex] || null;
-    if (!isCommentaryArchiveMessage(message)) {
-      const node = domNodes[domIndex] || null;
-      if (previousMessage && (previousMessage.role !== message.role || previousMessage.kind !== message.kind)) {
-        return null;
-      }
-      if (previousMessage && previousMessage.text !== message.text) {
-        if (previousIndex !== previous.length - 1) return null;
-        const updatedNode = updateTimelineMessageNode(node, message, renderMessageBody);
-        if (!updatedNode) return null;
-        replayMessage(updatedNode, message, { fromText: previousMessage.text });
-        updated += 1;
-      }
-      previousIndex += 1;
-      domIndex += 1;
+  for (const operation of operations) {
+    if (operation.type === "update") {
+      const updatedNode = updateTimelineMessageNode(operation.node, operation.message, renderMessageBody);
+      if (!updatedNode) return null;
+      replayMessage(updatedNode, operation.message, { fromText: operation.fromText });
+      updated += 1;
       continue;
     }
-    if (isCommentaryArchiveMessage(previousMessage)) {
-      if (!messageMatches(previousMessage, message)) return null;
-      previousIndex += 1;
-      domIndex += 1;
+    if (operation.type === "sync") {
+      syncTimelineMessageNodeMeta(operation.node, operation.message);
       continue;
     }
-    const node = buildMsgNode(message);
-    const anchorNode = domNodes[domIndex] || null;
+    if (operation.type !== "insert") continue;
+    const node = buildMsgNode(operation.message);
+    const anchorNode = operation.anchorNode || null;
     if (anchorNode && anchorNode.parentElement === box && typeof box.insertBefore === "function") {
       box.insertBefore(node, anchorNode);
     } else {
       box.appendChild(node);
     }
-    domNodes.splice(domIndex, 0, node);
     inserted += 1;
-    domIndex += 1;
   }
-  if (previousIndex !== previous.length) return null;
-  return { inserted, updated };
+  return { inserted, updated, source: patchSource.source };
 }
