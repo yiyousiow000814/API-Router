@@ -10,8 +10,8 @@ use crate::orchestrator::gateway::web_codex_git::{
     switch_branch_for_workspace, visible_branch_options_for_workspace_from_local_branches,
 };
 use crate::orchestrator::gateway::web_codex_session_manager::{
-    merge_runtime_thread_overlay, runtime_thread_path, runtime_thread_payload,
-    thread_id_from_response, CodexSessionManager,
+    merge_runtime_thread_overlay, resolve_thread_session_manager, runtime_thread_path,
+    runtime_thread_payload, thread_id_from_response, CodexSessionManager,
 };
 use crate::orchestrator::gateway::web_codex_thread_options::build_thread_resume_params;
 
@@ -494,6 +494,43 @@ fn history_error_allows_runtime_fallback(detail: &str) -> bool {
         || lower.contains("cannot find the file")
 }
 
+fn sanitize_failed_runtime_turn(
+    manager: &CodexSessionManager,
+    thread_id: &str,
+    thread: &mut Value,
+) -> bool {
+    let Some(snapshot) = manager.thread_runtime_snapshot(thread_id) else {
+        return false;
+    };
+    if snapshot.status.as_deref() != Some("failed") {
+        return false;
+    }
+    let Some(turn_id) = snapshot.last_turn_id.as_deref() else {
+        return false;
+    };
+    crate::codex_app_server::sanitize_failed_turn_thread_payload(thread, turn_id)
+}
+
+async fn known_rollout_path_for_resolved_thread(
+    manager: &CodexSessionManager,
+    thread_id: &str,
+) -> Option<String> {
+    if let Some(snapshot) = manager.thread_runtime_snapshot(thread_id) {
+        if snapshot
+            .rollout_path
+            .as_deref()
+            .is_some_and(|path| !path.trim().is_empty())
+        {
+            return snapshot.rollout_path;
+        }
+    }
+    let target = manager.workspace_target()?;
+    crate::orchestrator::gateway::web_codex_threads::known_rollout_path_for_thread(
+        target, thread_id,
+    )
+    .await
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(untagged)]
 enum ServiceTierOverride {
@@ -893,26 +930,19 @@ pub(super) async fn codex_thread_history(
     }
     let workspace_hint = query.workspace.as_deref().and_then(parse_workspace_target);
     let query_rollout_path = normalize_rollout_query_path(query.rollout_path.as_deref());
-    let known_rollout_path = match workspace_hint {
-        Some(target) => {
-            crate::orchestrator::gateway::web_codex_threads::known_rollout_path_for_thread(
-                target, &id,
-            )
-            .await
-        }
-        None => None,
-    };
+    let runtime_manager = resolve_thread_session_manager(workspace_hint, &id);
+    let known_rollout_path = known_rollout_path_for_resolved_thread(&runtime_manager, &id).await;
     let rollout_path = preferred_rollout_path_for_history(query_rollout_path, known_rollout_path);
     let limit = query.limit.unwrap_or_else(
         crate::orchestrator::gateway::web_codex_history::default_history_page_limit,
     );
-    let runtime_manager = CodexSessionManager::new(workspace_hint);
+    let resolved_workspace = runtime_manager.workspace_target();
     let id_for_read = id.clone();
     let before = query.before.clone();
     let history_read = tokio::task::spawn_blocking(move || {
         crate::orchestrator::gateway::web_codex_history::load_thread_history_page(
             &id_for_read,
-            workspace_hint,
+            resolved_workspace,
             rollout_path.as_deref(),
             before.as_deref(),
             limit,
@@ -931,20 +961,8 @@ pub(super) async fn codex_thread_history(
                 &mut page.thread,
             )
             .await;
-            if let Some(snapshot) = crate::orchestrator::gateway::web_codex_session_manager::workspace_thread_runtime_snapshot_for_home(
-                runtime_manager.home_override(),
-                &id,
-            ) {
-                if snapshot.status.as_deref() == Some("failed") {
-                    if let Some(turn_id) = snapshot.last_turn_id.as_deref() {
-                        let _ = crate::codex_app_server::sanitize_failed_turn_thread_payload(
-                            &mut page.thread,
-                            turn_id,
-                        );
-                    }
-                }
-            }
-            if workspace_hint.is_some() {
+            let _ = sanitize_failed_runtime_turn(&runtime_manager, &id, &mut page.thread);
+            if resolved_workspace.is_some() {
                 let _ = runtime_manager
                     .overlay_runtime_thread(&id, &mut page.thread)
                     .await;
@@ -968,19 +986,7 @@ pub(super) async fn codex_thread_history(
                         &mut page.thread,
                     )
                     .await;
-                    if let Some(snapshot) = crate::orchestrator::gateway::web_codex_session_manager::workspace_thread_runtime_snapshot_for_home(
-                        runtime_manager.home_override(),
-                        &id,
-                    ) {
-                        if snapshot.status.as_deref() == Some("failed") {
-                            if let Some(turn_id) = snapshot.last_turn_id.as_deref() {
-                                let _ = crate::codex_app_server::sanitize_failed_turn_thread_payload(
-                                    &mut page.thread,
-                                    turn_id,
-                                );
-                            }
-                        }
-                    }
+                    let _ = sanitize_failed_runtime_turn(&runtime_manager, &id, &mut page.thread);
                     Json(json!({ "thread": page.thread, "page": page.page })).into_response()
                 }
                 Err(runtime_error) => api_error_detail(
@@ -1047,19 +1053,6 @@ pub(super) async fn codex_thread_resume(
         } else {
             None
         };
-    let known_rollout_path = if rollout_hint.is_some() {
-        rollout_hint.clone()
-    } else {
-        match workspace_hint {
-            Some(target) => {
-                crate::orchestrator::gateway::web_codex_threads::known_rollout_path_for_thread(
-                    target, &id,
-                )
-                .await
-            }
-            None => None,
-        }
-    };
     let service_tier = normalize_service_tier_query(query.service_tier.as_deref());
     let params = build_thread_resume_params(
         &id,
@@ -1067,7 +1060,12 @@ pub(super) async fn codex_thread_resume(
         query.approval_policy.clone(),
         query.sandbox.clone(),
     );
-    let manager = CodexSessionManager::new(workspace_hint);
+    let manager = resolve_thread_session_manager(workspace_hint, &id);
+    let known_rollout_path = if rollout_hint.is_some() {
+        rollout_hint.clone()
+    } else {
+        known_rollout_path_for_resolved_thread(&manager, &id).await
+    };
     match manager
         .resume_thread(&id, params, known_rollout_path.as_deref())
         .await
@@ -1078,6 +1076,7 @@ pub(super) async fn codex_thread_resume(
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
     use crate::orchestrator::gateway::web_codex_session_manager::{
@@ -1157,6 +1156,71 @@ mod tests {
             "The system cannot find the file specified. (os error 2)"
         ));
         assert!(!history_error_allows_runtime_fallback("permission denied"));
+    }
+
+    #[tokio::test]
+    async fn known_rollout_path_for_resolved_thread_uses_custom_runtime_home() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        crate::orchestrator::gateway::_clear_workspace_runtime_registry_for_test();
+        let runtime_home = "/home/yiyou/.api-router/thread-runtime-home";
+        let rollout_path = "/home/yiyou/.codex/sessions/rollout-thread-1.jsonl";
+        crate::orchestrator::gateway::web_codex_session_runtime::upsert_workspace_thread_runtime(
+            Some(WorkspaceTarget::Wsl2),
+            Some(runtime_home),
+            crate::orchestrator::gateway::web_codex_session_runtime::WorkspaceThreadRuntimeUpdate {
+                thread_id: "thread-1",
+                cwd: Some("/home/yiyou/repo"),
+                rollout_path: Some(rollout_path),
+                status: Some("running"),
+                last_event_id: None,
+                last_turn_id: Some("turn-1"),
+                clear_last_turn_id: false,
+            },
+        );
+        let manager = resolve_thread_session_manager(None, "thread-1");
+
+        let path = known_rollout_path_for_resolved_thread(&manager, "thread-1").await;
+
+        assert_eq!(path.as_deref(), Some(rollout_path));
+    }
+
+    #[test]
+    fn sanitize_failed_runtime_turn_uses_resolved_manager_snapshot() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        crate::orchestrator::gateway::_clear_workspace_runtime_registry_for_test();
+        let runtime_home = "/home/yiyou/.api-router/thread-runtime-home";
+        crate::orchestrator::gateway::web_codex_session_runtime::upsert_workspace_thread_runtime(
+            Some(WorkspaceTarget::Wsl2),
+            Some(runtime_home),
+            crate::orchestrator::gateway::web_codex_session_runtime::WorkspaceThreadRuntimeUpdate {
+                thread_id: "thread-1",
+                cwd: Some("/home/yiyou/repo"),
+                rollout_path: Some("/home/yiyou/.codex/sessions/rollout-thread-1.jsonl"),
+                status: Some("failed"),
+                last_event_id: None,
+                last_turn_id: Some("turn-1"),
+                clear_last_turn_id: false,
+            },
+        );
+        let manager = resolve_thread_session_manager(None, "thread-1");
+        let mut thread = json!({
+            "id": "thread-1",
+            "turns": [{
+                "id": "turn-1",
+                "items": [
+                    { "type": "userMessage", "text": "retry" },
+                    { "type": "assistantMessage", "text": "stale answer" }
+                ]
+            }]
+        });
+
+        let changed = sanitize_failed_runtime_turn(&manager, "thread-1", &mut thread);
+
+        assert!(changed);
+        let items = thread["turns"][0]["items"].as_array().expect("items");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["type"].as_str(), Some("userMessage"));
+        assert_eq!(thread["status"]["type"].as_str(), Some("failed"));
     }
 
     #[test]
