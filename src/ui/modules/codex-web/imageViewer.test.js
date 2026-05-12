@@ -276,6 +276,8 @@ describe("imageViewer", () => {
     expect(incomingImg.src).toBe("/two.png");
     expect(currentLayer.style.transform).toBe("translate3d(-80px, 0px, 0)");
     expect(incomingLayer.style.transform).toBe("translate3d(240px, 0px, 0)");
+    expect(currentLayer.style.opacity).toBe("1");
+    expect(incomingLayer.style.opacity).toBe("1");
     expect(img.src).toBe("/one.png");
   });
 

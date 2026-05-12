@@ -185,15 +185,13 @@ export function createImageViewerModule(deps) {
     const dx = Number.isFinite(Number(offsetX)) ? Number(offsetX) : 0;
     const dir = Number(direction) > 0 ? 1 : -1;
     const slideWidth = Math.max(1, Number(width) || 1);
-    const progress = Math.min(1, Math.abs(dx) / slideWidth);
     if (currentLayer.style) {
       currentLayer.style.transform = formatSlideTranslate(dx);
-      currentLayer.style.opacity = String(Math.max(0.18, 1 - progress * 0.32));
+      currentLayer.style.opacity = "1";
     }
     if (incomingLayer.style) {
       incomingLayer.style.transform = formatSlideTranslate(dx + dir * slideWidth);
-      incomingLayer.style.opacity =
-        options.hideIncoming === true ? "0" : String(Math.max(0.58, 0.7 + progress * 0.3));
+      incomingLayer.style.opacity = options.hideIncoming === true ? "0" : "1";
     }
   }
 
@@ -458,7 +456,7 @@ export function createImageViewerModule(deps) {
       body.classList.add("is-slide-running");
       if (currentLayer?.style) {
         currentLayer.style.transform = formatSlideTranslate(direction > 0 ? -width : width);
-        currentLayer.style.opacity = "0.18";
+        currentLayer.style.opacity = "1";
       }
       if (incomingLayer?.style) {
         incomingLayer.style.transform = formatSlideTranslate(0);
