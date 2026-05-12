@@ -159,12 +159,16 @@ function isMarkdownTableStart(lines, index) {
 }
 
 function renderMarkdownTable(rows, alignments) {
-  const renderCellAttrs = (index) => {
-    const align = alignments[index] || "";
-    return align ? ` style="text-align:${align}"` : "";
-  };
   const header = rows[0] || [];
   const bodyRows = rows.slice(1);
+  const columnCount = header.length;
+  const renderCellAttrs = (index) => {
+    const align = alignments[index] || "";
+    const columnClass = index === 0 ? "msgTableLeadCell" : "msgTableDetailCell";
+    return align
+      ? ` class="${columnClass}" style="text-align:${align}"`
+      : ` class="${columnClass}"`;
+  };
   const headerHtml = header
     .map((cell, index) => `<th${renderCellAttrs(index)}>${renderInlineMessageText(cell)}</th>`)
     .join("");
@@ -174,7 +178,7 @@ function renderMarkdownTable(rows, alignments) {
       return `<tr>${cells.map((cell, index) => `<td${renderCellAttrs(index)}>${renderInlineMessageText(cell)}</td>`).join("")}</tr>`;
     })
     .join("");
-  return `<div class="msgTableWrap"><table class="msgTable"><thead><tr>${headerHtml}</tr></thead><tbody>${bodyHtml}</tbody></table></div>`;
+  return `<div class="msgTableWrap"><table class="msgTable" data-msg-table-cols="${columnCount}"><thead><tr>${headerHtml}</tr></thead><tbody>${bodyHtml}</tbody></table></div>`;
 }
 
 export function fileRefDisplayLabel(value) {

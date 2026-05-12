@@ -255,7 +255,7 @@ Checked`
     expect(html).toContain("<p>Keep the plan card readable.</p>");
   });
 
-  it("renders markdown pipe tables as scrollable tables", () => {
+  it("renders markdown pipe tables inside responsive table wrappers", () => {
     const html = renderMessageRichHtml(
       [
         "Yearly Distribution",
@@ -270,9 +270,9 @@ Checked`
     );
 
     expect(html).toContain('<div class="msgTableWrap">');
-    expect(html).toContain("<table");
+    expect(html).toContain('<table class="msgTable" data-msg-table-cols="5">');
     expect(html).toContain("<thead>");
-    expect(html).toContain("<th>year</th>");
+    expect(html).toContain('<th class="msgTableLeadCell">year</th>');
     expect(html).toContain('style="text-align:right">14567.0</td>');
     expect(html).not.toContain("| year | net_pips");
     expect(html).toContain("<p>Conclusion</p>");
@@ -289,8 +289,24 @@ Checked`
 
     expect(html).toContain('<div class="msgTableWrap">');
     expect(html).toContain('<code class="msgInlineCode">a|b</code>');
-    expect(html).toContain("<td>yes</td>");
+    expect(html).toContain('<td class="msgTableDetailCell">yes</td>');
     expect(html).not.toContain("<tbody></tbody>");
+  });
+
+  it("marks comparison tables with an explicit label column contract", () => {
+    const html = renderMessageRichHtml(
+      [
+        "| 场景 | 改动前 | 改动后 |",
+        "| --- | --- | --- |",
+        "| history | 先按旧逻辑取仓库 | 先定位真实 runtime |",
+      ].join("\n")
+    );
+
+    expect(html).toContain('<table class="msgTable" data-msg-table-cols="3">');
+    expect(html).toContain('<th class="msgTableLeadCell">场景</th>');
+    expect(html).toContain('<th class="msgTableDetailCell">改动前</th>');
+    expect(html).toContain('<td class="msgTableLeadCell">history</td>');
+    expect(html).toContain('<td class="msgTableDetailCell">先定位真实 runtime</td>');
   });
 
   it("does not create a phantom outer ordered item for indented top-level numbering", () => {
