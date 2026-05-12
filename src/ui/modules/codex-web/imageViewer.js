@@ -372,7 +372,7 @@ export function createImageViewerModule(deps) {
     }
   }
 
-  function commitViewerIndex(nextIndex) {
+  function commitViewerIndex(nextIndex, options = {}) {
     const { backdrop, img, incomingImg } = getImageViewerNodes();
     if (!backdrop || !img || !imageViewerState) return;
 
@@ -388,13 +388,32 @@ export function createImageViewerModule(deps) {
     if (incomingImg?.style) incomingImg.style.transform = "";
     setViewerTransform({ scale: 1, tx: 0, ty: 0 });
     syncViewerChrome(idx);
+    if (imageViewerState?.slideTimer) {
+      clearTimeout(imageViewerState.slideTimer);
+      imageViewerState.slideTimer = null;
+    }
+    const holdIncomingUntilReady =
+      options.holdIncomingUntilReady === true &&
+      typeof img.complete === "boolean" &&
+      img.complete === false;
+    if (holdIncomingUntilReady) {
+      const token = Number(imageViewerState.slideToken || 0);
+      const finalize = () => {
+        if (!imageViewerState) return;
+        if (Number(imageViewerState.slideToken || 0) !== token) return;
+        clearViewerSlideState();
+      };
+      img.addEventListener?.("load", finalize, { once: true });
+      img.addEventListener?.("error", finalize, { once: true });
+      return;
+    }
     clearViewerSlideState();
   }
 
   function finishViewerSlide(targetIndex, token) {
     if (!imageViewerState?.isSliding) return;
     if (Number(imageViewerState.slideToken || 0) !== Number(token || 0)) return;
-    commitViewerIndex(targetIndex);
+    commitViewerIndex(targetIndex, { holdIncomingUntilReady: true });
   }
 
   function startViewerSlide(targetIndex) {

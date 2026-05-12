@@ -279,6 +279,95 @@ describe("imageViewer", () => {
     expect(img.src).toBe("/one.png");
   });
 
+  it("keeps the incoming layer mounted until the promoted image finishes loading", async () => {
+    const elements = new Map();
+    const backdrop = { classList: createClassList() };
+    const body = createEventTarget({
+      classList: createClassList(),
+      __wired: false,
+      clientWidth: 320,
+      setPointerCapture() {},
+      getBoundingClientRect() {
+        return { width: 320 };
+      },
+    });
+    const title = { textContent: "" };
+    const img = createEventTarget({
+      src: "",
+      alt: "",
+      style: {},
+      complete: false,
+      naturalWidth: 0,
+    });
+    const incomingImg = { src: "", alt: "", style: {} };
+    const currentLayer = createEventTarget({ classList: createClassList(), style: {} });
+    const incomingLayer = createEventTarget({ classList: createClassList(), style: {} });
+    const prev = createToggleButton();
+    const next = createToggleButton();
+    const download = createToggleButton();
+    const share = createToggleButton();
+    const film = createFilmstrip();
+
+    elements.set("imageViewerBackdrop", backdrop);
+    elements.set("imageViewerBody", body);
+    elements.set("imageViewerTitle", title);
+    elements.set("imageViewerImg", img);
+    elements.set("imageViewerImgIncoming", incomingImg);
+    elements.set("imageViewerCurrentLayer", currentLayer);
+    elements.set("imageViewerIncomingLayer", incomingLayer);
+    elements.set("imageViewerPrevBtn", prev);
+    elements.set("imageViewerNextBtn", next);
+    elements.set("imageViewerDownloadBtn", download);
+    elements.set("imageViewerShareBtn", share);
+    elements.set("imageViewerFilmstrip", film);
+
+    const module = createImageViewerModule({
+      byId: (id) => elements.get(id) || null,
+      state: {
+        chatSmoothScrollUntil: 0,
+        chatShouldStickToBottom: true,
+      },
+      escapeHtml: (value) => String(value || ""),
+      wireBlurBackdropShield: () => {},
+      scrollChatToBottom: () => {},
+      updateScrollToBottomBtn: () => {},
+      documentRef: {
+        body: { appendChild() {} },
+        createElement() {
+          return {};
+        },
+        addEventListener() {},
+      },
+      navigatorRef: {},
+      requestAnimationFrameRef: (callback) => callback(),
+    });
+
+    module.openImageViewer("/one.png", "Image #1", {
+      images: [
+        { src: "/one.png", label: "Image #1" },
+        { src: "/two.png", label: "Image #2" },
+      ],
+      index: 0,
+    });
+
+    next.onclick();
+    await Promise.resolve();
+
+    incomingLayer.dispatchEvent({ type: "transitionend" });
+
+    expect(img.src).toBe("/two.png");
+    expect(body.classList.contains("is-slide-transitioning")).toBe(true);
+    expect(incomingImg.src).toBe("/two.png");
+
+    img.complete = true;
+    img.naturalWidth = 1200;
+    img.dispatchEvent({ type: "load" });
+
+    expect(body.classList.contains("is-slide-transitioning")).toBe(false);
+    expect(incomingImg.src).toBe("");
+    expect(title.textContent).toBe("Image #2");
+  });
+
   it("keeps a missing attachment placeholder and avoids force scrolling on image errors", () => {
     const scrollChatToBottom = vi.fn();
     const updateScrollToBottomBtn = vi.fn();
