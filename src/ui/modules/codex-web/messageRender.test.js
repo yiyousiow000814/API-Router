@@ -255,7 +255,7 @@ Checked`
     expect(html).toContain("<p>Keep the plan card readable.</p>");
   });
 
-  it("renders markdown pipe tables as scrollable tables", () => {
+  it("renders markdown pipe tables inside responsive table wrappers", () => {
     const html = renderMessageRichHtml(
       [
         "Yearly Distribution",

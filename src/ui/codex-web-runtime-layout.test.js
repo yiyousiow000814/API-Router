@@ -192,6 +192,22 @@ describe("codex-web runtime layout", () => {
     expect(inlineCodeMatch?.[1] || "").toMatch(/line-height:\s*inherit/i);
   });
 
+  it("lets markdown tables wrap prose while keeping horizontal overflow as a fallback", () => {
+    const wrapMatch = source.match(/\.msgTableWrap\s*\{([^}]+)\}/s);
+    const tableMatch = source.match(/\.msgTable\s*\{([^}]+)\}/s);
+    const cellMatch = source.match(/\.msgTable th,\s*\.msgTable td\s*\{([^}]+)\}/s);
+
+    expect(wrapMatch).toBeTruthy();
+    expect(tableMatch).toBeTruthy();
+    expect(cellMatch).toBeTruthy();
+
+    expect(wrapMatch?.[1] || "").toMatch(/overflow-x:\s*auto/i);
+    expect(tableMatch?.[1] || "").not.toMatch(/width:\s*max-content/i);
+    expect(cellMatch?.[1] || "").not.toMatch(/white-space:\s*nowrap/i);
+    expect(cellMatch?.[1] || "").toMatch(/overflow-wrap:\s*anywhere/i);
+    expect(cellMatch?.[1] || "").toMatch(/word-break:\s*break-word/i);
+  });
+
   it("keeps path-style text on the same typography as surrounding prose", () => {
     const linkMatch = source.match(/^\s*\.msgLink\s*\{([^}]+)\}/ms);
     expect(linkMatch).toBeTruthy();
