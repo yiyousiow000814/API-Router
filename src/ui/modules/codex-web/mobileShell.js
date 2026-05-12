@@ -5,19 +5,12 @@ export function shouldOpenDrawerWithAnimation(tab, wasThreadsOpen) {
 const EDGE_SWIPE_COMMIT_DELTA_PX = 12;
 const EDGE_SWIPE_VERTICAL_TOLERANCE_PX = 40;
 const EDGE_SWIPE_HORIZONTAL_LOCK_PX = 16;
+const DRAWER_GESTURE_BLOCK_ATTR = "data-block-drawer-gesture";
 const HORIZONTAL_SCROLL_PRIORITY_SELECTORS = [
   "msgCodeBlock",
   "msgTableWrap",
   "runtimeToolItemPreview",
 ];
-const DRAWER_GESTURE_BLOCKING_BACKDROP_IDS = new Set([
-  "imageViewerBackdrop",
-  "filePreviewBackdrop",
-  "folderPickerBackdrop",
-  "branchSwitchBlockedBackdrop",
-  "settingsProviderConfirmBackdrop",
-  "settingsProviderManagerBackdrop",
-]);
 
 function readTouchPoint(event) {
   const touch =
@@ -86,10 +79,13 @@ function isShownBackdrop(node) {
 function isBlockingModalGestureTarget(target) {
   let node = target;
   while (node) {
-    if (DRAWER_GESTURE_BLOCKING_BACKDROP_IDS.has(String(node.id || "")) && isShownBackdrop(node)) {
+    const role = typeof node.getAttribute === "function" ? String(node.getAttribute("role") || "").toLowerCase() : "";
+    const blocksDrawerGesture =
+      typeof node.getAttribute === "function" &&
+      String(node.getAttribute(DRAWER_GESTURE_BLOCK_ATTR) || "").toLowerCase() === "true";
+    if (blocksDrawerGesture && (role === "dialog" || isShownBackdrop(node))) {
       return true;
     }
-    const role = typeof node.getAttribute === "function" ? String(node.getAttribute("role") || "").toLowerCase() : "";
     if (role === "dialog") return true;
     node = node.parentElement || null;
   }

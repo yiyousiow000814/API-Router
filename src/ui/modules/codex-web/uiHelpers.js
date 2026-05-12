@@ -2,6 +2,8 @@ export function shouldSuppressSyntheticClickEvent(untilTs, now, eventType) {
   return String(eventType || "") === "click" && now <= Number(untilTs || 0);
 }
 
+const DRAWER_GESTURE_BLOCK_ATTR = "data-block-drawer-gesture";
+
 export function createUiHelpersModule(deps) {
   const {
     state,
@@ -56,9 +58,14 @@ export function createUiHelpersModule(deps) {
     if (!backdrop || backdrop.__wiredBlurBackdropShield) return;
     backdrop.__wiredBlurBackdropShield = true;
     const modalSelector = typeof options.modalSelector === "string" ? options.modalSelector : "";
+    const blockDrawerGesture = options.blockDrawerGesture !== false;
     const suppressMs = Math.max(0, Number(options.suppressMs) || 420);
     const onClose = typeof options.onClose === "function" ? options.onClose : null;
     const closeEvent = String(options.closeEvent || "pointerdown") === "pointerup" ? "pointerup" : "pointerdown";
+
+    if (blockDrawerGesture && typeof backdrop.setAttribute === "function") {
+      backdrop.setAttribute(DRAWER_GESTURE_BLOCK_ATTR, "true");
+    }
 
     const closeFromBackdrop = (event) => {
       if (shouldSuppressSyntheticClick(event)) return;
@@ -78,6 +85,9 @@ export function createUiHelpersModule(deps) {
 
     if (modalSelector) {
       const modal = backdrop.querySelector(modalSelector);
+      if (blockDrawerGesture && typeof modal?.setAttribute === "function") {
+        modal.setAttribute(DRAWER_GESTURE_BLOCK_ATTR, "true");
+      }
       if (modal && !modal.__wiredBackdropStopPropagation) {
         modal.__wiredBackdropStopPropagation = true;
         modal.addEventListener(closeEvent, (event) => event.stopPropagation());
