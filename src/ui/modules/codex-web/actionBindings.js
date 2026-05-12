@@ -1175,6 +1175,7 @@ export function createActionBindingsModule(deps) {
         onClose: () => setMobileTab("chat"),
         closeEvent: "pointerup",
         suppressMs: 420,
+        blockDrawerGesture: false,
       });
     }
     {

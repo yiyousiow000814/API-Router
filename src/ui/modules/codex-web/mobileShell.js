@@ -5,6 +5,7 @@ export function shouldOpenDrawerWithAnimation(tab, wasThreadsOpen) {
 const EDGE_SWIPE_COMMIT_DELTA_PX = 12;
 const EDGE_SWIPE_VERTICAL_TOLERANCE_PX = 40;
 const EDGE_SWIPE_HORIZONTAL_LOCK_PX = 16;
+const DRAWER_GESTURE_BLOCK_ATTR = "data-block-drawer-gesture";
 const HORIZONTAL_SCROLL_PRIORITY_SELECTORS = [
   "msgCodeBlock",
   "msgTableWrap",
@@ -66,6 +67,46 @@ function canScrollHorizontally(node, windowRef) {
   if (scrollWidth <= clientWidth + 1) return false;
   const overflowX = String(windowRef?.getComputedStyle?.(node)?.overflowX || "").toLowerCase();
   return !overflowX || overflowX === "auto" || overflowX === "scroll" || overflowX === "overlay";
+}
+
+function isShownBackdrop(node) {
+  if (!node) return false;
+  if (node.classList?.contains?.("show")) return true;
+  const ariaHidden = typeof node.getAttribute === "function" ? node.getAttribute("aria-hidden") : null;
+  return ariaHidden === "false";
+}
+
+function isBlockingModalGestureTarget(target) {
+  let node = target;
+  while (node) {
+    const role = typeof node.getAttribute === "function" ? String(node.getAttribute("role") || "").toLowerCase() : "";
+    const blocksDrawerGesture =
+      typeof node.getAttribute === "function" &&
+      String(node.getAttribute(DRAWER_GESTURE_BLOCK_ATTR) || "").toLowerCase() === "true";
+    if (blocksDrawerGesture && (role === "dialog" || isShownBackdrop(node))) {
+      return true;
+    }
+    if (role === "dialog") return true;
+    node = node.parentElement || null;
+  }
+  return false;
+}
+
+function hasActiveTextSelection(windowRef) {
+  const selection = windowRef?.getSelection?.();
+  if (!selection) return false;
+  if (selection.isCollapsed === true) return false;
+  const text = typeof selection.toString === "function" ? String(selection.toString() || "") : "";
+  if (text.trim()) return true;
+  return Number(selection.rangeCount || 0) > 0;
+}
+
+function shouldDeferDrawerSwipe(target, windowRef) {
+  return (
+    shouldUseHorizontalScrollPriority(target, windowRef) ||
+    isBlockingModalGestureTarget(target) ||
+    hasActiveTextSelection(windowRef)
+  );
 }
 
 export function shouldUseHorizontalScrollPriority(target, windowRef) {
@@ -213,7 +254,7 @@ export function createMobileShellModule(deps) {
           swipeLastPoint = null;
           return;
         }
-        if (shouldUseHorizontalScrollPriority(event.target, windowRef)) {
+        if (shouldDeferDrawerSwipe(event.target, windowRef)) {
           swipeStart = null;
           swipeLastPoint = null;
           swipeDrawerWidth = 0;
@@ -264,6 +305,15 @@ export function createMobileShellModule(deps) {
       "touchmove",
       (event) => {
         if (!swipeStart) return;
+        if (shouldDeferDrawerSwipe(event.target, windowRef)) {
+          clearDrawerDragVisual();
+          swipeStart = null;
+          swipeLastPoint = null;
+          swipeDrawerWidth = 0;
+          swipeMode = "open";
+          swipeHorizontalLocked = false;
+          return;
+        }
         const point = readTouchPoint(event);
         if (!point) {
           swipeStart = null;

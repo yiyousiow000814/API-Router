@@ -773,6 +773,371 @@ describe("mobileShell", () => {
     expect(body._style.has("--drawer-left-drag-translate")).toBe(false);
   });
 
+  it("does not open the drawer when an image viewer gesture starts inside the modal", () => {
+    const imageViewer = {
+      getAttribute(name) {
+        return name === "role" ? "dialog" : null;
+      },
+      parentElement: null,
+    };
+    const imageViewerBody = {
+      classList: {
+        contains(name) {
+          return name === "imageViewerBody";
+        },
+      },
+      parentElement: imageViewer,
+    };
+    const handlers = new Map();
+    const body = {
+      _classes: new Set(),
+      _style: new Map(),
+      classList: {
+        contains(name) {
+          return body._classes.has(name);
+        },
+        add(...names) {
+          for (const name of names) body._classes.add(name);
+        },
+        remove(...names) {
+          for (const name of names) body._classes.delete(name);
+        },
+      },
+      style: {
+        setProperty(name, value) {
+          body._style.set(name, value);
+        },
+        removeProperty(name) {
+          body._style.delete(name);
+        },
+      },
+    };
+    const backdrop = {
+      classList: {
+        _classes: new Set(),
+        toggle(name, force) {
+          if (force) this._classes.add(name);
+          else this._classes.delete(name);
+        },
+        add(name) {
+          this._classes.add(name);
+        },
+        remove(name) {
+          this._classes.delete(name);
+        },
+      },
+    };
+    createMobileShellModule({
+      state: {
+        drawerOpenPhaseTimer: 0,
+        threadListVisibleOpenAnimationUntil: 0,
+        threadListPendingSidebarOpenAnimation: false,
+        threadListVisibleAnimationTimer: 0,
+        threadListLoading: false,
+        threadItems: [],
+        threadListPendingVisibleAnimationByWorkspace: { windows: false, wsl2: false },
+        threadListAnimateNextRender: false,
+        threadListAnimateThreadIds: new Set(),
+        threadListExpandAnimateGroupKeys: new Set(),
+        threadListSkipScrollRestoreOnce: false,
+      },
+      byId(id) {
+        if (id === "mobileDrawerBackdrop") return backdrop;
+        return null;
+      },
+      documentRef: {
+        body,
+        querySelector(selector) {
+          if (selector === ".leftPanel") {
+            return {
+              getBoundingClientRect() {
+                return { width: 300 };
+              },
+            };
+          }
+          return null;
+        },
+        addEventListener(name, handler) {
+          handlers.set(name, handler);
+        },
+      },
+      windowRef: { innerWidth: 420 },
+      normalizeWorkspaceTarget(value) {
+        return value;
+      },
+      getWorkspaceTarget() {
+        return "windows";
+      },
+      pushThreadAnimDebug() {},
+      renderThreads() {},
+    });
+
+    handlers.get("touchstart")({
+      target: imageViewerBody,
+      touches: [{ clientX: 48, clientY: 220 }],
+    });
+    handlers.get("touchmove")({
+      target: imageViewerBody,
+      touches: [{ clientX: 116, clientY: 224 }],
+    });
+    handlers.get("touchend")({
+      target: imageViewerBody,
+      changedTouches: [{ clientX: 140, clientY: 224 }],
+    });
+
+    expect(body._classes.has("drawer-left-open")).toBe(false);
+    expect(body._classes.has("drawer-left-dragging")).toBe(false);
+    expect(body._style.has("--drawer-left-drag-translate")).toBe(false);
+  });
+
+  it("does not open the drawer when a generic drawer-blocking backdrop is active", () => {
+    const genericBackdrop = {
+      _attrs: new Map([
+        ["data-block-drawer-gesture", "true"],
+        ["aria-hidden", "false"],
+      ]),
+      classList: {
+        contains(name) {
+          return name === "show";
+        },
+      },
+      getAttribute(name) {
+        return this._attrs.get(name) || null;
+      },
+      parentElement: null,
+    };
+    const handlers = new Map();
+    const body = {
+      _classes: new Set(),
+      _style: new Map(),
+      classList: {
+        contains(name) {
+          return body._classes.has(name);
+        },
+        add(...names) {
+          for (const name of names) body._classes.add(name);
+        },
+        remove(...names) {
+          for (const name of names) body._classes.delete(name);
+        },
+      },
+      style: {
+        setProperty(name, value) {
+          body._style.set(name, value);
+        },
+        removeProperty(name) {
+          body._style.delete(name);
+        },
+      },
+    };
+    const backdrop = {
+      classList: {
+        _classes: new Set(),
+        toggle(name, force) {
+          if (force) this._classes.add(name);
+          else this._classes.delete(name);
+        },
+        add(name) {
+          this._classes.add(name);
+        },
+        remove(name) {
+          this._classes.delete(name);
+        },
+      },
+    };
+    createMobileShellModule({
+      state: {
+        drawerOpenPhaseTimer: 0,
+        threadListVisibleOpenAnimationUntil: 0,
+        threadListPendingSidebarOpenAnimation: false,
+        threadListVisibleAnimationTimer: 0,
+        threadListLoading: false,
+        threadItems: [],
+        threadListPendingVisibleAnimationByWorkspace: { windows: false, wsl2: false },
+        threadListAnimateNextRender: false,
+        threadListAnimateThreadIds: new Set(),
+        threadListExpandAnimateGroupKeys: new Set(),
+        threadListSkipScrollRestoreOnce: false,
+      },
+      byId(id) {
+        if (id === "mobileDrawerBackdrop") return backdrop;
+        return null;
+      },
+      documentRef: {
+        body,
+        querySelector(selector) {
+          if (selector === ".leftPanel") {
+            return {
+              getBoundingClientRect() {
+                return { width: 300 };
+              },
+            };
+          }
+          return null;
+        },
+        addEventListener(name, handler) {
+          handlers.set(name, handler);
+        },
+      },
+      windowRef: { innerWidth: 420 },
+      normalizeWorkspaceTarget(value) {
+        return value;
+      },
+      getWorkspaceTarget() {
+        return "windows";
+      },
+      pushThreadAnimDebug() {},
+      renderThreads() {},
+    });
+
+    handlers.get("touchstart")({
+      target: genericBackdrop,
+      touches: [{ clientX: 48, clientY: 220 }],
+    });
+    handlers.get("touchmove")({
+      target: genericBackdrop,
+      touches: [{ clientX: 116, clientY: 224 }],
+    });
+    handlers.get("touchend")({
+      target: genericBackdrop,
+      changedTouches: [{ clientX: 140, clientY: 224 }],
+    });
+
+    expect(body._classes.has("drawer-left-open")).toBe(false);
+    expect(body._classes.has("drawer-left-dragging")).toBe(false);
+    expect(body._style.has("--drawer-left-drag-translate")).toBe(false);
+  });
+
+  it("cancels drawer opening when native text selection becomes active mid-gesture", () => {
+    let selectionActive = false;
+    const messageText = {
+      classList: {
+        contains() {
+          return false;
+        },
+      },
+      parentElement: null,
+    };
+    const handlers = new Map();
+    const body = {
+      _classes: new Set(),
+      _style: new Map(),
+      classList: {
+        contains(name) {
+          return body._classes.has(name);
+        },
+        add(...names) {
+          for (const name of names) body._classes.add(name);
+        },
+        remove(...names) {
+          for (const name of names) body._classes.delete(name);
+        },
+      },
+      style: {
+        setProperty(name, value) {
+          body._style.set(name, value);
+        },
+        removeProperty(name) {
+          body._style.delete(name);
+        },
+      },
+    };
+    const backdrop = {
+      classList: {
+        _classes: new Set(),
+        toggle(name, force) {
+          if (force) this._classes.add(name);
+          else this._classes.delete(name);
+        },
+        add(name) {
+          this._classes.add(name);
+        },
+        remove(name) {
+          this._classes.delete(name);
+        },
+      },
+    };
+    createMobileShellModule({
+      state: {
+        drawerOpenPhaseTimer: 0,
+        threadListVisibleOpenAnimationUntil: 0,
+        threadListPendingSidebarOpenAnimation: false,
+        threadListVisibleAnimationTimer: 0,
+        threadListLoading: false,
+        threadItems: [],
+        threadListPendingVisibleAnimationByWorkspace: { windows: false, wsl2: false },
+        threadListAnimateNextRender: false,
+        threadListAnimateThreadIds: new Set(),
+        threadListExpandAnimateGroupKeys: new Set(),
+        threadListSkipScrollRestoreOnce: false,
+      },
+      byId(id) {
+        if (id === "mobileDrawerBackdrop") return backdrop;
+        return null;
+      },
+      documentRef: {
+        body,
+        querySelector(selector) {
+          if (selector === ".leftPanel") {
+            return {
+              getBoundingClientRect() {
+                return { width: 300 };
+              },
+            };
+          }
+          return null;
+        },
+        addEventListener(name, handler) {
+          handlers.set(name, handler);
+        },
+      },
+      windowRef: {
+        innerWidth: 420,
+        getSelection() {
+          return selectionActive
+            ? {
+                isCollapsed: false,
+                toString() {
+                  return "selected text";
+                },
+              }
+            : {
+                isCollapsed: true,
+                toString() {
+                  return "";
+                },
+              };
+        },
+      },
+      normalizeWorkspaceTarget(value) {
+        return value;
+      },
+      getWorkspaceTarget() {
+        return "windows";
+      },
+      pushThreadAnimDebug() {},
+      renderThreads() {},
+    });
+
+    handlers.get("touchstart")({
+      target: messageText,
+      touches: [{ clientX: 48, clientY: 220 }],
+    });
+    selectionActive = true;
+    handlers.get("touchmove")({
+      target: messageText,
+      touches: [{ clientX: 116, clientY: 224 }],
+    });
+    handlers.get("touchend")({
+      target: messageText,
+      changedTouches: [{ clientX: 140, clientY: 224 }],
+    });
+
+    expect(body._classes.has("drawer-left-open")).toBe(false);
+    expect(body._classes.has("drawer-left-dragging")).toBe(false);
+    expect(body._style.has("--drawer-left-drag-translate")).toBe(false);
+  });
+
   it("keeps sidebar swipes available over non-overflowing message blocks", () => {
     const codeBlock = {
       classList: {

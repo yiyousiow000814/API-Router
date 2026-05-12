@@ -27,10 +27,30 @@ describe("uiHelpers", () => {
 
   it("can close a backdrop on pointer release instead of pointer press", () => {
     const handlers = new Map();
+    const modal = {
+      _attrs: new Map(),
+      addEventListener() {},
+      setAttribute(name, value) {
+        this._attrs.set(name, String(value));
+      },
+      getAttribute(name) {
+        return this._attrs.get(name) || null;
+      },
+    };
     const backdrop = {
       __wiredBlurBackdropShield: false,
+      _attrs: new Map(),
       addEventListener(name, handler) {
         handlers.set(name, handler);
+      },
+      setAttribute(name, value) {
+        this._attrs.set(name, String(value));
+      },
+      getAttribute(name) {
+        return this._attrs.get(name) || null;
+      },
+      querySelector(selector) {
+        return selector === ".modal" ? modal : null;
       },
     };
     const onClose = vi.fn();
@@ -52,10 +72,12 @@ describe("uiHelpers", () => {
       windowRef: {},
     });
 
-    module.wireBlurBackdropShield(backdrop, { closeEvent: "pointerup", onClose });
+    module.wireBlurBackdropShield(backdrop, { closeEvent: "pointerup", onClose, modalSelector: ".modal" });
 
     expect(handlers.has("pointerdown")).toBe(false);
     expect(handlers.has("pointerup")).toBe(true);
+    expect(backdrop.getAttribute("data-block-drawer-gesture")).toBe("true");
+    expect(modal.getAttribute("data-block-drawer-gesture")).toBe("true");
 
     handlers.get("pointerup")(event);
 
