@@ -112,6 +112,8 @@ function nextAnimationFrame(requestAnimationFrameRef) {
   return new Promise((resolve) => requestAnimationFrameRef(() => resolve()));
 }
 
+const IMAGE_VIEWER_SLIDE_FALLBACK_MS = 320;
+
 function buildBrokenAttachmentCardHtml(label, overlayHtml = "", escapeHtmlRef = (value) => String(value || "")) {
   return (
     `<div class="msgAttachmentChip mono">[image]</div>` +
@@ -140,6 +142,21 @@ export function createImageViewerModule(deps) {
   let filePreviewHistoryToken = 0;
   let filePreviewHistoryWired = false;
   let pdfPreviewState = null;
+
+  function getImageViewerNodes() {
+    return {
+      backdrop: byId("imageViewerBackdrop"),
+      body: byId("imageViewerBody"),
+      img: byId("imageViewerImg"),
+      incomingImg: byId("imageViewerImgIncoming"),
+      currentLayer: byId("imageViewerCurrentLayer"),
+      incomingLayer: byId("imageViewerIncomingLayer"),
+      title: byId("imageViewerTitle"),
+      prev: byId("imageViewerPrevBtn"),
+      next: byId("imageViewerNextBtn"),
+      film: byId("imageViewerFilmstrip"),
+    };
+  }
 
   function isPdfPreviewSrc(src) {
     try {
@@ -207,26 +224,13 @@ export function createImageViewerModule(deps) {
     }
   }
 
-  function setViewerIndex(nextIndex) {
-    const backdrop = byId("imageViewerBackdrop");
-    const img = byId("imageViewerImg");
-    const title = byId("imageViewerTitle");
-    const prev = byId("imageViewerPrevBtn");
-    const next = byId("imageViewerNextBtn");
-    const film = byId("imageViewerFilmstrip");
-    if (!backdrop || !img || !imageViewerState) return;
-
+  function syncViewerChrome(idx) {
+    const { title, prev, next, film } = getImageViewerNodes();
+    if (!imageViewerState) return;
     const images = Array.isArray(imageViewerState.images) ? imageViewerState.images : [];
-    const idx = clampNumber(Number(nextIndex || 0), 0, Math.max(0, images.length - 1));
     const item = images[idx] || {};
-    imageViewerState.index = idx;
-
     const safeLabel = String(item.label || "").trim() || "image";
-    const safeSrc = String(item.src || "").trim();
     if (title) title.textContent = safeLabel;
-    img.src = safeSrc;
-    img.alt = safeLabel;
-    setViewerTransform({ scale: 1, tx: 0, ty: 0 });
 
     if (prev) prev.toggleAttribute("disabled", idx <= 0);
     if (next) next.toggleAttribute("disabled", idx >= images.length - 1);
@@ -255,6 +259,128 @@ export function createImageViewerModule(deps) {
     }
   }
 
+  function clearViewerSlideState() {
+    const { body, incomingImg } = getImageViewerNodes();
+    if (imageViewerState?.slideTimer) {
+      clearTimeout(imageViewerState.slideTimer);
+      imageViewerState.slideTimer = null;
+    }
+    if (body?.classList) {
+      body.classList.remove(
+        "is-slide-transitioning",
+        "is-slide-running",
+        "is-slide-forward",
+        "is-slide-backward"
+      );
+    }
+    if (incomingImg) {
+      incomingImg.src = "";
+      incomingImg.alt = "";
+      if (incomingImg.style) incomingImg.style.transform = "";
+    }
+    if (imageViewerState) {
+      imageViewerState.isSliding = false;
+      imageViewerState.slideTargetIndex = null;
+      imageViewerState.slideToken = Number(imageViewerState.slideToken || 0);
+    }
+  }
+
+  function commitViewerIndex(nextIndex) {
+    const { backdrop, img, incomingImg } = getImageViewerNodes();
+    if (!backdrop || !img || !imageViewerState) return;
+
+    const images = Array.isArray(imageViewerState.images) ? imageViewerState.images : [];
+    const idx = clampNumber(Number(nextIndex || 0), 0, Math.max(0, images.length - 1));
+    const item = images[idx] || {};
+    imageViewerState.index = idx;
+
+    const safeLabel = String(item.label || "").trim() || "image";
+    const safeSrc = String(item.src || "").trim();
+    img.src = safeSrc;
+    img.alt = safeLabel;
+    if (incomingImg?.style) incomingImg.style.transform = "";
+    setViewerTransform({ scale: 1, tx: 0, ty: 0 });
+    syncViewerChrome(idx);
+    clearViewerSlideState();
+  }
+
+  function finishViewerSlide(targetIndex, token) {
+    if (!imageViewerState?.isSliding) return;
+    if (Number(imageViewerState.slideToken || 0) !== Number(token || 0)) return;
+    commitViewerIndex(targetIndex);
+  }
+
+  function startViewerSlide(targetIndex) {
+    const { body, currentLayer, incomingLayer, incomingImg } = getImageViewerNodes();
+    if (!body || !currentLayer || !incomingLayer || !incomingImg || !imageViewerState) {
+      commitViewerIndex(targetIndex);
+      return;
+    }
+
+    const images = Array.isArray(imageViewerState.images) ? imageViewerState.images : [];
+    const currentIndex = clampNumber(
+      Number(imageViewerState.index || 0),
+      0,
+      Math.max(0, images.length - 1)
+    );
+    const idx = clampNumber(Number(targetIndex || 0), 0, Math.max(0, images.length - 1));
+    if (idx === currentIndex) return;
+
+    clearViewerSlideState();
+    setViewerTransform({ scale: 1, tx: 0, ty: 0 });
+
+    const item = images[idx] || {};
+    const safeLabel = String(item.label || "").trim() || "image";
+    const safeSrc = String(item.src || "").trim();
+    incomingImg.src = safeSrc;
+    incomingImg.alt = safeLabel;
+    if (incomingImg.style) incomingImg.style.transform = "translate(0px, 0px) scale(1)";
+
+    const direction = idx > currentIndex ? "is-slide-forward" : "is-slide-backward";
+    const token = Number(imageViewerState.slideToken || 0) + 1;
+    imageViewerState.slideToken = token;
+    imageViewerState.isSliding = true;
+    imageViewerState.slideTargetIndex = idx;
+
+    body.classList.remove("is-slide-forward", "is-slide-backward", "is-slide-running");
+    body.classList.add("is-slide-transitioning", direction);
+
+    const finish = () => finishViewerSlide(idx, token);
+    incomingLayer.addEventListener("transitionend", finish, { once: true });
+    imageViewerState.slideTimer = setTimeout(finish, IMAGE_VIEWER_SLIDE_FALLBACK_MS);
+
+    void nextAnimationFrame(requestAnimationFrameRef).then(() => {
+      void nextAnimationFrame(requestAnimationFrameRef).then(() => {
+        if (!imageViewerState?.isSliding) return;
+        if (Number(imageViewerState.slideToken || 0) !== token) return;
+        body.classList.add("is-slide-running");
+      });
+    });
+  }
+
+  function setViewerIndex(nextIndex, options = {}) {
+    if (!imageViewerState) return;
+    const animate = options.animate === true;
+    if (imageViewerState.isSliding) return;
+    const images = Array.isArray(imageViewerState.images) ? imageViewerState.images : [];
+    const idx = clampNumber(Number(nextIndex || 0), 0, Math.max(0, images.length - 1));
+    const scale = Number(imageViewerState.scale || 1);
+    const nodes = getImageViewerNodes();
+    const canAnimate =
+      animate &&
+      idx !== Number(imageViewerState.index || 0) &&
+      scale <= 1.02 &&
+      !!nodes.body &&
+      !!nodes.currentLayer &&
+      !!nodes.incomingLayer &&
+      !!nodes.incomingImg;
+    if (canAnimate) {
+      startViewerSlide(idx);
+      return;
+    }
+    commitViewerIndex(idx);
+  }
+
   function renderViewerFilmstrip() {
     const film = byId("imageViewerFilmstrip");
     if (!film || !imageViewerState) return;
@@ -272,7 +398,7 @@ export function createImageViewerModule(deps) {
       .join("");
 
     for (const btn of Array.from(film.querySelectorAll("[data-qa='image-viewer-thumb']"))) {
-      btn.onclick = () => setViewerIndex(Number(btn.getAttribute("data-index") || "0"));
+      btn.onclick = () => setViewerIndex(Number(btn.getAttribute("data-index") || "0"), { animate: true });
     }
   }
 
@@ -301,6 +427,7 @@ export function createImageViewerModule(deps) {
       "pointerdown",
       (event) => {
         if (!imageViewerState) return;
+        if (imageViewerState.isSliding) return;
         body.setPointerCapture?.(event.pointerId);
         active.set(event.pointerId, { x: event.clientX, y: event.clientY });
         if (active.size === 1) {
@@ -364,8 +491,8 @@ export function createImageViewerModule(deps) {
           const dx = event.clientX - swipeStart.x;
           const dy = event.clientY - swipeStart.y;
           if (Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy) * 1.2) {
-            if (dx < 0) setViewerIndex((imageViewerState.index || 0) + 1);
-            else setViewerIndex((imageViewerState.index || 0) - 1);
+            if (dx < 0) setViewerIndex((imageViewerState.index || 0) + 1, { animate: true });
+            else setViewerIndex((imageViewerState.index || 0) - 1, { animate: true });
           }
         }
         if (now - lastTapMs < 320) {
@@ -421,7 +548,14 @@ export function createImageViewerModule(deps) {
       `</button>` +
       `</div>` +
       `<div id="imageViewerBody" class="imageViewerBody">` +
+      `<div id="imageViewerStage" class="imageViewerStage">` +
+      `<div id="imageViewerCurrentLayer" class="imageViewerSlideLayer imageViewerCurrentLayer">` +
       `<img id="imageViewerImg" class="imageViewerImg" alt="" />` +
+      `</div>` +
+      `<div id="imageViewerIncomingLayer" class="imageViewerSlideLayer imageViewerIncomingLayer" aria-hidden="true">` +
+      `<img id="imageViewerImgIncoming" class="imageViewerImg" alt="" />` +
+      `</div>` +
+      `</div>` +
       `</div>` +
       `<button id="imageViewerPrevBtn" class="imageViewerIconBtn imageViewerNav prev" type="button" aria-label="Previous" data-qa="image-viewer-prev">` +
       `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"></path></svg>` +
@@ -433,7 +567,10 @@ export function createImageViewerModule(deps) {
       `</div>`;
     documentRef.body.appendChild(backdrop);
 
-    const close = () => backdrop.classList.remove("show");
+    const close = () => {
+      clearViewerSlideState();
+      backdrop.classList.remove("show");
+    };
     wireBlurBackdropShield(backdrop, {
       onClose: close,
       modalSelector: ".imageViewer",
@@ -766,13 +903,23 @@ export function createImageViewerModule(deps) {
       Math.max(0, images.length - 1)
     );
 
-    imageViewerState = { images, index: startIndex, scale: 1, tx: 0, ty: 0 };
+    imageViewerState = {
+      images,
+      index: startIndex,
+      scale: 1,
+      tx: 0,
+      ty: 0,
+      isSliding: false,
+      slideTargetIndex: null,
+      slideToken: 0,
+      slideTimer: null,
+    };
     renderViewerFilmstrip();
     setViewerIndex(startIndex);
     wireViewerGestures();
 
-    if (prev) prev.onclick = () => setViewerIndex((imageViewerState?.index || 0) - 1);
-    if (next) next.onclick = () => setViewerIndex((imageViewerState?.index || 0) + 1);
+    if (prev) prev.onclick = () => setViewerIndex((imageViewerState?.index || 0) - 1, { animate: true });
+    if (next) next.onclick = () => setViewerIndex((imageViewerState?.index || 0) + 1, { animate: true });
     if (!documentRef.__webCodexImageViewerArrowWired) {
       documentRef.__webCodexImageViewerArrowWired = true;
       documentRef.addEventListener(
@@ -780,8 +927,8 @@ export function createImageViewerModule(deps) {
         (event) => {
           if (!byId("imageViewerBackdrop")?.classList.contains("show")) return;
           if (!imageViewerState) return;
-          if (event.key === "ArrowLeft") setViewerIndex((imageViewerState.index || 0) - 1);
-          if (event.key === "ArrowRight") setViewerIndex((imageViewerState.index || 0) + 1);
+          if (event.key === "ArrowLeft") setViewerIndex((imageViewerState.index || 0) - 1, { animate: true });
+          if (event.key === "ArrowRight") setViewerIndex((imageViewerState.index || 0) + 1, { animate: true });
         },
         { passive: true }
       );

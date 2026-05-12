@@ -2,7 +2,207 @@ import { describe, expect, it, vi } from "vitest";
 
 import { createImageViewerModule } from "./imageViewer.js";
 
+function createClassList() {
+  const tokens = new Set();
+  return {
+    add(...names) {
+      for (const name of names) if (name) tokens.add(String(name));
+    },
+    remove(...names) {
+      for (const name of names) tokens.delete(String(name));
+    },
+    contains(name) {
+      return tokens.has(String(name));
+    },
+    toggle(name, force) {
+      if (force === true) {
+        tokens.add(String(name));
+        return true;
+      }
+      if (force === false) {
+        tokens.delete(String(name));
+        return false;
+      }
+      if (tokens.has(String(name))) {
+        tokens.delete(String(name));
+        return false;
+      }
+      tokens.add(String(name));
+      return true;
+    },
+  };
+}
+
+function createEventTarget(extra = {}) {
+  const listeners = new Map();
+  return {
+    ...extra,
+    addEventListener(type, handler) {
+      const key = String(type || "");
+      if (!listeners.has(key)) listeners.set(key, []);
+      listeners.get(key).push(handler);
+    },
+    dispatchEvent(event) {
+      const payload = event && typeof event === "object" ? event : { type: String(event || "") };
+      const handlers = listeners.get(String(payload.type || "")) || [];
+      for (const handler of handlers) {
+        handler({
+          ...payload,
+          currentTarget: this,
+          target: this,
+          preventDefault() {},
+          stopPropagation() {},
+        });
+      }
+      return handlers.length > 0;
+    },
+  };
+}
+
+function createToggleButton(index = null) {
+  const attrs = new Map();
+  const button = createEventTarget({
+    classList: createClassList(),
+    onclick: null,
+    scrollIntoView() {},
+    getBoundingClientRect() {
+      const left = Number(index ?? 0) * 44;
+      return { left, width: 36 };
+    },
+    toggleAttribute(name, force) {
+      if (force === false) attrs.delete(String(name));
+      else attrs.set(String(name), "");
+    },
+    setAttribute(name, value) {
+      attrs.set(String(name), String(value));
+    },
+    getAttribute(name) {
+      return attrs.has(String(name)) ? attrs.get(String(name)) : null;
+    },
+  });
+  return button;
+}
+
+function createFilmstrip() {
+  const film = {
+    classList: createClassList(),
+    scrollLeft: 0,
+    _buttons: [],
+    _innerHTML: "",
+    get innerHTML() {
+      return this._innerHTML;
+    },
+    set innerHTML(value) {
+      this._innerHTML = String(value || "");
+      this._buttons = Array.from(
+        this._innerHTML.matchAll(
+          /data-index="(\d+)"[\s\S]*?aria-label="([^"]*)"[\s\S]*?<img alt="[^"]*" src="([^"]*)"/g
+        )
+      ).map((match) => {
+        const button = createToggleButton(Number(match[1]));
+        button.setAttribute("data-qa", "image-viewer-thumb");
+        button.setAttribute("data-index", match[1]);
+        button.setAttribute("aria-label", match[2]);
+        button.src = match[3];
+        return button;
+      });
+    },
+    querySelectorAll(selector) {
+      if (selector === "[data-qa='image-viewer-thumb']") return this._buttons;
+      return [];
+    },
+    querySelector(selector) {
+      const match = /\[data-index='(\d+)'\]/.exec(String(selector || ""));
+      if (!match) return null;
+      return this._buttons.find((button) => button.getAttribute("data-index") === match[1]) || null;
+    },
+    getBoundingClientRect() {
+      return { left: 0, width: 180 };
+    },
+  };
+  return film;
+}
+
 describe("imageViewer", () => {
+  it("slides to the next image before replacing the current source", async () => {
+    const elements = new Map();
+    const backdrop = { classList: createClassList() };
+    const body = createEventTarget({
+      classList: createClassList(),
+      __wired: false,
+      setPointerCapture() {},
+    });
+    const title = { textContent: "" };
+    const img = { src: "", alt: "", style: {} };
+    const incomingImg = { src: "", alt: "", style: {} };
+    const currentLayer = createEventTarget({ classList: createClassList() });
+    const incomingLayer = createEventTarget({ classList: createClassList() });
+    const prev = createToggleButton();
+    const next = createToggleButton();
+    const download = createToggleButton();
+    const share = createToggleButton();
+    const film = createFilmstrip();
+
+    elements.set("imageViewerBackdrop", backdrop);
+    elements.set("imageViewerBody", body);
+    elements.set("imageViewerTitle", title);
+    elements.set("imageViewerImg", img);
+    elements.set("imageViewerImgIncoming", incomingImg);
+    elements.set("imageViewerCurrentLayer", currentLayer);
+    elements.set("imageViewerIncomingLayer", incomingLayer);
+    elements.set("imageViewerPrevBtn", prev);
+    elements.set("imageViewerNextBtn", next);
+    elements.set("imageViewerDownloadBtn", download);
+    elements.set("imageViewerShareBtn", share);
+    elements.set("imageViewerFilmstrip", film);
+
+    const module = createImageViewerModule({
+      byId: (id) => elements.get(id) || null,
+      state: {
+        chatSmoothScrollUntil: 0,
+        chatShouldStickToBottom: true,
+      },
+      escapeHtml: (value) => String(value || ""),
+      wireBlurBackdropShield: () => {},
+      scrollChatToBottom: () => {},
+      updateScrollToBottomBtn: () => {},
+      documentRef: {
+        body: { appendChild() {} },
+        createElement() {
+          return {};
+        },
+        addEventListener() {},
+      },
+      navigatorRef: {},
+      requestAnimationFrameRef: (callback) => callback(),
+    });
+
+    module.openImageViewer("/one.png", "Image #1", {
+      images: [
+        { src: "/one.png", label: "Image #1" },
+        { src: "/two.png", label: "Image #2" },
+      ],
+      index: 0,
+    });
+
+    expect(img.src).toBe("/one.png");
+
+    next.onclick();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(body.classList.contains("is-slide-transitioning")).toBe(true);
+    expect(body.classList.contains("is-slide-running")).toBe(true);
+    expect(incomingImg.src).toBe("/two.png");
+    expect(img.src).toBe("/one.png");
+
+    incomingLayer.dispatchEvent({ type: "transitionend" });
+
+    expect(body.classList.contains("is-slide-transitioning")).toBe(false);
+    expect(img.src).toBe("/two.png");
+    expect(title.textContent).toBe("Image #2");
+  });
+
   it("keeps a missing attachment placeholder and avoids force scrolling on image errors", () => {
     const scrollChatToBottom = vi.fn();
     const updateScrollToBottomBtn = vi.fn();

@@ -216,6 +216,23 @@ describe("codex-web runtime layout", () => {
     expect(leadMatch?.[1] || "").toMatch(/width:\s*clamp\(96px,\s*22%,\s*124px\)/i);
   });
 
+  it("animates image viewer gallery navigation with layered slide states", () => {
+    const stageMatch = source.match(/\.imageViewerStage\s*\{([^}]+)\}/s);
+    const layerMatch = source.match(/\.imageViewerSlideLayer\s*\{([^}]+)\}/s);
+    const transitionMatch = source.match(/\.imageViewerBody\.is-slide-transitioning\s+\.imageViewerSlideLayer\s*\{([^}]+)\}/s);
+
+    expect(stageMatch).toBeTruthy();
+    expect(layerMatch).toBeTruthy();
+    expect(transitionMatch).toBeTruthy();
+    expect(stageMatch?.[1] || "").toMatch(/position:\s*relative/i);
+    expect(stageMatch?.[1] || "").toMatch(/overflow:\s*hidden/i);
+    expect(layerMatch?.[1] || "").toMatch(/position:\s*absolute/i);
+    expect(transitionMatch?.[1] || "").toMatch(/transition:\s*transform var\(--motion-base,\s*220ms\)/i);
+    expect(source).toContain(".imageViewerBody.is-slide-transitioning.is-slide-forward");
+    expect(source).toContain(".imageViewerBody.is-slide-transitioning.is-slide-backward");
+    expect(source).toContain(".imageViewerBody.is-slide-transitioning.is-slide-running");
+  });
+
   it("keeps path-style text on the same typography as surrounding prose", () => {
     const linkMatch = source.match(/^\s*\.msgLink\s*\{([^}]+)\}/ms);
     expect(linkMatch).toBeTruthy();
