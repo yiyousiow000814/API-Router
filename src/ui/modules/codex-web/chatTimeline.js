@@ -10,6 +10,7 @@ import { getProposedPlanConfirmation } from "./proposedPlan.js";
 import { splitReplayText } from "./textReplay.js";
 
 import { resetPendingTurnRuntime, resetTurnPresentationState } from "./runtimeState.js";
+import { setActiveTimelineMessages } from "./activeTimelineState.js";
 
 export function summarizeChatTimeline(box) {
   const nodes = Array.from(box?.children || []).filter((child) => child?.classList?.contains?.("msg"));
@@ -934,6 +935,7 @@ export function createChatTimelineModule(deps) {
       text: fromText,
       targetText,
     };
+    renderAssistantLiveBody(msgNode, bodyNode, fromText);
 
     const step = () => {
       if (bodyNode.__webCodexHistoryReplayToken !== token) return;
@@ -992,7 +994,7 @@ export function createChatTimelineModule(deps) {
     if (!preserveScroll) box.scrollTop = 0;
     lastCommentaryArchiveRenderSig = "";
     state.activeThreadRenderSig = "";
-    state.activeThreadMessages = [];
+    setActiveTimelineMessages(state, []);
     if (!preservePendingTurn) {
       resetTurnPresentationState(state, { bumpLiveEpoch: true, resetLiveRuntimeEpoch: true });
       resetPendingTurnRuntime(state, { reason: "chat.clear" });

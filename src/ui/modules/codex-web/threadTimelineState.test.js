@@ -2,14 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import {
   applyTimelineSnapshot,
-  createCanonicalTimelineState,
-  mergeCanonicalThreadMeta,
+  createThreadTimelineState,
+  mergeThreadTimelineMeta,
   reduceTimelineEvent,
-} from "./canonicalTimeline.js";
+} from "./threadTimelineState.js";
 
-describe("canonicalTimeline", () => {
+describe("threadTimelineState", () => {
   it("replaces an optimistic user message with the matching server echo", () => {
-    let state = createCanonicalTimelineState("thread-1");
+    let state = createThreadTimelineState("thread-1");
 
     state = reduceTimelineEvent(state, {
       type: "optimistic-user",
@@ -41,7 +41,7 @@ describe("canonicalTimeline", () => {
   });
 
   it("deduplicates live and history final answers with the same turn identity", () => {
-    let state = createCanonicalTimelineState("thread-1");
+    let state = createThreadTimelineState("thread-1");
 
     state = reduceTimelineEvent(state, {
       type: "assistant-final",
@@ -72,7 +72,7 @@ describe("canonicalTimeline", () => {
   });
 
   it("preserves a running optimistic user when a history snapshot lacks the user echo", () => {
-    let state = createCanonicalTimelineState("thread-1");
+    let state = createThreadTimelineState("thread-1");
 
     state = reduceTimelineEvent(state, {
       type: "optimistic-user",
@@ -98,8 +98,8 @@ describe("canonicalTimeline", () => {
     ]);
   });
 
-  it("prevents provisional live metadata from overwriting a canonical title", () => {
-    const merged = mergeCanonicalThreadMeta(
+  it("prevents provisional live metadata from overwriting a stable title", () => {
+    const merged = mergeThreadTimelineMeta(
       {
         id: "thread-1",
         title: "Explain the screenshots",
@@ -122,7 +122,7 @@ describe("canonicalTimeline", () => {
   });
 
   it("allows a user-message provisional preview to seed a brand-new thread", () => {
-    const merged = mergeCanonicalThreadMeta(
+    const merged = mergeThreadTimelineMeta(
       null,
       {
         id: "thread-1",

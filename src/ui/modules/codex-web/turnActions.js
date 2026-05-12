@@ -19,9 +19,16 @@ import {
 } from "./threadOpenState.js";
 import { resolveActionErrorMessage } from "./actionBindings.js";
 import {
-  createCanonicalTimelineState,
+  createThreadTimelineState,
   reduceTimelineEvent,
-} from "./canonicalTimeline.js";
+} from "./threadTimelineState.js";
+import {
+  appendActiveTimelineMessage,
+  ensureActiveTimelineMessages,
+  removeActiveTimelineMessageAt,
+  setActiveTimelineMessages,
+  updateActiveTimelineMessageAt,
+} from "./activeTimelineState.js";
 
 export function buildTurnPayload({
   activeThreadId,
@@ -378,6 +385,25 @@ export function createTurnActionsModule(deps) {
     return setThreadOpenState(state, nextState, options);
   }
 
+  function resolveComposerThreadId(fallback = "", options = {}) {
+    const explicitThreadId = String(options?.threadId || options?.targetThreadId || "").trim();
+    if (explicitThreadId) return explicitThreadId;
+    const activeThreadId = String(state.activeThreadId || "").trim();
+    if (activeThreadId) return activeThreadId;
+    const fallbackThreadId = String(fallback || "").trim();
+    if (fallbackThreadId) return fallbackThreadId;
+    return String(resolveCurrentThreadId(state, fallbackThreadId) || "").trim();
+  }
+
+  function isComposerThreadRunning(threadId = resolveComposerThreadId()) {
+    const normalizedThreadId = String(threadId || "").trim();
+    if (!normalizedThreadId) return false;
+    return (
+      state.activeThreadPendingTurnRunning === true &&
+      String(state.activeThreadPendingTurnThreadId || "").trim() === normalizedThreadId
+    );
+  }
+
   function activeThreadRequiresResume() {
     const openState = state.activeThreadOpenState;
     if (openState) return shouldResumeThreadBeforeSend(openState);
@@ -494,7 +520,7 @@ export function createTurnActionsModule(deps) {
       liveAssistantIndex >= 0 &&
       liveAssistantIndex < state.activeThreadMessages.length
     ) {
-      state.activeThreadMessages.splice(liveAssistantIndex, 1);
+      removeActiveTimelineMessageAt(state, liveAssistantIndex);
     }
     liveAssistantMsgNode?.remove?.();
     resetTurnPresentationState(state, { bumpLiveEpoch: options.bumpLiveEpoch === true });
@@ -554,7 +580,7 @@ export function createTurnActionsModule(deps) {
         !String(last.kind || "").trim() &&
         String(last.text || "") === normalizedPrompt
       ) {
-        state.activeThreadMessages = state.activeThreadMessages.slice(0, -1);
+        setActiveTimelineMessages(state, state.activeThreadMessages.slice(0, -1));
       }
     }
     const box = byId("chatBox");
@@ -584,30 +610,30 @@ export function createTurnActionsModule(deps) {
     return `client:${normalizedThreadId}:${requestId}`;
   }
 
-  function appendOptimisticUserMessage(prompt, attachments = [], clientMessageId = "") {
+  function appendOptimisticUserMessage(prompt, attachments = [], clientMessageId = "", threadId = resolveComposerThreadId()) {
     const text = String(prompt || "");
     const images = pendingAttachmentImages(attachments);
     if (!text.trim() && !images.length) return;
-    if (!Array.isArray(state.activeThreadMessages)) state.activeThreadMessages = [];
-    const threadId = String(resolveCurrentThreadId(state) || state.activeThreadId || "").trim();
-    const canonicalState = reduceTimelineEvent(
-      createCanonicalTimelineState(threadId),
+    ensureActiveTimelineMessages(state);
+    const normalizedThreadId = String(threadId || resolveComposerThreadId() || "").trim();
+    const timelineState = reduceTimelineEvent(
+      createThreadTimelineState(normalizedThreadId),
       {
         type: "optimistic-user",
-        threadId,
+        threadId: normalizedThreadId,
         clientMessageId,
         text,
       }
     );
     const optimisticMessage = {
-      ...(canonicalState.messages[0] || {
+      ...(timelineState.messages[0] || {
         role: "user",
         text,
       }),
       kind: "",
       images,
     };
-    state.activeThreadMessages = state.activeThreadMessages.concat([optimisticMessage]);
+    appendActiveTimelineMessage(state, optimisticMessage);
     const options = {
       animate: false,
       messageKey: String(optimisticMessage.id || clientMessageId || "").trim(),
@@ -700,9 +726,9 @@ export function createTurnActionsModule(deps) {
     return restoreQueuedTurnToComposer(queued);
   }
 
-  function createQueuedTurn(prompt, mode = "queue", threadId = resolveCurrentThreadId(state)) {
+  function createQueuedTurn(prompt, mode = "queue", threadId = resolveComposerThreadId()) {
     const normalizedPrompt = String(prompt || "").trim();
-    const normalizedThreadId = String(threadId || resolveCurrentThreadId(state) || "").trim();
+    const normalizedThreadId = String(threadId || resolveComposerThreadId() || "").trim();
     if (!normalizedPrompt || !normalizedThreadId) return null;
     return {
       id: `queued_${Date.now()}_${Math.floor(Math.random() * 1e6)}`,
@@ -712,7 +738,7 @@ export function createTurnActionsModule(deps) {
     };
   }
 
-  function queuePendingTurn(prompt, mode = "queue", threadId = resolveCurrentThreadId(state)) {
+  function queuePendingTurn(prompt, mode = "queue", threadId = resolveComposerThreadId()) {
     const nextQueuedTurn = createQueuedTurn(prompt, mode, threadId);
     if (!nextQueuedTurn) return false;
     const nextQueue = readQueuedTurns();
@@ -807,7 +833,7 @@ export function createTurnActionsModule(deps) {
   }
 
   function findNextQueuedTurnIndex(threadId = "", options = {}) {
-    const targetThreadId = String(threadId || resolveCurrentThreadId(state) || "").trim();
+    const targetThreadId = String(threadId || resolveComposerThreadId() || "").trim();
     if (!targetThreadId) return -1;
     const skipEditingId =
       options.skipEditing !== false ? String(state.queuedTurnEditingId || "").trim() : "";
@@ -865,14 +891,18 @@ export function createTurnActionsModule(deps) {
 
   async function steerTurn() {
     const prompt = String(getPromptValue() || "").trim();
-    if (!prompt) return interruptTurn();
+    if (!prompt) {
+      const threadId = resolveComposerThreadId();
+      if (isComposerThreadRunning(threadId)) return interruptTurn();
+      return;
+    }
     if (isSlashCommandPrompt(prompt)) {
       throw new Error("Steering does not support slash commands.");
     }
-    if (state.activeThreadPendingTurnRunning !== true) {
+    const threadId = resolveComposerThreadId();
+    if (!isComposerThreadRunning(threadId)) {
       return sendTurn();
     }
-    const threadId = resolveCurrentThreadId(state);
     if (!threadId) throw new Error("No active thread to steer.");
     const input = byId("mobilePromptInput");
     queuePendingTurn(prompt, "steer", threadId);
@@ -894,10 +924,10 @@ export function createTurnActionsModule(deps) {
     if (isSlashCommandPrompt(prompt)) {
       throw new Error("Follow-up queue does not support slash commands.");
     }
-    if (state.activeThreadPendingTurnRunning !== true) {
+    const threadId = resolveComposerThreadId();
+    if (!isComposerThreadRunning(threadId)) {
       return sendTurn();
     }
-    const threadId = resolveCurrentThreadId(state);
     if (!threadId) throw new Error("No active thread to queue.");
     queuePendingTurn(prompt, "queue", threadId);
     setStatus("Queued follow-up after the current turn.");
@@ -905,19 +935,23 @@ export function createTurnActionsModule(deps) {
 
   async function sendNowTurn() {
     const prompt = String(getPromptValue() || "").trim();
-    if (!prompt) return interruptTurn();
+    if (!prompt) {
+      const threadId = resolveComposerThreadId();
+      if (isComposerThreadRunning(threadId)) return interruptTurn();
+      return;
+    }
     if (isSlashCommandPrompt(prompt)) {
-      if (state.activeThreadPendingTurnRunning === true) {
+      if (isComposerThreadRunning(resolveComposerThreadId())) {
         if (String(prompt || "").trim() !== "/status") {
           throw new Error("Wait for the current turn to finish before using slash commands.");
         }
       }
       return sendTurn();
     }
-    if (state.activeThreadPendingTurnRunning !== true) {
+    const threadId = resolveComposerThreadId();
+    if (!isComposerThreadRunning(threadId)) {
       return sendTurn();
     }
-    const threadId = resolveCurrentThreadId(state);
     if (!threadId) throw new Error("No active thread to send now.");
     queuePendingTurn(prompt, "send-now", threadId);
     await interruptTurn({ setStatus: false });
@@ -937,8 +971,8 @@ export function createTurnActionsModule(deps) {
     if (!queued || typeof queued !== "object") return false;
     const prompt = String(queued.prompt || "").trim();
     if (!prompt) return false;
-    if (state.activeThreadPendingTurnRunning === true) {
-      const threadId = String(queued.threadId || resolveCurrentThreadId(state) || "").trim();
+    const threadId = String(queued.threadId || resolveComposerThreadId() || "").trim();
+    if (isComposerThreadRunning(threadId)) {
       if (!threadId) throw new Error("No active thread to send now.");
       const queue = readQueuedTurns();
       queue.unshift({
@@ -952,12 +986,12 @@ export function createTurnActionsModule(deps) {
       setStatus("Interrupting current turn to send now...");
       return true;
     }
-    await sendTurn(prompt, { fromQueuedTurn: true });
+    await sendTurn(prompt, { fromQueuedTurn: true, threadId });
     return true;
   }
 
   async function flushQueuedTurn(threadId = "") {
-    const targetThreadId = String(threadId || resolveCurrentThreadId(state) || "").trim();
+    const targetThreadId = String(threadId || resolveComposerThreadId() || "").trim();
     const queuedIndex = findNextQueuedTurnIndex(targetThreadId);
     if (queuedIndex < 0) return false;
     const queue = readQueuedTurns();
@@ -965,10 +999,13 @@ export function createTurnActionsModule(deps) {
     const queuedThreadId = String(queued?.threadId || "").trim();
     if (!queued || typeof queued !== "object") return false;
     if (!queuedThreadId || !targetThreadId || queuedThreadId !== targetThreadId) return false;
-    if (state.activeThreadPendingTurnRunning === true) return false;
+    if (isComposerThreadRunning(targetThreadId)) return false;
     writeQueuedTurns(queue);
     try {
-      await sendTurn(String(queued.prompt || "").trim(), { fromQueuedTurn: true });
+      await sendTurn(String(queued.prompt || "").trim(), {
+        fromQueuedTurn: true,
+        threadId: targetThreadId,
+      });
       maybePromoteSingleEditingQueuedTurnToComposer();
       setStatus(
         queued.mode === "steer"
@@ -988,20 +1025,20 @@ export function createTurnActionsModule(deps) {
   }
 
   function syncPendingAssistantMessage(text) {
-    if (!Array.isArray(state.activeThreadMessages)) state.activeThreadMessages = [];
+    ensureActiveTimelineMessages(state);
     const nextText = String(text || "");
     const lastIndex = state.activeThreadMessages.length - 1;
     const last = lastIndex >= 0 ? state.activeThreadMessages[lastIndex] : null;
     if (!last || last.role !== "assistant" || String(last.kind || "").trim()) {
-      state.activeThreadMessages.push({ role: "assistant", text: nextText, kind: "" });
+      appendActiveTimelineMessage(state, { role: "assistant", text: nextText, kind: "" });
       return;
     }
-    state.activeThreadMessages[lastIndex] = {
+    updateActiveTimelineMessageAt(state, lastIndex, {
       ...last,
       role: "assistant",
       kind: "",
       text: nextText,
-    };
+    });
   }
 
   function pushLiveDebugEvent(kind, payload = {}) {
@@ -1068,7 +1105,7 @@ export function createTurnActionsModule(deps) {
       };
     }
     if (trimmed === "/status") {
-      const sessionThreadId = resolveCurrentThreadId(state);
+      const sessionThreadId = resolveComposerThreadId("", options);
       const response = await api("/codex/slash/execute", {
         method: "POST",
         body: {
@@ -1093,13 +1130,13 @@ export function createTurnActionsModule(deps) {
       if (options.switchToChat !== false) setMainTab("chat");
       if (options.setStatus !== false) setStatus("Status opened.");
       setThreadStatusCard({
-        threadId: sessionThreadId || activeThreadId || "",
+        threadId: sessionThreadId || "",
         sessionId: statusSessionId,
         title: "Status",
       });
       return response;
     }
-    let activeThreadId = resolveCurrentThreadId(state);
+    let activeThreadId = resolveComposerThreadId("", options);
     if (!activeThreadId && requiresActiveThreadForSlashCommand(trimmed)) {
       const created = await api("/codex/threads", {
         method: "POST",
@@ -1130,7 +1167,7 @@ export function createTurnActionsModule(deps) {
       refreshRuntimeForWorkspace(workspace);
     }
     await waitPendingThreadResume(activeThreadId);
-    activeThreadId = String(resolveCurrentThreadId(state, activeThreadId) || "").trim();
+    activeThreadId = String(activeThreadId || "").trim();
     if (activeThreadId && activeThreadRequiresResume()) {
       const resumePromise = api(
         buildThreadResumeUrl(activeThreadId, {
@@ -1241,8 +1278,27 @@ export function createTurnActionsModule(deps) {
     return response;
   }
 
+  const activeSendTurnPromisesByThreadId = new Map();
+
   async function sendTurn(promptOverride, options = {}) {
+    const targetThreadId = resolveComposerThreadId("", options);
+    const sendKey = String(targetThreadId || "__draft__").trim() || "__draft__";
+    const existing = activeSendTurnPromisesByThreadId.get(sendKey);
+    if (existing) return existing;
+    const run = sendTurnInternal(promptOverride, { ...options, threadId: targetThreadId });
+    activeSendTurnPromisesByThreadId.set(sendKey, run);
+    try {
+      return await run;
+    } finally {
+      if (activeSendTurnPromisesByThreadId.get(sendKey) === run) {
+        activeSendTurnPromisesByThreadId.delete(sendKey);
+      }
+    }
+  }
+
+  async function sendTurnInternal(promptOverride, options = {}) {
     if (blockInSandbox("send turn")) return;
+    const targetThreadId = resolveComposerThreadId("", options);
     const prompt = String(promptOverride == null ? getPromptValue() : promptOverride).trim();
     const pendingAttachments = pendingAttachmentList();
     if (pendingAttachments.some(isUploadingAttachment)) {
@@ -1252,20 +1308,20 @@ export function createTurnActionsModule(deps) {
     const preservedDraftValue =
       options.fromQueuedTurn === true ? String(byId("mobilePromptInput")?.value || "") : "";
     if (!prompt && !hasPendingAttachments) {
-      if (state.activeThreadPendingTurnRunning === true && promptOverride == null) {
+      if (isComposerThreadRunning(targetThreadId) && promptOverride == null) {
         return interruptTurn();
       }
       return;
     }
     const workspace = getWorkspaceTarget();
     const startCwd = getStartCwdForWorkspace(workspace);
-    if (state.activeThreadPendingTurnRunning === true && options.fromQueuedTurn !== true) {
+    if (isComposerThreadRunning(targetThreadId) && options.fromQueuedTurn !== true) {
       if (isSlashCommandPrompt(prompt)) {
         if (String(prompt || "").trim() !== "/status") {
           throw new Error("Wait for the current turn to finish before using slash commands.");
         }
       } else {
-        const queued = queuePendingTurn(prompt, "queue");
+        const queued = queuePendingTurn(prompt, "queue", targetThreadId);
         if (queued) {
           setStatus("Queued after the current turn.");
           return;
@@ -1273,14 +1329,14 @@ export function createTurnActionsModule(deps) {
       }
     }
     if (isSlashCommandPrompt(prompt)) {
-      await executeSlashCommand(prompt);
+      await executeSlashCommand(prompt, { ...options, threadId: targetThreadId });
       return;
     }
-    let activeThreadId = resolveCurrentThreadId(state);
+    let activeThreadId = targetThreadId;
     const primedPendingRuntime = primePendingTurnRuntime(activeThreadId, prompt);
     try {
       await waitPendingThreadResume(activeThreadId);
-      activeThreadId = String(resolveCurrentThreadId(state, activeThreadId) || "").trim();
+      activeThreadId = String(activeThreadId || "").trim();
       if (!activeThreadId) {
         const created = await api("/codex/threads", {
           method: "POST",
@@ -1376,7 +1432,7 @@ export function createTurnActionsModule(deps) {
     }
     updateHeaderUi(shouldAnimateWorkspaceBadge);
     hideWelcomeCard();
-    appendOptimisticUserMessage(prompt, turnAttachments, clientMessageId);
+    appendOptimisticUserMessage(prompt, turnAttachments, clientMessageId, activeThreadId);
     state.chatShouldStickToBottom = true;
     scrollToBottomReliable();
     setMainTab("chat");
@@ -1472,7 +1528,7 @@ export function createTurnActionsModule(deps) {
       const data = await api("/codex/attachments/upload", {
         method: "POST",
         body: {
-          threadId: resolveCurrentThreadId(state) || "unassigned",
+          threadId: resolveComposerThreadId() || "unassigned",
           fileName: file.name,
           mimeType: file.type || "application/octet-stream",
           kind,
@@ -1595,7 +1651,7 @@ export function createTurnActionsModule(deps) {
   }
 
   async function resolveProposedPlanConfirmation(options = {}) {
-    const threadId = String(options.threadId || resolveCurrentThreadId(state) || "").trim();
+    const threadId = String(options.threadId || resolveComposerThreadId() || "").trim();
     if (!threadId) throw new Error("thread id required");
     const confirmation = getProposedPlanConfirmation(state, threadId);
     if (!confirmation) throw new Error("no proposed plan confirmation available");
@@ -1609,7 +1665,7 @@ export function createTurnActionsModule(deps) {
       renderComposerContextLeft();
       updateHeaderUi();
       setStatus("Switching to Default and implementing plan.");
-      await sendTurn(buildApprovedPlanPrompt(confirmation));
+      await sendTurn(buildApprovedPlanPrompt(confirmation), { threadId });
       return { ok: true, local: true, action: "implement" };
     }
     setStatus("Staying in Plan mode.");

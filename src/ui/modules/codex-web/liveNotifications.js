@@ -15,6 +15,12 @@ import {
   syncPendingTurnRuntime as syncPendingTurnRuntimeState,
   syncPendingAssistantState as syncPendingAssistantStateRuntime,
 } from "./runtimeState.js";
+import {
+  appendActiveTimelineMessage,
+  ensureActiveTimelineMessages,
+  removeActiveTimelineMessageAt,
+  updateActiveTimelineMessageAt,
+} from "./activeTimelineState.js";
 
 export function workspaceKeyOfThread(thread) {
   const raw = thread.cwd || thread.workspace || thread.project || thread.directory || thread.path || "";
@@ -1288,7 +1294,7 @@ export function createLiveNotificationsModule(deps) {
       index < state.activeThreadMessages.length &&
       state.activeThreadMessages[index];
     if (!hasValidIndex) {
-      if (!Array.isArray(state.activeThreadMessages)) state.activeThreadMessages = [];
+      ensureActiveTimelineMessages(state);
       const currentText = String(
         state.activeThreadLiveAssistantText ||
         body?.textContent ||
@@ -1306,12 +1312,15 @@ export function createLiveNotificationsModule(deps) {
           )
       );
       if (index < 0) {
-        index = state.activeThreadMessages.length;
-        state.activeThreadMessages.push(applyAssistantLiveIdentity({
-          role: "assistant",
-          text: currentText,
-          kind: "",
-        }, normalizedIdentity));
+        const result = appendActiveTimelineMessage(
+          state,
+          applyAssistantLiveIdentity({
+            role: "assistant",
+            text: currentText,
+            kind: "",
+          }, normalizedIdentity)
+        );
+        index = result.index;
       }
     }
     state.activeThreadLiveAssistantIndex = index;
@@ -1371,12 +1380,12 @@ export function createLiveNotificationsModule(deps) {
       index < state.activeThreadMessages.length &&
       state.activeThreadMessages[index]
     ) {
-      state.activeThreadMessages[index] = {
+      updateActiveTimelineMessageAt(state, index, {
         ...applyAssistantLiveIdentity(state.activeThreadMessages[index], resolveAssistantLiveIdentity(threadId, options)),
         role: "assistant",
         kind: "",
         text: state.activeThreadLiveAssistantText,
-      };
+      });
     }
     syncPendingAssistantState(threadId, state.activeThreadLiveAssistantText);
     pushLiveDebugEvent("live.render:assistant_delta", {
@@ -1398,12 +1407,12 @@ export function createLiveNotificationsModule(deps) {
       index < state.activeThreadMessages.length &&
       state.activeThreadMessages[index]
     ) {
-      state.activeThreadMessages[index] = {
+      updateActiveTimelineMessageAt(state, index, {
         ...applyAssistantLiveIdentity(state.activeThreadMessages[index], identity),
         role: "assistant",
         kind: "",
         text: state.activeThreadLiveAssistantText,
-      };
+      });
     }
     syncPendingAssistantState(String(state.activeThreadLiveAssistantThreadId || ""), state.activeThreadLiveAssistantText);
   }
@@ -1460,12 +1469,18 @@ export function createLiveNotificationsModule(deps) {
       }
     }
     const finalIdentity = options.final === true ? resolveAssistantLiveIdentity(threadId, options) : null;
-    if (options.final === true && finalIdentity?.id) {
+    if (options.final === true) {
       const box = byId("chatBox");
-      const keyedAssistant = findAssistantMessageNodeByKey(box, finalIdentity.id);
-      const keyedBody = keyedAssistant?.querySelector?.(".msgBody") || null;
-      if (keyedAssistant && keyedBody) {
-        claimAssistantLiveStream(threadId, finalIdentity, keyedAssistant, keyedBody);
+      const keyedAssistant = finalIdentity?.id ? findAssistantMessageNodeByKey(box, finalIdentity.id) : null;
+      const reusableAssistant = keyedAssistant;
+      const reusableBody = reusableAssistant?.querySelector?.(".msgBody") || null;
+      if (reusableAssistant && reusableBody) {
+        claimAssistantLiveStream(threadId, finalIdentity || options, reusableAssistant, reusableBody);
+        pushLiveDebugEvent("live.render:assistant_reuse_existing_final", {
+          threadId: String(threadId || ""),
+          byKey: !!keyedAssistant,
+          chars: nextText.length,
+        });
       }
     }
     const live = ensureAssistantLiveStream(threadId, options);
@@ -1559,7 +1574,7 @@ export function createLiveNotificationsModule(deps) {
       index >= 0 &&
       index < state.activeThreadMessages.length
     ) {
-      state.activeThreadMessages.splice(index, 1);
+      removeActiveTimelineMessageAt(state, index);
     }
     msg?.remove?.();
     clearActiveAssistantLiveState();
@@ -1587,8 +1602,7 @@ export function createLiveNotificationsModule(deps) {
       plan: planMessage.plan,
       source: "liveProposedPlan",
     });
-    if (!Array.isArray(state.activeThreadMessages)) state.activeThreadMessages = [];
-    state.activeThreadMessages.push({
+    appendActiveTimelineMessage(state, {
       role: "system",
       kind: "planCard",
       text: signature,

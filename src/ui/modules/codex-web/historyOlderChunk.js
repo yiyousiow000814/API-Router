@@ -1,3 +1,5 @@
+import { setActiveTimelineMessages } from "./activeTimelineState.js";
+
 export async function loadOlderHistoryChunk(state = {}, deps = {}) {
   const {
     byId,
@@ -66,6 +68,6 @@ export async function loadOlderHistoryChunk(state = {}, deps = {}) {
 
   state.historyWindowStart = nextStart;
   state.historyWindowLoading = false;
-  state.activeThreadMessages = all.slice(nextStart);
+  setActiveTimelineMessages(state, all.slice(nextStart));
   updateLoadOlderControl();
 }

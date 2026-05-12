@@ -7,9 +7,10 @@ import {
   syncPendingTurnRuntime,
 } from "./runtimeState.js";
 import {
-  createCanonicalTimelineState,
+  createThreadTimelineState,
   reduceTimelineEvent,
-} from "./canonicalTimeline.js";
+} from "./threadTimelineState.js";
+import { setActiveTimelineMessages } from "./activeTimelineState.js";
 import {
   extractLatestCommentaryArchive,
   extractLatestCommentaryState,
@@ -196,7 +197,7 @@ function buildPendingUserMessage(state = {}, threadId = "", text = "") {
   const clientMessageId = String(state.activeThreadPendingClientMessageId || "").trim();
   if (!clientMessageId) return { role: "user", text, kind: "" };
   const timeline = reduceTimelineEvent(
-    createCanonicalTimelineState(threadId),
+    createThreadTimelineState(threadId),
     {
       type: "optimistic-user",
       threadId,
@@ -1101,7 +1102,7 @@ export function createHistoryLoaderModule(deps) {
       preservePendingTurn: true,
     });
     state.activeThreadInlineCommentaryArchiveCount = messages.filter((message) => message?.kind === "commentaryArchive").length;
-    state.activeThreadMessages = [];
+    setActiveTimelineMessages(state, []);
 
     const slowYield = !!options.slowRender;
     const batchSize = Math.max(6, Math.min(28, Number(options.batchSize || 14)));
@@ -1188,7 +1189,7 @@ export function createHistoryLoaderModule(deps) {
       clearLiveThreadConnectionStatus();
     }
     if (shouldSkipHistoryRender(state, renderSig, options)) {
-      state.activeThreadMessages = messages;
+      setActiveTimelineMessages(state, messages);
       pushLiveDebugEvent("history.render:unchanged", {
         threadId,
         messages: messages.length,

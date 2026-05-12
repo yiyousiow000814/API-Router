@@ -6,6 +6,8 @@ const WEB_CODEX_INDEX_HTML: &str = include_str!("../../../../codex-web.html");
 const WEB_CODEX_APP_JS: &str = include_str!("../../../../src/ui/codex-web-dev.js");
 const WEB_CODEX_ACTION_BINDINGS_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/actionBindings.js");
+const WEB_CODEX_ACTIVE_TIMELINE_STATE_JS: &str =
+    include_str!("../../../../src/ui/modules/codex-web/activeTimelineState.js");
 const WEB_CODEX_APP_PERSISTENCE_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/appPersistence.js");
 const WEB_CODEX_APP_STATE_JS: &str =
@@ -18,8 +20,8 @@ const WEB_CODEX_BRANCH_PICKER_STATE_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/branchPickerState.js");
 const WEB_CODEX_PENDING_THREAD_RESUME_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/pendingThreadResume.js");
-const WEB_CODEX_CANONICAL_TIMELINE_JS: &str =
-    include_str!("../../../../src/ui/modules/codex-web/canonicalTimeline.js");
+const WEB_CODEX_THREAD_TIMELINE_STATE_JS: &str =
+    include_str!("../../../../src/ui/modules/codex-web/threadTimelineState.js");
 const WEB_CODEX_CONTEXT_LEFT_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/contextLeft.js");
 const WEB_CODEX_CONNECTION_FLOWS_JS: &str =
@@ -180,12 +182,13 @@ impl WebCodexModuleAsset {
 fn resolve_web_codex_module_asset(module_path: &str) -> Option<WebCodexModuleAsset> {
     let body = match module_path {
         "codex-web/actionBindings.js" => WEB_CODEX_ACTION_BINDINGS_JS,
+        "codex-web/activeTimelineState.js" => WEB_CODEX_ACTIVE_TIMELINE_STATE_JS,
         "codex-web/appPersistence.js" => WEB_CODEX_APP_PERSISTENCE_JS,
         "codex-web/appState.js" => WEB_CODEX_APP_STATE_JS,
         "codex-web/bootstrapApp.js" => WEB_CODEX_BOOTSTRAP_APP_JS,
         "codex-web/branchOptions.js" => WEB_CODEX_BRANCH_OPTIONS_JS,
         "codex-web/branchPickerState.js" => WEB_CODEX_BRANCH_PICKER_STATE_JS,
-        "codex-web/canonicalTimeline.js" => WEB_CODEX_CANONICAL_TIMELINE_JS,
+        "codex-web/threadTimelineState.js" => WEB_CODEX_THREAD_TIMELINE_STATE_JS,
         "codex-web/chatTimeline.js" => WEB_CODEX_CHAT_TIMELINE_JS,
         "codex-web/chatViewport.js" => WEB_CODEX_CHAT_VIEWPORT_JS,
         "codex-web/composerUi.js" => WEB_CODEX_COMPOSER_UI_JS,
@@ -399,12 +402,13 @@ mod tests {
         assert!(body.is_some());
         assert!(body.unwrap().contains("renderInlineMessageText"));
         assert!(resolve_web_codex_module_body("codex-web/actionBindings.js").is_some());
+        assert!(resolve_web_codex_module_body("codex-web/activeTimelineState.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/appPersistence.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/appState.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/bootstrapApp.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/branchOptions.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/branchPickerState.js").is_some());
-        assert!(resolve_web_codex_module_body("codex-web/canonicalTimeline.js").is_some());
+        assert!(resolve_web_codex_module_body("codex-web/threadTimelineState.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/chatTimeline.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/chatViewport.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/composerUi.js").is_some());
