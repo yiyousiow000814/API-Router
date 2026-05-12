@@ -116,6 +116,7 @@ const IMAGE_VIEWER_SLIDE_FALLBACK_MS = 320;
 const IMAGE_VIEWER_DRAG_THRESHOLD_PX = 10;
 const IMAGE_VIEWER_COMMIT_RATIO = 0.22;
 const IMAGE_VIEWER_COMMIT_VELOCITY = 0.42;
+const IMAGE_VIEWER_DRAG_MAX_PROGRESS = 0.84;
 
 function buildBrokenAttachmentCardHtml(label, overlayHtml = "", escapeHtmlRef = (value) => String(value || "")) {
   return (
@@ -193,6 +194,13 @@ export function createImageViewerModule(deps) {
       incomingLayer.style.transform = formatSlideTranslate(dx + dir * slideWidth);
       incomingLayer.style.opacity = options.hideIncoming === true ? "0" : "1";
     }
+  }
+
+  function clampViewerDragVisualOffset(offsetX, width) {
+    const slideWidth = Math.max(1, Number(width) || 1);
+    const maxOffset = slideWidth * IMAGE_VIEWER_DRAG_MAX_PROGRESS;
+    const dx = Number.isFinite(Number(offsetX)) ? Number(offsetX) : 0;
+    return Math.max(-maxOffset, Math.min(maxOffset, dx));
   }
 
   function isPdfPreviewSrc(src) {
@@ -655,9 +663,10 @@ export function createImageViewerModule(deps) {
           let dragOffset = dx;
           if (prepared.direction > 0) dragOffset = Math.min(0, dragOffset);
           else dragOffset = Math.max(0, dragOffset);
+          const visualOffset = clampViewerDragVisualOffset(dragOffset, prepared.width);
           imageViewerState.dragDx = dragOffset;
           imageViewerState.isDragging = true;
-          applyViewerSlideTransforms(dragOffset, prepared.direction, prepared.width);
+          applyViewerSlideTransforms(visualOffset, prepared.direction, prepared.width);
           event.preventDefault();
           dragHandled = true;
         }
