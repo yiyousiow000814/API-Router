@@ -113,6 +113,9 @@ function nextAnimationFrame(requestAnimationFrameRef) {
 }
 
 const IMAGE_VIEWER_SLIDE_FALLBACK_MS = 320;
+const IMAGE_VIEWER_DRAG_THRESHOLD_PX = 10;
+const IMAGE_VIEWER_COMMIT_RATIO = 0.22;
+const IMAGE_VIEWER_COMMIT_VELOCITY = 0.42;
 
 function buildBrokenAttachmentCardHtml(label, overlayHtml = "", escapeHtmlRef = (value) => String(value || "")) {
   return (
@@ -147,6 +150,7 @@ export function createImageViewerModule(deps) {
     return {
       backdrop: byId("imageViewerBackdrop"),
       body: byId("imageViewerBody"),
+      stage: byId("imageViewerStage"),
       img: byId("imageViewerImg"),
       incomingImg: byId("imageViewerImgIncoming"),
       currentLayer: byId("imageViewerCurrentLayer"),
@@ -156,6 +160,41 @@ export function createImageViewerModule(deps) {
       next: byId("imageViewerNextBtn"),
       film: byId("imageViewerFilmstrip"),
     };
+  }
+
+  function formatSlideTranslate(x) {
+    return `translate3d(${Math.round(Number(x) || 0)}px, 0px, 0)`;
+  }
+
+  function getViewerSlideWidth(nodes = getImageViewerNodes()) {
+    const candidates = [
+      Number(nodes?.body?.clientWidth),
+      Number(nodes?.stage?.clientWidth),
+      Number(nodes?.body?.getBoundingClientRect?.()?.width),
+      Number(nodes?.stage?.getBoundingClientRect?.()?.width),
+    ];
+    for (const value of candidates) {
+      if (Number.isFinite(value) && value > 1) return value;
+    }
+    return 1;
+  }
+
+  function applyViewerSlideTransforms(offsetX, direction, width, options = {}) {
+    const { currentLayer, incomingLayer } = getImageViewerNodes();
+    if (!currentLayer || !incomingLayer) return;
+    const dx = Number.isFinite(Number(offsetX)) ? Number(offsetX) : 0;
+    const dir = Number(direction) > 0 ? 1 : -1;
+    const slideWidth = Math.max(1, Number(width) || 1);
+    const progress = Math.min(1, Math.abs(dx) / slideWidth);
+    if (currentLayer.style) {
+      currentLayer.style.transform = formatSlideTranslate(dx);
+      currentLayer.style.opacity = String(Math.max(0.18, 1 - progress * 0.32));
+    }
+    if (incomingLayer.style) {
+      incomingLayer.style.transform = formatSlideTranslate(dx + dir * slideWidth);
+      incomingLayer.style.opacity =
+        options.hideIncoming === true ? "0" : String(Math.max(0.58, 0.7 + progress * 0.3));
+    }
   }
 
   function isPdfPreviewSrc(src) {
@@ -259,19 +298,63 @@ export function createImageViewerModule(deps) {
     }
   }
 
+  function prepareViewerSlide(targetIndex) {
+    const nodes = getImageViewerNodes();
+    const { body, currentLayer, incomingLayer, incomingImg } = nodes;
+    if (!body || !currentLayer || !incomingLayer || !incomingImg || !imageViewerState) return null;
+
+    const images = Array.isArray(imageViewerState.images) ? imageViewerState.images : [];
+    const currentIndex = clampNumber(
+      Number(imageViewerState.index || 0),
+      0,
+      Math.max(0, images.length - 1)
+    );
+    const idx = clampNumber(Number(targetIndex || 0), 0, Math.max(0, images.length - 1));
+    if (idx === currentIndex) return null;
+
+    clearViewerSlideState();
+
+    const item = images[idx] || {};
+    const safeLabel = String(item.label || "").trim() || "image";
+    const safeSrc = String(item.src || "").trim();
+    const direction = idx > currentIndex ? 1 : -1;
+    const width = getViewerSlideWidth(nodes);
+    const directionClass = direction > 0 ? "is-slide-forward" : "is-slide-backward";
+
+    incomingImg.src = safeSrc;
+    incomingImg.alt = safeLabel;
+    body.classList.add("is-slide-prepared", directionClass);
+    imageViewerState.slideTargetIndex = idx;
+    imageViewerState.slideDirection = direction;
+    imageViewerState.slideWidth = width;
+    imageViewerState.dragDx = 0;
+    imageViewerState.isDragging = false;
+    applyViewerSlideTransforms(0, direction, width);
+    return { ...nodes, idx, direction, width };
+  }
+
   function clearViewerSlideState() {
-    const { body, incomingImg } = getImageViewerNodes();
+    const { body, currentLayer, incomingLayer, incomingImg } = getImageViewerNodes();
     if (imageViewerState?.slideTimer) {
       clearTimeout(imageViewerState.slideTimer);
       imageViewerState.slideTimer = null;
     }
     if (body?.classList) {
       body.classList.remove(
+        "is-slide-prepared",
         "is-slide-transitioning",
         "is-slide-running",
         "is-slide-forward",
         "is-slide-backward"
       );
+    }
+    if (currentLayer?.style) {
+      currentLayer.style.transform = "";
+      currentLayer.style.opacity = "";
+    }
+    if (incomingLayer?.style) {
+      incomingLayer.style.transform = "";
+      incomingLayer.style.opacity = "";
     }
     if (incomingImg) {
       incomingImg.src = "";
@@ -280,7 +363,11 @@ export function createImageViewerModule(deps) {
     }
     if (imageViewerState) {
       imageViewerState.isSliding = false;
+      imageViewerState.isDragging = false;
       imageViewerState.slideTargetIndex = null;
+      imageViewerState.slideDirection = 0;
+      imageViewerState.slideWidth = 0;
+      imageViewerState.dragDx = 0;
       imageViewerState.slideToken = Number(imageViewerState.slideToken || 0);
     }
   }
@@ -311,50 +398,97 @@ export function createImageViewerModule(deps) {
   }
 
   function startViewerSlide(targetIndex) {
-    const { body, currentLayer, incomingLayer, incomingImg } = getImageViewerNodes();
-    if (!body || !currentLayer || !incomingLayer || !incomingImg || !imageViewerState) {
+    if (!imageViewerState) {
+      commitViewerIndex(targetIndex);
+      return;
+    }
+    setViewerTransform({ scale: 1, tx: 0, ty: 0 });
+    const prepared =
+      Number(imageViewerState.slideTargetIndex) === Number(targetIndex)
+        ? {
+            ...getImageViewerNodes(),
+            idx: Number(imageViewerState.slideTargetIndex),
+            direction: Number(imageViewerState.slideDirection || 0),
+            width: Math.max(1, Number(imageViewerState.slideWidth || 0)),
+          }
+        : prepareViewerSlide(targetIndex);
+    if (!prepared?.body || !prepared?.currentLayer || !prepared?.incomingLayer) {
       commitViewerIndex(targetIndex);
       return;
     }
 
-    const images = Array.isArray(imageViewerState.images) ? imageViewerState.images : [];
-    const currentIndex = clampNumber(
-      Number(imageViewerState.index || 0),
-      0,
-      Math.max(0, images.length - 1)
-    );
-    const idx = clampNumber(Number(targetIndex || 0), 0, Math.max(0, images.length - 1));
-    if (idx === currentIndex) return;
-
-    clearViewerSlideState();
-    setViewerTransform({ scale: 1, tx: 0, ty: 0 });
-
-    const item = images[idx] || {};
-    const safeLabel = String(item.label || "").trim() || "image";
-    const safeSrc = String(item.src || "").trim();
-    incomingImg.src = safeSrc;
-    incomingImg.alt = safeLabel;
-    if (incomingImg.style) incomingImg.style.transform = "translate(0px, 0px) scale(1)";
-
-    const direction = idx > currentIndex ? "is-slide-forward" : "is-slide-backward";
+    const { body, currentLayer, incomingLayer, idx, direction, width } = prepared;
     const token = Number(imageViewerState.slideToken || 0) + 1;
     imageViewerState.slideToken = token;
     imageViewerState.isSliding = true;
+    imageViewerState.isDragging = false;
     imageViewerState.slideTargetIndex = idx;
+    imageViewerState.slideDirection = direction;
+    imageViewerState.slideWidth = width;
 
-    body.classList.remove("is-slide-forward", "is-slide-backward", "is-slide-running");
-    body.classList.add("is-slide-transitioning", direction);
+    body.classList.add("is-slide-transitioning");
+    body.classList.remove("is-slide-running");
 
     const finish = () => finishViewerSlide(idx, token);
     incomingLayer.addEventListener("transitionend", finish, { once: true });
     imageViewerState.slideTimer = setTimeout(finish, IMAGE_VIEWER_SLIDE_FALLBACK_MS);
 
     void nextAnimationFrame(requestAnimationFrameRef).then(() => {
-      void nextAnimationFrame(requestAnimationFrameRef).then(() => {
-        if (!imageViewerState?.isSliding) return;
-        if (Number(imageViewerState.slideToken || 0) !== token) return;
-        body.classList.add("is-slide-running");
-      });
+      if (!imageViewerState?.isSliding) return;
+      if (Number(imageViewerState.slideToken || 0) !== token) return;
+      body.classList.add("is-slide-running");
+      if (currentLayer?.style) {
+        currentLayer.style.transform = formatSlideTranslate(direction > 0 ? -width : width);
+        currentLayer.style.opacity = "0.18";
+      }
+      if (incomingLayer?.style) {
+        incomingLayer.style.transform = formatSlideTranslate(0);
+        incomingLayer.style.opacity = "1";
+      }
+    });
+  }
+
+  function snapViewerSlideBack() {
+    if (!imageViewerState) return;
+    const { body, currentLayer, incomingLayer } = getImageViewerNodes();
+    if (!body || !currentLayer || !incomingLayer) {
+      clearViewerSlideState();
+      return;
+    }
+    const direction = Number(imageViewerState.slideDirection || 0);
+    const width = Math.max(1, Number(imageViewerState.slideWidth || 0));
+    if (!direction || !width) {
+      clearViewerSlideState();
+      return;
+    }
+
+    const token = Number(imageViewerState.slideToken || 0) + 1;
+    imageViewerState.slideToken = token;
+    imageViewerState.isSliding = true;
+    imageViewerState.isDragging = false;
+    body.classList.add("is-slide-transitioning");
+    body.classList.remove("is-slide-running");
+
+    const finish = () => {
+      if (!imageViewerState?.isSliding) return;
+      if (Number(imageViewerState.slideToken || 0) !== token) return;
+      clearViewerSlideState();
+    };
+    currentLayer.addEventListener("transitionend", finish, { once: true });
+    imageViewerState.slideTimer = setTimeout(finish, IMAGE_VIEWER_SLIDE_FALLBACK_MS);
+
+    void nextAnimationFrame(requestAnimationFrameRef).then(() => {
+      if (!imageViewerState?.isSliding) return;
+      if (Number(imageViewerState.slideToken || 0) !== token) return;
+      body.classList.add("is-slide-running");
+      if (currentLayer.style) {
+        currentLayer.style.transform = formatSlideTranslate(0);
+        currentLayer.style.opacity = "1";
+      }
+      if (incomingLayer.style) {
+        incomingLayer.style.transform = formatSlideTranslate(direction * width);
+        incomingLayer.style.opacity = "0";
+      }
     });
   }
 
@@ -414,6 +548,7 @@ export function createImageViewerModule(deps) {
     let startTy = 0;
     let lastTapMs = 0;
     let swipeStart = null;
+    let dragHandled = false;
 
     const getDist = () => {
       const pts = Array.from(active.values());
@@ -434,6 +569,7 @@ export function createImageViewerModule(deps) {
           swipeStart = { x: event.clientX, y: event.clientY, t: Date.now() };
           startTx = imageViewerState.tx || 0;
           startTy = imageViewerState.ty || 0;
+          dragHandled = false;
         }
         if (active.size === 2) {
           startDist = getDist();
@@ -474,6 +610,39 @@ export function createImageViewerModule(deps) {
             ty: startTy + dy,
           });
           event.preventDefault();
+          dragHandled = true;
+          return;
+        }
+
+        if (active.size === 1 && (imageViewerState.scale || 1) <= 1.02) {
+          const p = active.get(event.pointerId);
+          if (!p || !swipeStart) return;
+          const dx = p.x - swipeStart.x;
+          const dy = p.y - swipeStart.y;
+          if (Math.abs(dx) < IMAGE_VIEWER_DRAG_THRESHOLD_PX) return;
+          if (Math.abs(dx) <= Math.abs(dy) * 1.1) return;
+
+          const currentIndex = Number(imageViewerState.index || 0);
+          const targetIndex = dx < 0 ? currentIndex + 1 : currentIndex - 1;
+          const prepared =
+            Number(imageViewerState.slideTargetIndex) === Number(targetIndex)
+              ? {
+                  ...getImageViewerNodes(),
+                  idx: Number(imageViewerState.slideTargetIndex),
+                  direction: Number(imageViewerState.slideDirection || 0),
+                  width: Math.max(1, Number(imageViewerState.slideWidth || 0)),
+                }
+              : prepareViewerSlide(targetIndex);
+          if (!prepared?.direction) return;
+
+          let dragOffset = dx;
+          if (prepared.direction > 0) dragOffset = Math.min(0, dragOffset);
+          else dragOffset = Math.max(0, dragOffset);
+          imageViewerState.dragDx = dragOffset;
+          imageViewerState.isDragging = true;
+          applyViewerSlideTransforms(dragOffset, prepared.direction, prepared.width);
+          event.preventDefault();
+          dragHandled = true;
         }
       },
       { passive: false }
@@ -487,22 +656,38 @@ export function createImageViewerModule(deps) {
         if (active.size !== 0) return;
         const scale = imageViewerState.scale || 1;
         const now = Date.now();
-        if (swipeStart && scale <= 1.02) {
+        if (imageViewerState.isDragging && scale <= 1.02) {
+          const dx = Number(imageViewerState.dragDx || 0);
+          const width = Math.max(1, Number(imageViewerState.slideWidth || 0));
+          const elapsedMs = Math.max(1, now - Number(swipeStart?.t || now));
+          const velocity = dx / elapsedMs;
+          const shouldCommit =
+            Math.abs(dx) >= width * IMAGE_VIEWER_COMMIT_RATIO ||
+            Math.abs(velocity) >= IMAGE_VIEWER_COMMIT_VELOCITY;
+          if (imageViewerState.slideTargetIndex != null && shouldCommit) {
+            startViewerSlide(imageViewerState.slideTargetIndex);
+          } else {
+            snapViewerSlideBack();
+          }
+          dragHandled = true;
+        } else if (swipeStart && scale <= 1.02) {
           const dx = event.clientX - swipeStart.x;
           const dy = event.clientY - swipeStart.y;
           if (Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy) * 1.2) {
             if (dx < 0) setViewerIndex((imageViewerState.index || 0) + 1, { animate: true });
             else setViewerIndex((imageViewerState.index || 0) - 1, { animate: true });
+            dragHandled = true;
           }
         }
-        if (now - lastTapMs < 320) {
+        if (!dragHandled && now - lastTapMs < 320) {
           const next = scale > 1.2 ? 1 : 2;
           setViewerTransform({ scale: next, tx: 0, ty: 0 });
           lastTapMs = 0;
-        } else {
+        } else if (!dragHandled) {
           lastTapMs = now;
         }
         swipeStart = null;
+        dragHandled = false;
       },
       { passive: true }
     );
@@ -910,7 +1095,11 @@ export function createImageViewerModule(deps) {
       tx: 0,
       ty: 0,
       isSliding: false,
+      isDragging: false,
       slideTargetIndex: null,
+      slideDirection: 0,
+      slideWidth: 0,
+      dragDx: 0,
       slideToken: 0,
       slideTimer: null,
     };
