@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -1043,6 +1044,21 @@ def handle_self_test_mode():
     )
     if not isinstance(exec_call, dict) or exec_call.get("type") != "commandExecution" or exec_call.get("command") != 'bash -lc "ls -la"':
         raise SystemExit("self-test failed: exec_command toolCall was not canonicalized to commandExecution")
+
+    wrapped_shell_call = canonicalize_history_tool_item(
+        {
+            "type": "toolCall",
+            "tool": "shell_command",
+            "arguments": {"command": ["powershell.exe", "-Command", "rg hello"]},
+            "status": "completed",
+        }
+    )
+    if (
+        not isinstance(wrapped_shell_call, dict)
+        or wrapped_shell_call.get("type") != "commandExecution"
+        or wrapped_shell_call.get("command") != "rg hello"
+    ):
+        raise SystemExit("self-test failed: wrapped shell command was not unwrapped")
 
     generic_call = canonicalize_history_tool_item(
         {

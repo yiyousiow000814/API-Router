@@ -7,9 +7,9 @@ import {
   syncPendingTurnRuntime,
 } from "./runtimeState.js";
 import {
-  createCanonicalTimelineState,
+  createThreadTimelineState,
   reduceTimelineEvent,
-} from "./canonicalTimeline.js";
+} from "./threadTimelineState.js";
 import { setActiveTimelineMessages } from "./activeTimelineState.js";
 import {
   extractLatestCommentaryArchive,
@@ -197,7 +197,7 @@ function buildPendingUserMessage(state = {}, threadId = "", text = "") {
   const clientMessageId = String(state.activeThreadPendingClientMessageId || "").trim();
   if (!clientMessageId) return { role: "user", text, kind: "" };
   const timeline = reduceTimelineEvent(
-    createCanonicalTimelineState(threadId),
+    createThreadTimelineState(threadId),
     {
       type: "optimistic-user",
       threadId,

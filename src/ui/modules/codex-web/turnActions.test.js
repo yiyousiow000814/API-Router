@@ -2880,6 +2880,206 @@ describe("turnActions", () => {
     expect(state.activeThreadMessages.filter((message) => message.role === "user")).toHaveLength(1);
   });
 
+  it("coalesces duplicate sends for the same active thread", async () => {
+    const apiCalls = [];
+    const pendingStarts = [];
+    const state = {
+      activeThreadId: "thread-a",
+      activeThreadWorkspace: "windows",
+      activeThreadRolloutPath: "",
+      activeThreadOpenState: { threadId: "thread-a", resumeRequired: false, loaded: true },
+      activeThreadStarted: true,
+      activeThreadMessages: [],
+      pendingThreadResumes: new Map(),
+      chatShouldStickToBottom: false,
+      selectedModel: "",
+      selectedReasoningEffort: "",
+      ws: null,
+      permissionPresetByWorkspace: { windows: "/permission auto", wsl2: "/permission auto" },
+    };
+    const module = createTurnActionsModule({
+      state,
+      byId: () => ({ value: "" }),
+      api: async (path, options = {}) => {
+        apiCalls.push({ path, method: options.method || "GET", body: options.body || null });
+        if (path === "/codex/turns/start") {
+          return await new Promise((resolve) => {
+            pendingStarts.push({ body: options.body || null, resolve });
+          });
+        }
+        throw new Error(`unexpected api call: ${path}`);
+      },
+      wsSend: () => false,
+      wsCall: async () => ({}),
+      nextReqId: () => "req-1",
+      connectWs: () => {},
+      syncEventSubscription: () => {},
+      getPromptValue: () => "hello from thread-a",
+      getWorkspaceTarget: () => "windows",
+      getStartCwdForWorkspace: () => "",
+      waitPendingThreadResume: async () => {},
+      registerPendingThreadResume: () => {},
+      updateHeaderUi: () => {},
+      addChat: () => {},
+      clearChatMessages: () => {},
+      hideWelcomeCard: () => {},
+      showWelcomeCard: () => {},
+      clearPromptValue: () => {},
+      renderComposerContextLeft: () => {},
+      scrollToBottomReliable: () => {},
+      scheduleChatLiveFollow: () => {},
+      createAssistantStreamingMessage: () => ({ msg: null, body: null }),
+      appendStreamingDelta: () => {},
+      finalizeAssistantMessage: () => {},
+      normalizeTextPayload: (value) => value,
+      maybeNotifyTurnDone: () => {},
+      renderAttachmentPills: () => {},
+      refreshThreads: async () => {},
+      refreshHosts: async () => {},
+      refreshPending: async () => {},
+      setStatus: () => {},
+      setActiveThread: (id) => {
+        state.activeThreadId = id;
+      },
+      setMainTab: () => {},
+      setMobileTab: () => {},
+      setChatOpening: () => {},
+      updateMobileComposerState: () => {},
+      refreshRuntimeForWorkspace: () => {},
+      blockInSandbox: () => false,
+    });
+
+    const first = module.sendTurn();
+    await Promise.resolve();
+    const second = module.sendTurn();
+    await Promise.resolve();
+
+    expect(apiCalls.filter((call) => call.path === "/codex/turns/start")).toHaveLength(1);
+    expect(pendingStarts).toHaveLength(1);
+    expect(pendingStarts[0].body.threadId).toBe("thread-a");
+
+    pendingStarts[0].resolve({
+      threadId: "thread-a",
+      turnId: "turn-a",
+    });
+    await Promise.all([first, second]);
+
+    expect(state.activeThreadMessages.filter((message) => message.role === "user")).toHaveLength(1);
+    expect(
+      state.activeThreadMessages
+        .filter((message) => message.role === "user")
+        .map((message) => message.threadId)
+    ).toEqual(["thread-a"]);
+  });
+
+  it("keeps sends on different active threads independent", async () => {
+    const apiCalls = [];
+    const pendingStarts = [];
+    const promptsByThread = {
+      "thread-a": "hello from thread-a",
+      "thread-b": "hello from thread-b",
+    };
+    const state = {
+      activeThreadId: "thread-a",
+      activeThreadWorkspace: "windows",
+      activeThreadRolloutPath: "",
+      activeThreadOpenState: { threadId: "thread-a", resumeRequired: false, loaded: true },
+      activeThreadStarted: true,
+      activeThreadMessages: [],
+      pendingThreadResumes: new Map(),
+      chatShouldStickToBottom: false,
+      selectedModel: "",
+      selectedReasoningEffort: "",
+      ws: null,
+      permissionPresetByWorkspace: { windows: "/permission auto", wsl2: "/permission auto" },
+    };
+    const module = createTurnActionsModule({
+      state,
+      byId: () => ({ value: "" }),
+      api: async (path, options = {}) => {
+        apiCalls.push({ path, method: options.method || "GET", body: options.body || null });
+        if (path === "/codex/turns/start") {
+          return await new Promise((resolve) => {
+            pendingStarts.push({ body: options.body || null, resolve });
+          });
+        }
+        throw new Error(`unexpected api call: ${path}`);
+      },
+      wsSend: () => false,
+      wsCall: async () => ({}),
+      nextReqId: () => "req-1",
+      connectWs: () => {},
+      syncEventSubscription: () => {},
+      getPromptValue: () => promptsByThread[state.activeThreadId] || "",
+      getWorkspaceTarget: () => "windows",
+      getStartCwdForWorkspace: () => "",
+      waitPendingThreadResume: async () => {},
+      registerPendingThreadResume: () => {},
+      updateHeaderUi: () => {},
+      addChat: () => {},
+      clearChatMessages: () => {},
+      hideWelcomeCard: () => {},
+      showWelcomeCard: () => {},
+      clearPromptValue: () => {},
+      renderComposerContextLeft: () => {},
+      scrollToBottomReliable: () => {},
+      scheduleChatLiveFollow: () => {},
+      createAssistantStreamingMessage: () => ({ msg: null, body: null }),
+      appendStreamingDelta: () => {},
+      finalizeAssistantMessage: () => {},
+      normalizeTextPayload: (value) => value,
+      maybeNotifyTurnDone: () => {},
+      renderAttachmentPills: () => {},
+      refreshThreads: async () => {},
+      refreshHosts: async () => {},
+      refreshPending: async () => {},
+      setStatus: () => {},
+      setActiveThread: (id) => {
+        state.activeThreadId = id;
+      },
+      setMainTab: () => {},
+      setMobileTab: () => {},
+      setChatOpening: () => {},
+      updateMobileComposerState: () => {},
+      refreshRuntimeForWorkspace: () => {},
+      blockInSandbox: () => false,
+    });
+
+    const first = module.sendTurn();
+    await Promise.resolve();
+    expect(pendingStarts).toHaveLength(1);
+    expect(pendingStarts[0].body.threadId).toBe("thread-a");
+    expect(
+      state.activeThreadMessages
+        .filter((message) => message.role === "user")
+        .map((message) => message.threadId)
+    ).toEqual(["thread-a"]);
+
+    state.activeThreadId = "thread-b";
+    state.activeThreadOpenState = { threadId: "thread-b", resumeRequired: false, loaded: true };
+    const second = module.sendTurn();
+    await Promise.resolve();
+
+    expect(apiCalls.filter((call) => call.path === "/codex/turns/start")).toHaveLength(2);
+    expect(pendingStarts).toHaveLength(2);
+    expect(pendingStarts.map((entry) => entry.body.threadId)).toEqual(["thread-a", "thread-b"]);
+    expect(
+      state.activeThreadMessages
+        .filter((message) => message.role === "user")
+        .map((message) => message.threadId)
+    ).toEqual(["thread-a", "thread-b"]);
+
+    pendingStarts[0].resolve({
+      threadId: "thread-a",
+      turnId: "turn-a",
+    });
+    pendingStarts[1].resolve({
+      threadId: "thread-b",
+      turnId: "turn-b",
+    });
+    await Promise.all([first, second]);
+  });
+
   it("clears the previous live connection status before sending a new turn", async () => {
     const clears = [];
     const state = {

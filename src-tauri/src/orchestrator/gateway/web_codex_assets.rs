@@ -20,8 +20,8 @@ const WEB_CODEX_BRANCH_PICKER_STATE_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/branchPickerState.js");
 const WEB_CODEX_PENDING_THREAD_RESUME_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/pendingThreadResume.js");
-const WEB_CODEX_CANONICAL_TIMELINE_JS: &str =
-    include_str!("../../../../src/ui/modules/codex-web/canonicalTimeline.js");
+const WEB_CODEX_THREAD_TIMELINE_STATE_JS: &str =
+    include_str!("../../../../src/ui/modules/codex-web/threadTimelineState.js");
 const WEB_CODEX_CONTEXT_LEFT_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/contextLeft.js");
 const WEB_CODEX_CONNECTION_FLOWS_JS: &str =
@@ -188,7 +188,7 @@ fn resolve_web_codex_module_asset(module_path: &str) -> Option<WebCodexModuleAss
         "codex-web/bootstrapApp.js" => WEB_CODEX_BOOTSTRAP_APP_JS,
         "codex-web/branchOptions.js" => WEB_CODEX_BRANCH_OPTIONS_JS,
         "codex-web/branchPickerState.js" => WEB_CODEX_BRANCH_PICKER_STATE_JS,
-        "codex-web/canonicalTimeline.js" => WEB_CODEX_CANONICAL_TIMELINE_JS,
+        "codex-web/threadTimelineState.js" => WEB_CODEX_THREAD_TIMELINE_STATE_JS,
         "codex-web/chatTimeline.js" => WEB_CODEX_CHAT_TIMELINE_JS,
         "codex-web/chatViewport.js" => WEB_CODEX_CHAT_VIEWPORT_JS,
         "codex-web/composerUi.js" => WEB_CODEX_COMPOSER_UI_JS,
@@ -408,7 +408,7 @@ mod tests {
         assert!(resolve_web_codex_module_body("codex-web/bootstrapApp.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/branchOptions.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/branchPickerState.js").is_some());
-        assert!(resolve_web_codex_module_body("codex-web/canonicalTimeline.js").is_some());
+        assert!(resolve_web_codex_module_body("codex-web/threadTimelineState.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/chatTimeline.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/chatViewport.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/composerUi.js").is_some());

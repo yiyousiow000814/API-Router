@@ -1617,7 +1617,7 @@ Implement this plan?
     );
   });
 
-  it("reuses an unkeyed visible final assistant when a late final snapshot lacks identity", () => {
+  it("does not reuse an unkeyed visible final assistant when a late final snapshot lacks identity", () => {
     const created = [];
     const finalized = [];
     const existingBody = {
@@ -1796,11 +1796,12 @@ Implement this plan?
       },
     });
 
-    expect(created).toHaveLength(0);
+    expect(created).toHaveLength(1);
     expect(finalized).toHaveLength(1);
-    expect(finalized[0].msg).toBe(existingNode);
-    expect(chatBox.children.filter((node) => node.classList.contains("assistant"))).toHaveLength(1);
-    expect(chatBox.children).toEqual([existingNode, archiveNode]);
+    expect(finalized[0].msg).toBe(created[0]);
+    expect(finalized[0].msg).not.toBe(existingNode);
+    expect(chatBox.children.filter((node) => node.classList.contains("assistant"))).toHaveLength(2);
+    expect(chatBox.children).toContain(existingNode);
   });
 
   it("records pending turn baseline state when an external turn starts", () => {

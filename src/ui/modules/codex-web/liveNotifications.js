@@ -1274,44 +1274,6 @@ export function createLiveNotificationsModule(deps) {
     return null;
   }
 
-  function normalizeAssistantNodeText(value) {
-    return String(value || "").replace(/\s+/g, " ").trim();
-  }
-
-  function readAssistantMessageNodeText(node) {
-    if (!node) return "";
-    const rawText = node.__webCodexRawText;
-    if (typeof rawText === "string" && rawText.trim()) return rawText;
-    const body = node.querySelector?.(".msgBody") || null;
-    const bodyRawText = body?.__webCodexRawText;
-    if (typeof bodyRawText === "string" && bodyRawText.trim()) return bodyRawText;
-    const bodyText = body?.textContent;
-    if (typeof bodyText === "string" && bodyText.trim()) return bodyText;
-    const nodeText = node.textContent;
-    if (typeof nodeText === "string" && nodeText.trim()) return nodeText;
-    return "";
-  }
-
-  function assistantMessageNodeTextMatches(node, text) {
-    const nodeText = readAssistantMessageNodeText(node);
-    const targetText = String(text || "").trim();
-    if (!nodeText || !targetText) return false;
-    if (String(nodeText).trim() === targetText) return true;
-    return normalizeAssistantNodeText(nodeText) === normalizeAssistantNodeText(targetText);
-  }
-
-  function findAssistantMessageNodeByText(box, text) {
-    const targetText = String(text || "").trim();
-    if (!box || !targetText) return null;
-    const children = Array.from(box.children || []);
-    for (let index = children.length - 1; index >= 0; index -= 1) {
-      const node = children[index];
-      if (!node?.classList?.contains?.("assistant")) continue;
-      if (assistantMessageNodeTextMatches(node, targetText)) return node;
-    }
-    return null;
-  }
-
   function claimAssistantLiveStream(threadId, identity, msg, body) {
     const normalizedThreadId = String(threadId || "").trim();
     const normalizedIdentity = resolveAssistantLiveIdentity(normalizedThreadId, identity);
@@ -1510,8 +1472,7 @@ export function createLiveNotificationsModule(deps) {
     if (options.final === true) {
       const box = byId("chatBox");
       const keyedAssistant = finalIdentity?.id ? findAssistantMessageNodeByKey(box, finalIdentity.id) : null;
-      const textMatchedAssistant = keyedAssistant ? null : findAssistantMessageNodeByText(box, nextText);
-      const reusableAssistant = keyedAssistant || textMatchedAssistant;
+      const reusableAssistant = keyedAssistant;
       const reusableBody = reusableAssistant?.querySelector?.(".msgBody") || null;
       if (reusableAssistant && reusableBody) {
         claimAssistantLiveStream(threadId, finalIdentity || options, reusableAssistant, reusableBody);

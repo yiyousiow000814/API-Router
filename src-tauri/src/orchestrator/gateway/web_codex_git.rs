@@ -81,6 +81,30 @@ fn read_cached_worktree_status(entry: WorktreeCacheEntry, now: Instant) -> Optio
     }
 }
 
+fn cache_worktree_status(workspace: Option<&str>, cwd: &str, is_worktree: bool) {
+    let Some(cache_key) = normalize_cache_key(workspace, cwd) else {
+        return;
+    };
+    let mut guard = match worktree_cache().lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    };
+    guard.insert(
+        cache_key,
+        WorktreeCacheEntry {
+            is_worktree,
+            observed_at: Instant::now(),
+        },
+    );
+}
+
+fn git_error_indicates_missing_repository(detail: &str) -> bool {
+    detail
+        .trim()
+        .to_ascii_lowercase()
+        .contains("not a git repository")
+}
+
 fn read_cached_pr_numbers(
     entry: &PrNumbersCacheEntry,
     now: Instant,
@@ -457,20 +481,17 @@ pub(super) async fn detect_git_worktree_for_workspace(
             }
         }
     }
-    let output = run_git_command_for_workspace(workspace, cwd, WORKTREE_DETECTION_GIT_ARGS).await?;
+    let output =
+        match run_git_command_for_workspace(workspace, cwd, WORKTREE_DETECTION_GIT_ARGS).await {
+            Ok(output) => output,
+            Err(detail) if git_error_indicates_missing_repository(&detail) => {
+                cache_worktree_status(workspace, cwd, false);
+                return Ok(false);
+            }
+            Err(detail) => return Err(detail),
+        };
     let is_worktree = parse_worktree_detection_output(&output)?;
-    let cache = worktree_cache();
-    let mut guard = match cache.lock() {
-        Ok(guard) => guard,
-        Err(err) => err.into_inner(),
-    };
-    guard.insert(
-        cache_key,
-        WorktreeCacheEntry {
-            is_worktree,
-            observed_at: Instant::now(),
-        },
-    );
+    cache_worktree_status(workspace, cwd, is_worktree);
     Ok(is_worktree)
 }
 
@@ -832,6 +853,42 @@ mod tests {
 
         assert_eq!(read_cached_worktree_status(fresh_entry, now), Some(true));
         assert_eq!(read_cached_worktree_status(stale_entry, now), None);
+    }
+
+    #[test]
+    fn git_error_indicates_missing_repository_matches_common_git_error() {
+        assert!(git_error_indicates_missing_repository(
+            "fatal: not a git repository (or any of the parent directories): .git"
+        ));
+        assert!(!git_error_indicates_missing_repository(
+            "fatal: unable to access 'https://example.com/repo.git': could not resolve host"
+        ));
+    }
+
+    #[test]
+    fn cache_worktree_status_records_negative_results() {
+        let workspace = Some("windows");
+        let cwd = "C:\\Users\\yiyou\\API-Router\\.tmp-nonrepo-worktree";
+        let cache_key = normalize_cache_key(workspace, cwd).expect("cache key");
+        {
+            let mut guard = match worktree_cache().lock() {
+                Ok(guard) => guard,
+                Err(err) => err.into_inner(),
+            };
+            guard.remove(&cache_key);
+        }
+
+        cache_worktree_status(workspace, cwd, false);
+
+        let guard = match worktree_cache().lock() {
+            Ok(guard) => guard,
+            Err(err) => err.into_inner(),
+        };
+        let entry = guard.get(&cache_key).copied().expect("cached status");
+        assert_eq!(
+            read_cached_worktree_status(entry, Instant::now()),
+            Some(false)
+        );
     }
 
     #[test]

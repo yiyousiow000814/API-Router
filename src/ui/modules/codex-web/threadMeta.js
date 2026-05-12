@@ -1,4 +1,4 @@
-import { mergeCanonicalThreadMeta } from "./canonicalTimeline.js";
+import { mergeThreadTimelineMeta } from "./threadTimelineState.js";
 
 export function normalizeWorkspaceTarget(value) {
   return value === "wsl2" ? "wsl2" : "windows";
@@ -117,8 +117,8 @@ export function sortThreadsByNewest(items) {
 export function mergeThreadItem(existing, incoming) {
   const base = existing && typeof existing === "object" ? { ...existing } : {};
   const next = incoming && typeof incoming === "object" ? { ...incoming } : {};
-  const canonicalMeta = mergeCanonicalThreadMeta(base, next);
-  const merged = { ...base, ...next, ...canonicalMeta };
+  const timelineMeta = mergeThreadTimelineMeta(base, next);
+  const merged = { ...base, ...next, ...timelineMeta };
   for (const key of [
     "workspace",
     "__workspaceQueryTarget",

@@ -22,7 +22,7 @@ function mergeSources(existingSources, incomingSource) {
   return merged;
 }
 
-function isCanonicalThreadMetaSource(source) {
+function isStableThreadMetaSource(source) {
   const normalized = normalizeString(source).toLowerCase();
   if (!normalized) return false;
   return normalized !== "live-provisional";
@@ -44,11 +44,11 @@ function resolveThreadLabel(existingValue, incomingValue, canOverride) {
 function chooseIncomingThreadMeta(existing, incoming) {
   const base = existing && typeof existing === "object" ? { ...existing } : {};
   const next = incoming && typeof incoming === "object" ? { ...incoming } : {};
-  const existingCanonical = isCanonicalThreadMetaSource(base.source) || base.provisional === false;
-  const incomingCanonical = isCanonicalThreadMetaSource(next.source) || next.provisional === false;
+  const existingStable = isStableThreadMetaSource(base.source) || base.provisional === false;
+  const incomingStable = isStableThreadMetaSource(next.source) || next.provisional === false;
   const incomingUserPreview = next.provisional === true && isUserPreviewSource(next.previewSource);
-  const canOverrideLabel = !existingCanonical || incomingCanonical;
-  const shouldSeedLabel = incomingCanonical || incomingUserPreview || !normalizeString(base.title);
+  const canOverrideLabel = !existingStable || incomingStable;
+  const shouldSeedLabel = incomingStable || incomingUserPreview || !normalizeString(base.title);
   const merged = { ...base, ...next };
 
   merged.id = normalizeThreadId(next.id || next.threadId || base.id || base.threadId);
@@ -70,13 +70,13 @@ function chooseIncomingThreadMeta(existing, incoming) {
     merged.preview = normalizeString(merged.title);
   }
 
-  if (incomingCanonical) {
+  if (incomingStable) {
     merged.provisional = false;
   } else if (base.provisional === true || next.provisional === true) {
     merged.provisional = true;
   }
 
-  if (existingCanonical && !incomingCanonical) {
+  if (existingStable && !incomingStable) {
     merged.source = base.source || next.source;
     merged.previewSource = base.previewSource || next.previewSource;
   } else if (next.source) {
@@ -104,7 +104,7 @@ function buildOptimisticUserMessage(event, state) {
   };
 }
 
-function buildCanonicalMessage(event) {
+function buildTimelineMessage(event) {
   const raw = event?.message && typeof event.message === "object" ? { ...event.message } : {};
   const role = normalizeString(
     raw.role ||
@@ -184,7 +184,7 @@ function findAssistantMatchIndex(messages, incoming) {
   return -1;
 }
 
-function upsertCanonicalMessage(messages, incoming) {
+function upsertTimelineMessage(messages, incoming) {
   const items = Array.isArray(messages) ? messages.slice() : [];
   const next = cloneMessage(incoming);
   if (next.role === "user") {
@@ -231,7 +231,7 @@ function upsertCanonicalMessage(messages, incoming) {
   return items;
 }
 
-export function createCanonicalTimelineState(threadId = "") {
+export function createThreadTimelineState(threadId = "") {
   const id = normalizeThreadId(threadId);
   return {
     threadId: id,
@@ -246,12 +246,12 @@ export function createCanonicalTimelineState(threadId = "") {
   };
 }
 
-export function mergeCanonicalThreadMeta(existing, incoming) {
+export function mergeThreadTimelineMeta(existing, incoming) {
   return chooseIncomingThreadMeta(existing, incoming);
 }
 
 export function reduceTimelineEvent(state, event) {
-  const current = state && typeof state === "object" ? state : createCanonicalTimelineState();
+  const current = state && typeof state === "object" ? state : createThreadTimelineState();
   const nextThreadId = normalizeThreadId(event?.threadId || current.threadId);
   if (current.threadId && nextThreadId && current.threadId !== nextThreadId) {
     return current;
@@ -269,15 +269,15 @@ export function reduceTimelineEvent(state, event) {
   switch (normalizeString(event?.type)) {
     case "optimistic-user": {
       const optimistic = buildOptimisticUserMessage(event, nextState);
-      nextState.messages = upsertCanonicalMessage(nextState.messages, optimistic);
+      nextState.messages = upsertTimelineMessage(nextState.messages, optimistic);
       return nextState;
     }
     case "message-upsert":
     case "message":
     case "assistant-final":
     case "assistant-snapshot": {
-      const message = buildCanonicalMessage(event);
-      nextState.messages = upsertCanonicalMessage(nextState.messages, message);
+      const message = buildTimelineMessage(event);
+      nextState.messages = upsertTimelineMessage(nextState.messages, message);
       return nextState;
     }
     case "messages-snapshot":
@@ -285,7 +285,7 @@ export function reduceTimelineEvent(state, event) {
       return applyTimelineSnapshot(nextState, event.snapshot || event);
     }
     case "thread-meta": {
-      nextState.threadMeta = mergeCanonicalThreadMeta(nextState.threadMeta, event.meta || event.threadMeta || event.thread || event);
+      nextState.threadMeta = mergeThreadTimelineMeta(nextState.threadMeta, event.meta || event.threadMeta || event.thread || event);
       if (!nextState.threadMeta.id) {
         nextState.threadMeta.id = nextThreadId || current.threadId;
       }
@@ -297,7 +297,7 @@ export function reduceTimelineEvent(state, event) {
 }
 
 export function applyTimelineSnapshot(state, snapshot) {
-  const current = state && typeof state === "object" ? state : createCanonicalTimelineState();
+  const current = state && typeof state === "object" ? state : createThreadTimelineState();
   const payload = snapshot && typeof snapshot === "object" ? snapshot : {};
   const snapshotThreadId = normalizeThreadId(payload.threadId || payload.id || current.threadId);
   if (current.threadId && snapshotThreadId && current.threadId !== snapshotThreadId) {
@@ -314,11 +314,11 @@ export function applyTimelineSnapshot(state, snapshot) {
   };
 
   if (payload.threadMeta && typeof payload.threadMeta === "object") {
-    nextState.threadMeta = mergeCanonicalThreadMeta(nextState.threadMeta, payload.threadMeta);
+    nextState.threadMeta = mergeThreadTimelineMeta(nextState.threadMeta, payload.threadMeta);
   }
 
   for (const entry of Array.isArray(payload.messages) ? payload.messages : []) {
-    const message = buildCanonicalMessage({
+    const message = buildTimelineMessage({
       type: entry?.role === "assistant" ? "assistant-snapshot" : "message-upsert",
       threadId: snapshotThreadId || current.threadId,
       message: entry,
@@ -327,7 +327,7 @@ export function applyTimelineSnapshot(state, snapshot) {
     if (entry?.role === "user" && normalizeString(entry.text)) {
       const optimisticIndex = findOptimisticUserIndex(nextState.messages, message);
       if (optimisticIndex >= 0) {
-        nextState.messages = upsertCanonicalMessage(nextState.messages, {
+        nextState.messages = upsertTimelineMessage(nextState.messages, {
           ...message,
           clientMessageId: normalizeThreadId(nextState.messages[optimisticIndex]?.clientMessageId || entry.clientMessageId),
           optimistic: false,
@@ -335,7 +335,7 @@ export function applyTimelineSnapshot(state, snapshot) {
         continue;
       }
     }
-    nextState.messages = upsertCanonicalMessage(nextState.messages, message);
+    nextState.messages = upsertTimelineMessage(nextState.messages, message);
   }
 
   if (payload.running === true || payload.historyIncomplete === true) {
