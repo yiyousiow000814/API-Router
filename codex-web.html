@@ -2910,6 +2910,39 @@
       padding: 12px;
       touch-action: none;
     }
+    .imageViewerStage {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      display: grid;
+      place-items: center;
+      isolation: isolate;
+    }
+    .imageViewerSlideLayer {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      transform: translate3d(0, 0, 0);
+      opacity: 1;
+      pointer-events: none;
+      will-change: transform, opacity;
+    }
+    .imageViewerCurrentLayer { z-index: 1; }
+    .imageViewerIncomingLayer {
+      z-index: 2;
+      opacity: 0;
+    }
+    .imageViewerIncomingLayer.is-image-loading {
+      background: #f3f4f6;
+    }
+    .imageViewerBody.is-slide-prepared .imageViewerIncomingLayer {
+      opacity: 1;
+    }
+    .imageViewerBody.is-slide-transitioning .imageViewerSlideLayer {
+      transition: transform var(--motion-base, 220ms) cubic-bezier(.22, .61, .36, 1), opacity var(--motion-fast, 160ms) ease;
+    }
     .imageViewerImg {
       display: block;
       min-width: 0;

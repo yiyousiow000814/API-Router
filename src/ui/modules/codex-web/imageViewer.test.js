@@ -2,7 +2,423 @@ import { describe, expect, it, vi } from "vitest";
 
 import { createImageViewerModule } from "./imageViewer.js";
 
+function createClassList() {
+  const classes = new Set();
+  return {
+    add(...names) {
+      for (const name of names) classes.add(name);
+    },
+    remove(...names) {
+      for (const name of names) classes.delete(name);
+    },
+    contains(name) {
+      return classes.has(name);
+    },
+    toggle(name, force) {
+      if (force === true) {
+        classes.add(name);
+        return true;
+      }
+      if (force === false) {
+        classes.delete(name);
+        return false;
+      }
+      if (classes.has(name)) {
+        classes.delete(name);
+        return false;
+      }
+      classes.add(name);
+      return true;
+    },
+  };
+}
+
+function createEventTarget(props = {}) {
+  const listeners = new Map();
+  return {
+    ...props,
+    addEventListener(type, callback, options = {}) {
+      const entries = listeners.get(type) || [];
+      entries.push({ callback, once: options?.once === true });
+      listeners.set(type, entries);
+    },
+    dispatchEvent(event) {
+      const entries = [...(listeners.get(event.type) || [])];
+      for (const entry of entries) {
+        entry.callback(event);
+      }
+      listeners.set(
+        event.type,
+        (listeners.get(event.type) || []).filter((entry) => !entry.once)
+      );
+    },
+  };
+}
+
+function createToggleButton() {
+  const attrs = new Set();
+  return {
+    onclick: null,
+    toggleAttribute(name, force) {
+      if (force) attrs.add(name);
+      else attrs.delete(name);
+    },
+    hasAttribute(name) {
+      return attrs.has(name);
+    },
+  };
+}
+
+function createFilmstrip() {
+  return {
+    innerHTML: "",
+    scrollLeft: 0,
+    querySelectorAll() {
+      return [];
+    },
+    querySelector() {
+      return null;
+    },
+    getBoundingClientRect() {
+      return { left: 0, width: 0 };
+    },
+  };
+}
+
+async function flushRafCallbacks(callbacks, limit = 8) {
+  for (let i = 0; i < limit; i += 1) {
+    callbacks.shift()?.();
+    await Promise.resolve();
+  }
+}
+
+function setupImageViewerTest({
+  images,
+  index = 0,
+  imageComplete = true,
+  imageDecode = null,
+  incomingImageComplete = true,
+  incomingImageDecode = null,
+  requestAnimationFrameRef = (callback) => callback(),
+}) {
+  const elements = new Map();
+  const backdrop = { classList: createClassList() };
+  const body = createEventTarget({
+    classList: createClassList(),
+    __wired: false,
+    clientWidth: 320,
+    setPointerCapture() {},
+    getBoundingClientRect() {
+      return { width: 320 };
+    },
+  });
+  const title = { textContent: "" };
+  const img = createEventTarget({
+    src: "",
+    alt: "",
+    style: {},
+    complete: imageComplete,
+    naturalWidth: imageComplete ? 1200 : 0,
+  });
+  if (imageDecode) img.decode = imageDecode;
+  const incomingImg = createEventTarget({
+    src: "",
+    alt: "",
+    style: {},
+    complete: incomingImageComplete,
+    naturalWidth: incomingImageComplete ? 1200 : 0,
+  });
+  if (incomingImageDecode) incomingImg.decode = incomingImageDecode;
+  const currentLayer = createEventTarget({ classList: createClassList(), style: {} });
+  const incomingLayer = createEventTarget({ classList: createClassList(), style: {} });
+  const prev = createToggleButton();
+  const next = createToggleButton();
+  const download = createToggleButton();
+  const share = createToggleButton();
+  const film = createFilmstrip();
+
+  elements.set("imageViewerBackdrop", backdrop);
+  elements.set("imageViewerBody", body);
+  elements.set("imageViewerTitle", title);
+  elements.set("imageViewerImg", img);
+  elements.set("imageViewerImgIncoming", incomingImg);
+  elements.set("imageViewerCurrentLayer", currentLayer);
+  elements.set("imageViewerIncomingLayer", incomingLayer);
+  elements.set("imageViewerPrevBtn", prev);
+  elements.set("imageViewerNextBtn", next);
+  elements.set("imageViewerDownloadBtn", download);
+  elements.set("imageViewerShareBtn", share);
+  elements.set("imageViewerFilmstrip", film);
+
+  const module = createImageViewerModule({
+    byId: (id) => elements.get(id) || null,
+    state: {
+      chatSmoothScrollUntil: 0,
+      chatShouldStickToBottom: true,
+    },
+    escapeHtml: (value) => String(value || ""),
+    wireBlurBackdropShield: () => {},
+    scrollChatToBottom: () => {},
+    updateScrollToBottomBtn: () => {},
+    documentRef: {
+      body: { appendChild() {} },
+      createElement() {
+        return {};
+      },
+      addEventListener() {},
+    },
+    navigatorRef: {},
+    requestAnimationFrameRef,
+  });
+
+  module.openImageViewer(images[index].src, images[index].label, {
+    images,
+    index,
+  });
+
+  return { body, title, img, incomingImg, currentLayer, incomingLayer };
+}
+
 describe("imageViewer", () => {
+  it("animates a direct left swipe before committing to the next image", async () => {
+    const { body, title, img, incomingImg, currentLayer, incomingLayer } = setupImageViewerTest({
+      images: [
+        { src: "/one.png", label: "Image #1" },
+        { src: "/two.png", label: "Image #2" },
+      ],
+      index: 0,
+    });
+
+    body.dispatchEvent({ type: "pointerdown", pointerId: 1, clientX: 280, clientY: 120 });
+    body.dispatchEvent({
+      type: "pointermove",
+      pointerId: 1,
+      clientX: 80,
+      clientY: 122,
+      preventDefault() {},
+    });
+    body.dispatchEvent({ type: "pointerup", pointerId: 1, clientX: 80, clientY: 122 });
+    await Promise.resolve();
+
+    expect(img.src).toBe("/one.png");
+    expect(incomingImg.src).toBe("/two.png");
+    expect(body.classList.contains("is-slide-transitioning")).toBe(true);
+    expect(currentLayer.style.transform).toBe("translate3d(-320px, 0px, 0)");
+    expect(incomingLayer.style.transform).toBe("translate3d(0px, 0px, 0)");
+
+    incomingLayer.dispatchEvent({ type: "transitionend" });
+
+    expect(img.src).toBe("/two.png");
+    expect(body.classList.contains("is-slide-transitioning")).toBe(false);
+    expect(title.textContent).toBe("Image #2");
+  });
+
+  it("animates a direct right swipe from the middle image before committing to the previous image", async () => {
+    const { body, title, img, incomingImg, currentLayer, incomingLayer } = setupImageViewerTest({
+      images: [
+        { src: "/left.png", label: "Image #1" },
+        { src: "/middle.png", label: "Image #2" },
+        { src: "/right.png", label: "Image #3" },
+      ],
+      index: 1,
+    });
+
+    body.dispatchEvent({ type: "pointerdown", pointerId: 1, clientX: 80, clientY: 120 });
+    let prevented = false;
+    body.dispatchEvent({
+      type: "pointermove",
+      pointerId: 1,
+      clientX: 280,
+      clientY: 122,
+      preventDefault() {
+        prevented = true;
+      },
+    });
+    expect(prevented).toBe(true);
+    expect(incomingImg.src).toBe("/left.png");
+    body.dispatchEvent({ type: "pointerup", pointerId: 1, clientX: 280, clientY: 122 });
+    await Promise.resolve();
+
+    expect(img.src).toBe("/middle.png");
+    expect(incomingImg.src).toBe("/left.png");
+    expect(body.classList.contains("is-slide-transitioning")).toBe(true);
+    expect(currentLayer.style.transform).toBe("translate3d(320px, 0px, 0)");
+    expect(incomingLayer.style.transform).toBe("translate3d(0px, 0px, 0)");
+
+    incomingLayer.dispatchEvent({ type: "transitionend" });
+
+    expect(img.src).toBe("/left.png");
+    expect(body.classList.contains("is-slide-transitioning")).toBe(false);
+    expect(title.textContent).toBe("Image #1");
+  });
+
+  it("switches the prepared slide when a small opposite drag is followed by a committed previous-image swipe", async () => {
+    const { body, img, incomingImg, currentLayer, incomingLayer } = setupImageViewerTest({
+      images: [
+        { src: "/left.png", label: "Image #1" },
+        { src: "/middle.png", label: "Image #2" },
+        { src: "/right.png", label: "Image #3" },
+      ],
+      index: 1,
+    });
+
+    body.dispatchEvent({ type: "pointerdown", pointerId: 1, clientX: 160, clientY: 120 });
+    body.dispatchEvent({
+      type: "pointermove",
+      pointerId: 1,
+      clientX: 140,
+      clientY: 122,
+      preventDefault() {},
+    });
+    expect(incomingImg.src).toBe("/right.png");
+
+    body.dispatchEvent({
+      type: "pointermove",
+      pointerId: 1,
+      clientX: 280,
+      clientY: 122,
+      preventDefault() {},
+    });
+    body.dispatchEvent({ type: "pointerup", pointerId: 1, clientX: 280, clientY: 122 });
+    await Promise.resolve();
+
+    expect(img.src).toBe("/middle.png");
+    expect(incomingImg.src).toBe("/left.png");
+    expect(currentLayer.style.transform).toBe("translate3d(320px, 0px, 0)");
+    expect(incomingLayer.style.transform).toBe("translate3d(0px, 0px, 0)");
+
+    incomingLayer.dispatchEvent({ type: "transitionend" });
+
+    expect(img.src).toBe("/left.png");
+  });
+
+  it("keeps the incoming image visible until the promoted image finishes loading", async () => {
+    const rafCallbacks = [];
+    const { body, img, incomingImg, incomingLayer } = setupImageViewerTest({
+      images: [
+        { src: "/middle.png", label: "Image #2" },
+        { src: "/right.png", label: "Image #3" },
+      ],
+      index: 0,
+      imageComplete: false,
+      requestAnimationFrameRef(callback) {
+        rafCallbacks.push(callback);
+      },
+    });
+
+    body.dispatchEvent({ type: "pointerdown", pointerId: 1, clientX: 280, clientY: 120 });
+    body.dispatchEvent({
+      type: "pointermove",
+      pointerId: 1,
+      clientX: 80,
+      clientY: 122,
+      preventDefault() {},
+    });
+    expect(incomingImg.src).toBe("/right.png");
+
+    body.dispatchEvent({ type: "pointerup", pointerId: 1, clientX: 80, clientY: 122 });
+    rafCallbacks.shift()?.();
+    await Promise.resolve();
+    incomingLayer.dispatchEvent({ type: "transitionend" });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(img.src).toBe("/right.png");
+    expect(incomingImg.src).toBe("/right.png");
+    expect(incomingLayer.style.opacity).toBe("1");
+
+    img.complete = true;
+    img.naturalWidth = 1200;
+    img.dispatchEvent({ type: "load" });
+    await flushRafCallbacks(rafCallbacks);
+
+    expect(incomingImg.src).toBe("");
+    expect(incomingLayer.style.opacity).toBe("");
+  });
+
+  it("waits for image decode before clearing the incoming image when the promoted image is cached", async () => {
+    const rafCallbacks = [];
+    let resolveDecode;
+    const decodePromise = new Promise((resolve) => {
+      resolveDecode = resolve;
+    });
+    const { body, img, incomingImg, incomingLayer } = setupImageViewerTest({
+      images: [
+        { src: "/middle.png", label: "Image #2" },
+        { src: "/right.png", label: "Image #3" },
+      ],
+      index: 0,
+      imageComplete: true,
+      imageDecode: () => decodePromise,
+      requestAnimationFrameRef(callback) {
+        rafCallbacks.push(callback);
+      },
+    });
+
+    body.dispatchEvent({ type: "pointerdown", pointerId: 1, clientX: 280, clientY: 120 });
+    body.dispatchEvent({
+      type: "pointermove",
+      pointerId: 1,
+      clientX: 80,
+      clientY: 122,
+      preventDefault() {},
+    });
+    body.dispatchEvent({ type: "pointerup", pointerId: 1, clientX: 80, clientY: 122 });
+    rafCallbacks.shift()?.();
+    await Promise.resolve();
+    incomingLayer.dispatchEvent({ type: "transitionend" });
+
+    expect(img.src).toBe("/right.png");
+    expect(incomingImg.src).toBe("/right.png");
+
+    rafCallbacks.shift()?.();
+    await Promise.resolve();
+    expect(incomingImg.src).toBe("/right.png");
+
+    resolveDecode();
+    await Promise.resolve();
+    await flushRafCallbacks(rafCallbacks, 1);
+    expect(incomingImg.src).toBe("/right.png");
+
+    await flushRafCallbacks(rafCallbacks);
+    expect(incomingImg.src).toBe("");
+  });
+
+  it("keeps an opaque incoming-slide placeholder until the slide is promoted", async () => {
+    const rafCallbacks = [];
+    const { body, img, incomingLayer } = setupImageViewerTest({
+      images: [
+        { src: "/middle.png", label: "Image #2" },
+        { src: "/right.png", label: "Image #3" },
+      ],
+      index: 0,
+      requestAnimationFrameRef(callback) {
+        rafCallbacks.push(callback);
+      },
+    });
+
+    body.dispatchEvent({ type: "pointerdown", pointerId: 1, clientX: 280, clientY: 120 });
+    body.dispatchEvent({
+      type: "pointermove",
+      pointerId: 1,
+      clientX: 80,
+      clientY: 122,
+      preventDefault() {},
+    });
+
+    expect(incomingLayer.classList.contains("is-image-loading")).toBe(true);
+
+    body.dispatchEvent({ type: "pointerup", pointerId: 1, clientX: 80, clientY: 122 });
+    await flushRafCallbacks(rafCallbacks, 1);
+    expect(incomingLayer.classList.contains("is-image-loading")).toBe(true);
+
+    incomingLayer.dispatchEvent({ type: "transitionend" });
+    await flushRafCallbacks(rafCallbacks);
+
+    expect(img.src).toBe("/right.png");
+    expect(incomingLayer.classList.contains("is-image-loading")).toBe(false);
+  });
+
   it("keeps a missing attachment placeholder and avoids force scrolling on image errors", () => {
     const scrollChatToBottom = vi.fn();
     const updateScrollToBottomBtn = vi.fn();

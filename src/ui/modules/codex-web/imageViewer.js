@@ -112,6 +112,11 @@ function nextAnimationFrame(requestAnimationFrameRef) {
   return new Promise((resolve) => requestAnimationFrameRef(() => resolve()));
 }
 
+const IMAGE_VIEWER_SLIDE_FALLBACK_MS = 320;
+const IMAGE_VIEWER_DRAG_THRESHOLD_PX = 10;
+const IMAGE_VIEWER_COMMIT_RATIO = 0.22;
+const IMAGE_VIEWER_DRAG_MAX_PROGRESS = 0.84;
+
 function buildBrokenAttachmentCardHtml(label, overlayHtml = "", escapeHtmlRef = (value) => String(value || "")) {
   return (
     `<div class="msgAttachmentChip mono">[image]</div>` +
@@ -140,6 +145,69 @@ export function createImageViewerModule(deps) {
   let filePreviewHistoryToken = 0;
   let filePreviewHistoryWired = false;
   let pdfPreviewState = null;
+
+  function getImageViewerNodes() {
+    return {
+      backdrop: byId("imageViewerBackdrop"),
+      body: byId("imageViewerBody"),
+      stage: byId("imageViewerStage"),
+      img: byId("imageViewerImg"),
+      incomingImg: byId("imageViewerImgIncoming"),
+      currentLayer: byId("imageViewerCurrentLayer"),
+      incomingLayer: byId("imageViewerIncomingLayer"),
+      title: byId("imageViewerTitle"),
+      prev: byId("imageViewerPrevBtn"),
+      next: byId("imageViewerNextBtn"),
+      film: byId("imageViewerFilmstrip"),
+    };
+  }
+
+  function formatSlideTranslate(x) {
+    return `translate3d(${Math.round(Number(x) || 0)}px, 0px, 0)`;
+  }
+
+  function getViewerSlideWidth(nodes = getImageViewerNodes()) {
+    const candidates = [
+      Number(nodes?.body?.clientWidth),
+      Number(nodes?.stage?.clientWidth),
+      Number(nodes?.body?.getBoundingClientRect?.()?.width),
+      Number(nodes?.stage?.getBoundingClientRect?.()?.width),
+    ];
+    for (const value of candidates) {
+      if (Number.isFinite(value) && value > 1) return value;
+    }
+    return 1;
+  }
+
+  function clampViewerDragOffset(offsetX, width) {
+    const slideWidth = Math.max(1, Number(width) || 1);
+    const maxOffset = slideWidth * IMAGE_VIEWER_DRAG_MAX_PROGRESS;
+    const dx = Number.isFinite(Number(offsetX)) ? Number(offsetX) : 0;
+    return Math.max(-maxOffset, Math.min(maxOffset, dx));
+  }
+
+  function isPreparedViewerSlideTarget(targetIndex) {
+    return (
+      imageViewerState?.slideTargetIndex != null &&
+      Number(imageViewerState.slideTargetIndex) === Number(targetIndex)
+    );
+  }
+
+  function applyViewerSlideTransforms(offsetX, direction, width, options = {}) {
+    const { currentLayer, incomingLayer } = getImageViewerNodes();
+    if (!currentLayer || !incomingLayer) return;
+    const dx = Number.isFinite(Number(offsetX)) ? Number(offsetX) : 0;
+    const dir = Number(direction) > 0 ? 1 : -1;
+    const slideWidth = Math.max(1, Number(width) || 1);
+    if (currentLayer.style) {
+      currentLayer.style.transform = formatSlideTranslate(dx);
+      currentLayer.style.opacity = "1";
+    }
+    if (incomingLayer.style) {
+      incomingLayer.style.transform = formatSlideTranslate(dx + dir * slideWidth);
+      incomingLayer.style.opacity = options.hideIncoming === true ? "0" : "1";
+    }
+  }
 
   function isPdfPreviewSrc(src) {
     try {
@@ -207,26 +275,13 @@ export function createImageViewerModule(deps) {
     }
   }
 
-  function setViewerIndex(nextIndex) {
-    const backdrop = byId("imageViewerBackdrop");
-    const img = byId("imageViewerImg");
-    const title = byId("imageViewerTitle");
-    const prev = byId("imageViewerPrevBtn");
-    const next = byId("imageViewerNextBtn");
-    const film = byId("imageViewerFilmstrip");
-    if (!backdrop || !img || !imageViewerState) return;
-
+  function syncViewerChrome(idx) {
+    const { title, prev, next, film } = getImageViewerNodes();
+    if (!imageViewerState) return;
     const images = Array.isArray(imageViewerState.images) ? imageViewerState.images : [];
-    const idx = clampNumber(Number(nextIndex || 0), 0, Math.max(0, images.length - 1));
     const item = images[idx] || {};
-    imageViewerState.index = idx;
-
     const safeLabel = String(item.label || "").trim() || "image";
-    const safeSrc = String(item.src || "").trim();
     if (title) title.textContent = safeLabel;
-    img.src = safeSrc;
-    img.alt = safeLabel;
-    setViewerTransform({ scale: 1, tx: 0, ty: 0 });
 
     if (prev) prev.toggleAttribute("disabled", idx <= 0);
     if (next) next.toggleAttribute("disabled", idx >= images.length - 1);
@@ -255,6 +310,235 @@ export function createImageViewerModule(deps) {
     }
   }
 
+  function clearViewerSlideState(options = {}) {
+    const keepIncoming = options.keepIncoming === true;
+    const { body, currentLayer, incomingLayer, incomingImg } = getImageViewerNodes();
+    if (imageViewerState?.slideTimer) {
+      clearTimeout(imageViewerState.slideTimer);
+      imageViewerState.slideTimer = null;
+    }
+    body?.classList?.remove?.(
+      "is-slide-prepared",
+      "is-slide-transitioning",
+      "is-slide-running",
+      "is-slide-forward",
+      "is-slide-backward"
+    );
+    if (currentLayer?.style) {
+      currentLayer.style.transform = "";
+      currentLayer.style.opacity = "";
+    }
+    if (incomingLayer?.style && !keepIncoming) {
+      incomingLayer.style.transform = "";
+      incomingLayer.style.opacity = "";
+    }
+    if (incomingLayer?.classList && !keepIncoming) {
+      incomingLayer.classList.remove("is-image-loading");
+    }
+    if (incomingImg && !keepIncoming) {
+      incomingImg.src = "";
+      incomingImg.alt = "";
+      if (incomingImg.style) incomingImg.style.transform = "";
+    }
+    if (imageViewerState) {
+      imageViewerState.isSliding = false;
+      imageViewerState.isDragging = false;
+      imageViewerState.slideTargetIndex = null;
+      imageViewerState.slideDirection = 0;
+      imageViewerState.slideWidth = 0;
+      imageViewerState.dragDx = 0;
+    }
+  }
+
+  function markIncomingImageLoading(nodes) {
+    const { incomingLayer } = nodes || {};
+    if (!incomingLayer) return;
+    incomingLayer.classList?.add?.("is-image-loading");
+  }
+
+  function commitViewerIndex(nextIndex, options = {}) {
+    const { backdrop, img } = getImageViewerNodes();
+    if (!backdrop || !img || !imageViewerState) return;
+
+    const images = Array.isArray(imageViewerState.images) ? imageViewerState.images : [];
+    const idx = clampNumber(Number(nextIndex || 0), 0, Math.max(0, images.length - 1));
+    const item = images[idx] || {};
+    imageViewerState.index = idx;
+
+    const safeLabel = String(item.label || "").trim() || "image";
+    const safeSrc = String(item.src || "").trim();
+    img.src = safeSrc;
+    img.alt = safeLabel;
+    setViewerTransform({ scale: 1, tx: 0, ty: 0 });
+    syncViewerChrome(idx);
+    if (options.holdIncomingUntilReady === true) {
+      const token = Number(imageViewerState.slideToken || 0);
+      const waitForPaint = () =>
+        nextAnimationFrame(requestAnimationFrameRef).then(() =>
+          nextAnimationFrame(requestAnimationFrameRef)
+        );
+      const releaseIncoming = () => {
+        void waitForPaint().then(() => {
+          if (!imageViewerState) return;
+          if (Number(imageViewerState.slideToken || 0) !== token) return;
+          clearViewerSlideState();
+        });
+      };
+      clearViewerSlideState({ keepIncoming: true });
+      if (typeof img.decode === "function") {
+        void img.decode().then(releaseIncoming, releaseIncoming);
+      } else if (img.complete === false) {
+        img.addEventListener?.("load", releaseIncoming, { once: true });
+        img.addEventListener?.("error", releaseIncoming, { once: true });
+      } else {
+        releaseIncoming();
+      }
+      return;
+    }
+    clearViewerSlideState();
+  }
+
+  function prepareViewerSlide(targetIndex) {
+    const nodes = getImageViewerNodes();
+    const { body, currentLayer, incomingLayer, incomingImg } = nodes;
+    if (!body || !currentLayer || !incomingLayer || !incomingImg || !imageViewerState) return null;
+
+    const images = Array.isArray(imageViewerState.images) ? imageViewerState.images : [];
+    const currentIndex = clampNumber(
+      Number(imageViewerState.index || 0),
+      0,
+      Math.max(0, images.length - 1)
+    );
+    const idx = clampNumber(Number(targetIndex || 0), 0, Math.max(0, images.length - 1));
+    if (idx === currentIndex) return null;
+
+    clearViewerSlideState();
+
+    const item = images[idx] || {};
+    const safeLabel = String(item.label || "").trim() || "image";
+    const safeSrc = String(item.src || "").trim();
+    const direction = idx > currentIndex ? 1 : -1;
+    const width = getViewerSlideWidth(nodes);
+    const directionClass = direction > 0 ? "is-slide-forward" : "is-slide-backward";
+
+    incomingImg.src = safeSrc;
+    incomingImg.alt = safeLabel;
+    markIncomingImageLoading(nodes);
+    body.classList.add("is-slide-prepared", directionClass);
+    imageViewerState.slideTargetIndex = idx;
+    imageViewerState.slideDirection = direction;
+    imageViewerState.slideWidth = width;
+    imageViewerState.dragDx = 0;
+    imageViewerState.isDragging = false;
+    applyViewerSlideTransforms(0, direction, width);
+    return { ...nodes, idx, direction, width };
+  }
+
+  function finishViewerSlide(targetIndex, token) {
+    if (!imageViewerState?.isSliding) return;
+    if (Number(imageViewerState.slideToken || 0) !== Number(token || 0)) return;
+    commitViewerIndex(targetIndex, { holdIncomingUntilReady: true });
+  }
+
+  function startViewerSlide(targetIndex) {
+    if (!imageViewerState) return;
+    const prepared =
+      isPreparedViewerSlideTarget(targetIndex)
+        ? {
+            ...getImageViewerNodes(),
+            idx: Number(imageViewerState.slideTargetIndex),
+            direction: Number(imageViewerState.slideDirection || 0),
+            width: Math.max(1, Number(imageViewerState.slideWidth || 0)),
+          }
+        : prepareViewerSlide(targetIndex);
+    if (!prepared?.body || !prepared?.currentLayer || !prepared?.incomingLayer) {
+      commitViewerIndex(targetIndex);
+      return;
+    }
+
+    const { body, currentLayer, incomingLayer, idx, direction, width } = prepared;
+    const token = Number(imageViewerState.slideToken || 0) + 1;
+    imageViewerState.slideToken = token;
+    imageViewerState.isSliding = true;
+    imageViewerState.isDragging = false;
+    imageViewerState.slideTargetIndex = idx;
+    imageViewerState.slideDirection = direction;
+    imageViewerState.slideWidth = width;
+
+    body.classList.add("is-slide-transitioning");
+    body.classList.remove("is-slide-running");
+    try {
+      body.getBoundingClientRect?.();
+    } catch {}
+
+    const finish = () => finishViewerSlide(idx, token);
+    incomingLayer.addEventListener?.("transitionend", finish, { once: true });
+    imageViewerState.slideTimer = setTimeout(finish, IMAGE_VIEWER_SLIDE_FALLBACK_MS);
+
+    void nextAnimationFrame(requestAnimationFrameRef).then(() => {
+      if (!imageViewerState?.isSliding) return;
+      if (Number(imageViewerState.slideToken || 0) !== token) return;
+      body.classList.add("is-slide-running");
+      if (currentLayer?.style) currentLayer.style.transform = formatSlideTranslate(direction > 0 ? -width : width);
+      if (incomingLayer?.style) {
+        incomingLayer.style.transform = formatSlideTranslate(0);
+        incomingLayer.style.opacity = "1";
+      }
+    });
+  }
+
+  function snapViewerSlideBack() {
+    if (!imageViewerState) return;
+    const { body, currentLayer, incomingLayer } = getImageViewerNodes();
+    if (!body || !currentLayer || !incomingLayer) {
+      clearViewerSlideState();
+      return;
+    }
+    const direction = Number(imageViewerState.slideDirection || 0);
+    const width = Math.max(1, Number(imageViewerState.slideWidth || 0));
+    if (!direction || !width) {
+      clearViewerSlideState();
+      return;
+    }
+
+    const token = Number(imageViewerState.slideToken || 0) + 1;
+    imageViewerState.slideToken = token;
+    imageViewerState.isSliding = true;
+    imageViewerState.isDragging = false;
+    body.classList.add("is-slide-transitioning");
+    body.classList.remove("is-slide-running");
+    try {
+      body.getBoundingClientRect?.();
+    } catch {}
+
+    const finish = () => {
+      if (!imageViewerState?.isSliding) return;
+      if (Number(imageViewerState.slideToken || 0) !== token) return;
+      clearViewerSlideState();
+    };
+    currentLayer.addEventListener?.("transitionend", finish, { once: true });
+    imageViewerState.slideTimer = setTimeout(finish, IMAGE_VIEWER_SLIDE_FALLBACK_MS);
+
+    void nextAnimationFrame(requestAnimationFrameRef).then(() => {
+      if (!imageViewerState?.isSliding) return;
+      if (Number(imageViewerState.slideToken || 0) !== token) return;
+      body.classList.add("is-slide-running");
+      if (currentLayer.style) currentLayer.style.transform = formatSlideTranslate(0);
+      if (incomingLayer.style) {
+        incomingLayer.style.transform = formatSlideTranslate(direction * width);
+        incomingLayer.style.opacity = "0";
+      }
+    });
+  }
+
+  function setViewerIndex(nextIndex, options = {}) {
+    if (options.animate === true) {
+      startViewerSlide(nextIndex);
+      return;
+    }
+    commitViewerIndex(nextIndex);
+  }
+
   function renderViewerFilmstrip() {
     const film = byId("imageViewerFilmstrip");
     if (!film || !imageViewerState) return;
@@ -272,7 +556,7 @@ export function createImageViewerModule(deps) {
       .join("");
 
     for (const btn of Array.from(film.querySelectorAll("[data-qa='image-viewer-thumb']"))) {
-      btn.onclick = () => setViewerIndex(Number(btn.getAttribute("data-index") || "0"));
+      btn.onclick = () => setViewerIndex(Number(btn.getAttribute("data-index") || "0"), { animate: true });
     }
   }
 
@@ -336,6 +620,32 @@ export function createImageViewerModule(deps) {
           return;
         }
 
+        if (active.size === 1 && swipeStart && (imageViewerState.scale || 1) <= 1.02) {
+          const p = active.get(event.pointerId);
+          if (!p) return;
+          const dx = p.x - swipeStart.x;
+          const dy = p.y - swipeStart.y;
+          if (Math.abs(dx) > IMAGE_VIEWER_DRAG_THRESHOLD_PX && Math.abs(dx) > Math.abs(dy) * 1.2) {
+            const target = (imageViewerState.index || 0) + (dx < 0 ? 1 : -1);
+            const prepared =
+              isPreparedViewerSlideTarget(target)
+                ? {
+                    direction: Number(imageViewerState.slideDirection || 0),
+                    width: Math.max(1, Number(imageViewerState.slideWidth || 0)),
+                  }
+                : prepareViewerSlide(target);
+            if (prepared) {
+              const width = Math.max(1, Number(prepared.width || imageViewerState.slideWidth || 0));
+              const offset = clampViewerDragOffset(dx, width);
+              imageViewerState.isDragging = true;
+              imageViewerState.dragDx = offset;
+              applyViewerSlideTransforms(offset, prepared.direction, width);
+              event.preventDefault();
+              return;
+            }
+          }
+        }
+
         if (active.size === 1 && (imageViewerState.scale || 1) > 1) {
           const p = active.get(event.pointerId);
           if (!p || !swipeStart) return;
@@ -363,16 +673,25 @@ export function createImageViewerModule(deps) {
         if (swipeStart && scale <= 1.02) {
           const dx = event.clientX - swipeStart.x;
           const dy = event.clientY - swipeStart.y;
-          if (Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy) * 1.2) {
-            if (dx < 0) setViewerIndex((imageViewerState.index || 0) + 1);
-            else setViewerIndex((imageViewerState.index || 0) - 1);
+          const width = Math.max(1, Number(imageViewerState.slideWidth || getViewerSlideWidth()));
+          const shouldCommit =
+            Math.abs(dx) > width * IMAGE_VIEWER_COMMIT_RATIO &&
+            Math.abs(dx) > Math.abs(dy) * 1.2;
+          if (shouldCommit) {
+            startViewerSlide((imageViewerState.index || 0) + (dx < 0 ? 1 : -1));
+          } else if (imageViewerState.slideTargetIndex != null) {
+            snapViewerSlideBack();
           }
         }
-        if (now - lastTapMs < 320) {
+        const moved = swipeStart
+          ? Math.abs(event.clientX - swipeStart.x) > IMAGE_VIEWER_DRAG_THRESHOLD_PX ||
+            Math.abs(event.clientY - swipeStart.y) > IMAGE_VIEWER_DRAG_THRESHOLD_PX
+          : false;
+        if (!moved && now - lastTapMs < 320) {
           const next = scale > 1.2 ? 1 : 2;
           setViewerTransform({ scale: next, tx: 0, ty: 0 });
           lastTapMs = 0;
-        } else {
+        } else if (!moved) {
           lastTapMs = now;
         }
         swipeStart = null;
@@ -421,7 +740,14 @@ export function createImageViewerModule(deps) {
       `</button>` +
       `</div>` +
       `<div id="imageViewerBody" class="imageViewerBody">` +
+      `<div id="imageViewerStage" class="imageViewerStage">` +
+      `<div id="imageViewerCurrentLayer" class="imageViewerSlideLayer imageViewerCurrentLayer">` +
       `<img id="imageViewerImg" class="imageViewerImg" alt="" />` +
+      `</div>` +
+      `<div id="imageViewerIncomingLayer" class="imageViewerSlideLayer imageViewerIncomingLayer">` +
+      `<img id="imageViewerImgIncoming" class="imageViewerImg" alt="" />` +
+      `</div>` +
+      `</div>` +
       `</div>` +
       `<button id="imageViewerPrevBtn" class="imageViewerIconBtn imageViewerNav prev" type="button" aria-label="Previous" data-qa="image-viewer-prev">` +
       `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"></path></svg>` +
@@ -766,13 +1092,27 @@ export function createImageViewerModule(deps) {
       Math.max(0, images.length - 1)
     );
 
-    imageViewerState = { images, index: startIndex, scale: 1, tx: 0, ty: 0 };
+    imageViewerState = {
+      images,
+      index: startIndex,
+      scale: 1,
+      tx: 0,
+      ty: 0,
+      isSliding: false,
+      isDragging: false,
+      slideTargetIndex: null,
+      slideDirection: 0,
+      slideWidth: 0,
+      dragDx: 0,
+      slideToken: 0,
+      slideTimer: null,
+    };
     renderViewerFilmstrip();
     setViewerIndex(startIndex);
     wireViewerGestures();
 
-    if (prev) prev.onclick = () => setViewerIndex((imageViewerState?.index || 0) - 1);
-    if (next) next.onclick = () => setViewerIndex((imageViewerState?.index || 0) + 1);
+    if (prev) prev.onclick = () => setViewerIndex((imageViewerState?.index || 0) - 1, { animate: true });
+    if (next) next.onclick = () => setViewerIndex((imageViewerState?.index || 0) + 1, { animate: true });
     if (!documentRef.__webCodexImageViewerArrowWired) {
       documentRef.__webCodexImageViewerArrowWired = true;
       documentRef.addEventListener(
@@ -780,8 +1120,8 @@ export function createImageViewerModule(deps) {
         (event) => {
           if (!byId("imageViewerBackdrop")?.classList.contains("show")) return;
           if (!imageViewerState) return;
-          if (event.key === "ArrowLeft") setViewerIndex((imageViewerState.index || 0) - 1);
-          if (event.key === "ArrowRight") setViewerIndex((imageViewerState.index || 0) + 1);
+          if (event.key === "ArrowLeft") setViewerIndex((imageViewerState.index || 0) - 1, { animate: true });
+          if (event.key === "ArrowRight") setViewerIndex((imageViewerState.index || 0) + 1, { animate: true });
         },
         { passive: true }
       );
