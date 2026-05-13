@@ -132,6 +132,19 @@ describe("threadOpenState", () => {
     expect(shouldResumeThreadBeforeSend(openState)).toBe(true);
   });
 
+  it("requires send-time resume when a loaded cache is stale after runtime restart", () => {
+    const openState = {
+      threadId: "thread-1",
+      threadStatusType: "notLoaded",
+      loaded: true,
+      resumeRequired: false,
+      resumeReason: "loaded",
+    };
+
+    expect(shouldResumeThreadAfterOpen(openState)).toBe(false);
+    expect(shouldResumeThreadBeforeSend(openState)).toBe(true);
+  });
+
   it("creates an idle open state by default", () => {
     expect(resolveThreadOpenState()).toMatchObject({
       threadId: "",
