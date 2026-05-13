@@ -214,6 +214,29 @@ function readNotificationWorkspace(notification, fallbackWorkspace = "windows") 
   return raw.toLowerCase() === "wsl2" ? "wsl2" : "windows";
 }
 
+function isSubagentNotification(notification) {
+  const seen = new Set();
+  const scan = (value, depth = 0) => {
+    if (!value || depth > 6 || typeof value !== "object" || seen.has(value)) return false;
+    seen.add(value);
+    if (Array.isArray(value)) {
+      return value.slice(0, 40).some((child) => scan(child, depth + 1));
+    }
+    if (value.subagent != null || value.subAgent != null) return true;
+    if (
+      readString(value.agentRole)?.trim() ||
+      readString(value.agent_role)?.trim() ||
+      readString(value.agentNickname)?.trim() ||
+      readString(value.agent_nickname)?.trim()
+    ) {
+      return true;
+    }
+    return Object.values(value).some((child) => scan(child, depth + 1));
+  };
+  const params = extractNotificationParams(notification) || notification;
+  return scan(params);
+}
+
 function extractNotificationTextPreview(value) {
   const record = toRecord(value);
   if (!record) return "";
@@ -291,6 +314,7 @@ export function synthesizeProvisionalThreadItem(
   nowMs = Date.now()
 ) {
   const record = toRecord(notification);
+  if (isSubagentNotification(record)) return null;
   const threadId = extractNotificationThreadId(record);
   if (!threadId) return null;
   const params = extractNotificationParams(record);

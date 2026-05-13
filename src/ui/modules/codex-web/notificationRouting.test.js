@@ -171,4 +171,54 @@ describe("notificationRouting", () => {
 
     expect(item).toBeNull();
   });
+
+  it("drops subagent live notifications from provisional thread items", () => {
+    const item = synthesizeProvisionalThreadItem(
+      {
+        method: "codex/event/response_item",
+        params: {
+          cwd: "C:\\Users\\yiyou\\API-Router",
+          source: {
+            subagent: {
+              thread_spawn: {
+                parent_thread_id: "parent-thread",
+                agent_role: "explorer",
+              },
+            },
+          },
+          payload: {
+            type: "message",
+            role: "user",
+            thread_id: "thread-subagent",
+            content: [{ type: "input_text", text: "inspect the current branch" }],
+          },
+        },
+      },
+      "windows",
+      1742340000000
+    );
+
+    expect(item).toBeNull();
+  });
+
+  it("drops agent-role live notifications from provisional thread items", () => {
+    const item = synthesizeProvisionalThreadItem(
+      {
+        method: "thread/status",
+        params: {
+          threadId: "thread-agent-role",
+          cwd: "C:\\Users\\yiyou\\API-Router",
+          thread: {
+            id: "thread-agent-role",
+            agent_role: "explorer",
+            status: "running",
+          },
+        },
+      },
+      "windows",
+      1742340000000
+    );
+
+    expect(item).toBeNull();
+  });
 });
