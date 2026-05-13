@@ -216,7 +216,7 @@ describe("codex-web runtime layout", () => {
     expect(leadMatch?.[1] || "").toMatch(/width:\s*clamp\(96px,\s*22%,\s*124px\)/i);
   });
 
-  it("animates image viewer gallery navigation with layered slide states", () => {
+  it("keeps image viewer slide layers transitionable", () => {
     const stageMatch = source.match(/\.imageViewerStage\s*\{([^}]+)\}/s);
     const layerMatch = source.match(/\.imageViewerSlideLayer\s*\{([^}]+)\}/s);
     const preparedMatch = source.match(/\.imageViewerBody\.is-slide-prepared\s+\.imageViewerIncomingLayer\s*\{([^}]+)\}/s);

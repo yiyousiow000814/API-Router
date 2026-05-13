@@ -115,7 +115,6 @@ function nextAnimationFrame(requestAnimationFrameRef) {
 const IMAGE_VIEWER_SLIDE_FALLBACK_MS = 320;
 const IMAGE_VIEWER_DRAG_THRESHOLD_PX = 10;
 const IMAGE_VIEWER_COMMIT_RATIO = 0.22;
-const IMAGE_VIEWER_COMMIT_VELOCITY = 0.42;
 const IMAGE_VIEWER_DRAG_MAX_PROGRESS = 0.84;
 
 function buildBrokenAttachmentCardHtml(label, overlayHtml = "", escapeHtmlRef = (value) => String(value || "")) {
@@ -180,6 +179,20 @@ export function createImageViewerModule(deps) {
     return 1;
   }
 
+  function clampViewerDragOffset(offsetX, width) {
+    const slideWidth = Math.max(1, Number(width) || 1);
+    const maxOffset = slideWidth * IMAGE_VIEWER_DRAG_MAX_PROGRESS;
+    const dx = Number.isFinite(Number(offsetX)) ? Number(offsetX) : 0;
+    return Math.max(-maxOffset, Math.min(maxOffset, dx));
+  }
+
+  function isPreparedViewerSlideTarget(targetIndex) {
+    return (
+      imageViewerState?.slideTargetIndex != null &&
+      Number(imageViewerState.slideTargetIndex) === Number(targetIndex)
+    );
+  }
+
   function applyViewerSlideTransforms(offsetX, direction, width, options = {}) {
     const { currentLayer, incomingLayer } = getImageViewerNodes();
     if (!currentLayer || !incomingLayer) return;
@@ -194,13 +207,6 @@ export function createImageViewerModule(deps) {
       incomingLayer.style.transform = formatSlideTranslate(dx + dir * slideWidth);
       incomingLayer.style.opacity = options.hideIncoming === true ? "0" : "1";
     }
-  }
-
-  function clampViewerDragVisualOffset(offsetX, width) {
-    const slideWidth = Math.max(1, Number(width) || 1);
-    const maxOffset = slideWidth * IMAGE_VIEWER_DRAG_MAX_PROGRESS;
-    const dx = Number.isFinite(Number(offsetX)) ? Number(offsetX) : 0;
-    return Math.max(-maxOffset, Math.min(maxOffset, dx));
   }
 
   function isPdfPreviewSrc(src) {
@@ -304,6 +310,94 @@ export function createImageViewerModule(deps) {
     }
   }
 
+  function clearViewerSlideState(options = {}) {
+    const keepIncoming = options.keepIncoming === true;
+    const { body, currentLayer, incomingLayer, incomingImg } = getImageViewerNodes();
+    if (imageViewerState?.slideTimer) {
+      clearTimeout(imageViewerState.slideTimer);
+      imageViewerState.slideTimer = null;
+    }
+    body?.classList?.remove?.(
+      "is-slide-prepared",
+      "is-slide-transitioning",
+      "is-slide-running",
+      "is-slide-forward",
+      "is-slide-backward"
+    );
+    if (currentLayer?.style) {
+      currentLayer.style.transform = "";
+      currentLayer.style.opacity = "";
+    }
+    if (incomingLayer?.style && !keepIncoming) {
+      incomingLayer.style.transform = "";
+      incomingLayer.style.opacity = "";
+    }
+    if (incomingLayer?.classList && !keepIncoming) {
+      incomingLayer.classList.remove("is-image-loading");
+    }
+    if (incomingImg && !keepIncoming) {
+      incomingImg.src = "";
+      incomingImg.alt = "";
+      if (incomingImg.style) incomingImg.style.transform = "";
+    }
+    if (imageViewerState) {
+      imageViewerState.isSliding = false;
+      imageViewerState.isDragging = false;
+      imageViewerState.slideTargetIndex = null;
+      imageViewerState.slideDirection = 0;
+      imageViewerState.slideWidth = 0;
+      imageViewerState.dragDx = 0;
+    }
+  }
+
+  function markIncomingImageLoading(nodes) {
+    const { incomingLayer } = nodes || {};
+    if (!incomingLayer) return;
+    incomingLayer.classList?.add?.("is-image-loading");
+  }
+
+  function commitViewerIndex(nextIndex, options = {}) {
+    const { backdrop, img } = getImageViewerNodes();
+    if (!backdrop || !img || !imageViewerState) return;
+
+    const images = Array.isArray(imageViewerState.images) ? imageViewerState.images : [];
+    const idx = clampNumber(Number(nextIndex || 0), 0, Math.max(0, images.length - 1));
+    const item = images[idx] || {};
+    imageViewerState.index = idx;
+
+    const safeLabel = String(item.label || "").trim() || "image";
+    const safeSrc = String(item.src || "").trim();
+    img.src = safeSrc;
+    img.alt = safeLabel;
+    setViewerTransform({ scale: 1, tx: 0, ty: 0 });
+    syncViewerChrome(idx);
+    if (options.holdIncomingUntilReady === true) {
+      const token = Number(imageViewerState.slideToken || 0);
+      const waitForPaint = () =>
+        nextAnimationFrame(requestAnimationFrameRef).then(() =>
+          nextAnimationFrame(requestAnimationFrameRef)
+        );
+      const releaseIncoming = () => {
+        void waitForPaint().then(() => {
+          if (!imageViewerState) return;
+          if (Number(imageViewerState.slideToken || 0) !== token) return;
+          clearViewerSlideState();
+        });
+      };
+      clearViewerSlideState({ keepIncoming: true });
+      if (typeof img.decode === "function") {
+        void img.decode().then(releaseIncoming, releaseIncoming);
+      } else if (img.complete === false) {
+        img.addEventListener?.("load", releaseIncoming, { once: true });
+        img.addEventListener?.("error", releaseIncoming, { once: true });
+      } else {
+        releaseIncoming();
+      }
+      return;
+    }
+    clearViewerSlideState();
+  }
+
   function prepareViewerSlide(targetIndex) {
     const nodes = getImageViewerNodes();
     const { body, currentLayer, incomingLayer, incomingImg } = nodes;
@@ -329,6 +423,7 @@ export function createImageViewerModule(deps) {
 
     incomingImg.src = safeSrc;
     incomingImg.alt = safeLabel;
+    markIncomingImageLoading(nodes);
     body.classList.add("is-slide-prepared", directionClass);
     imageViewerState.slideTargetIndex = idx;
     imageViewerState.slideDirection = direction;
@@ -339,83 +434,6 @@ export function createImageViewerModule(deps) {
     return { ...nodes, idx, direction, width };
   }
 
-  function clearViewerSlideState() {
-    const { body, currentLayer, incomingLayer, incomingImg } = getImageViewerNodes();
-    if (imageViewerState?.slideTimer) {
-      clearTimeout(imageViewerState.slideTimer);
-      imageViewerState.slideTimer = null;
-    }
-    if (body?.classList) {
-      body.classList.remove(
-        "is-slide-prepared",
-        "is-slide-transitioning",
-        "is-slide-running",
-        "is-slide-forward",
-        "is-slide-backward"
-      );
-    }
-    if (currentLayer?.style) {
-      currentLayer.style.transform = "";
-      currentLayer.style.opacity = "";
-    }
-    if (incomingLayer?.style) {
-      incomingLayer.style.transform = "";
-      incomingLayer.style.opacity = "";
-    }
-    if (incomingImg) {
-      incomingImg.src = "";
-      incomingImg.alt = "";
-      if (incomingImg.style) incomingImg.style.transform = "";
-    }
-    if (imageViewerState) {
-      imageViewerState.isSliding = false;
-      imageViewerState.isDragging = false;
-      imageViewerState.slideTargetIndex = null;
-      imageViewerState.slideDirection = 0;
-      imageViewerState.slideWidth = 0;
-      imageViewerState.dragDx = 0;
-      imageViewerState.slideToken = Number(imageViewerState.slideToken || 0);
-    }
-  }
-
-  function commitViewerIndex(nextIndex, options = {}) {
-    const { backdrop, img, incomingImg } = getImageViewerNodes();
-    if (!backdrop || !img || !imageViewerState) return;
-
-    const images = Array.isArray(imageViewerState.images) ? imageViewerState.images : [];
-    const idx = clampNumber(Number(nextIndex || 0), 0, Math.max(0, images.length - 1));
-    const item = images[idx] || {};
-    imageViewerState.index = idx;
-
-    const safeLabel = String(item.label || "").trim() || "image";
-    const safeSrc = String(item.src || "").trim();
-    img.src = safeSrc;
-    img.alt = safeLabel;
-    if (incomingImg?.style) incomingImg.style.transform = "";
-    setViewerTransform({ scale: 1, tx: 0, ty: 0 });
-    syncViewerChrome(idx);
-    if (imageViewerState?.slideTimer) {
-      clearTimeout(imageViewerState.slideTimer);
-      imageViewerState.slideTimer = null;
-    }
-    const holdIncomingUntilReady =
-      options.holdIncomingUntilReady === true &&
-      typeof img.complete === "boolean" &&
-      img.complete === false;
-    if (holdIncomingUntilReady) {
-      const token = Number(imageViewerState.slideToken || 0);
-      const finalize = () => {
-        if (!imageViewerState) return;
-        if (Number(imageViewerState.slideToken || 0) !== token) return;
-        clearViewerSlideState();
-      };
-      img.addEventListener?.("load", finalize, { once: true });
-      img.addEventListener?.("error", finalize, { once: true });
-      return;
-    }
-    clearViewerSlideState();
-  }
-
   function finishViewerSlide(targetIndex, token) {
     if (!imageViewerState?.isSliding) return;
     if (Number(imageViewerState.slideToken || 0) !== Number(token || 0)) return;
@@ -423,13 +441,9 @@ export function createImageViewerModule(deps) {
   }
 
   function startViewerSlide(targetIndex) {
-    if (!imageViewerState) {
-      commitViewerIndex(targetIndex);
-      return;
-    }
-    setViewerTransform({ scale: 1, tx: 0, ty: 0 });
+    if (!imageViewerState) return;
     const prepared =
-      Number(imageViewerState.slideTargetIndex) === Number(targetIndex)
+      isPreparedViewerSlideTarget(targetIndex)
         ? {
             ...getImageViewerNodes(),
             idx: Number(imageViewerState.slideTargetIndex),
@@ -453,19 +467,19 @@ export function createImageViewerModule(deps) {
 
     body.classList.add("is-slide-transitioning");
     body.classList.remove("is-slide-running");
+    try {
+      body.getBoundingClientRect?.();
+    } catch {}
 
     const finish = () => finishViewerSlide(idx, token);
-    incomingLayer.addEventListener("transitionend", finish, { once: true });
+    incomingLayer.addEventListener?.("transitionend", finish, { once: true });
     imageViewerState.slideTimer = setTimeout(finish, IMAGE_VIEWER_SLIDE_FALLBACK_MS);
 
     void nextAnimationFrame(requestAnimationFrameRef).then(() => {
       if (!imageViewerState?.isSliding) return;
       if (Number(imageViewerState.slideToken || 0) !== token) return;
       body.classList.add("is-slide-running");
-      if (currentLayer?.style) {
-        currentLayer.style.transform = formatSlideTranslate(direction > 0 ? -width : width);
-        currentLayer.style.opacity = "1";
-      }
+      if (currentLayer?.style) currentLayer.style.transform = formatSlideTranslate(direction > 0 ? -width : width);
       if (incomingLayer?.style) {
         incomingLayer.style.transform = formatSlideTranslate(0);
         incomingLayer.style.opacity = "1";
@@ -493,23 +507,23 @@ export function createImageViewerModule(deps) {
     imageViewerState.isDragging = false;
     body.classList.add("is-slide-transitioning");
     body.classList.remove("is-slide-running");
+    try {
+      body.getBoundingClientRect?.();
+    } catch {}
 
     const finish = () => {
       if (!imageViewerState?.isSliding) return;
       if (Number(imageViewerState.slideToken || 0) !== token) return;
       clearViewerSlideState();
     };
-    currentLayer.addEventListener("transitionend", finish, { once: true });
+    currentLayer.addEventListener?.("transitionend", finish, { once: true });
     imageViewerState.slideTimer = setTimeout(finish, IMAGE_VIEWER_SLIDE_FALLBACK_MS);
 
     void nextAnimationFrame(requestAnimationFrameRef).then(() => {
       if (!imageViewerState?.isSliding) return;
       if (Number(imageViewerState.slideToken || 0) !== token) return;
       body.classList.add("is-slide-running");
-      if (currentLayer.style) {
-        currentLayer.style.transform = formatSlideTranslate(0);
-        currentLayer.style.opacity = "1";
-      }
+      if (currentLayer.style) currentLayer.style.transform = formatSlideTranslate(0);
       if (incomingLayer.style) {
         incomingLayer.style.transform = formatSlideTranslate(direction * width);
         incomingLayer.style.opacity = "0";
@@ -518,26 +532,11 @@ export function createImageViewerModule(deps) {
   }
 
   function setViewerIndex(nextIndex, options = {}) {
-    if (!imageViewerState) return;
-    const animate = options.animate === true;
-    if (imageViewerState.isSliding) return;
-    const images = Array.isArray(imageViewerState.images) ? imageViewerState.images : [];
-    const idx = clampNumber(Number(nextIndex || 0), 0, Math.max(0, images.length - 1));
-    const scale = Number(imageViewerState.scale || 1);
-    const nodes = getImageViewerNodes();
-    const canAnimate =
-      animate &&
-      idx !== Number(imageViewerState.index || 0) &&
-      scale <= 1.02 &&
-      !!nodes.body &&
-      !!nodes.currentLayer &&
-      !!nodes.incomingLayer &&
-      !!nodes.incomingImg;
-    if (canAnimate) {
-      startViewerSlide(idx);
+    if (options.animate === true) {
+      startViewerSlide(nextIndex);
       return;
     }
-    commitViewerIndex(idx);
+    commitViewerIndex(nextIndex);
   }
 
   function renderViewerFilmstrip() {
@@ -573,7 +572,6 @@ export function createImageViewerModule(deps) {
     let startTy = 0;
     let lastTapMs = 0;
     let swipeStart = null;
-    let dragHandled = false;
 
     const getDist = () => {
       const pts = Array.from(active.values());
@@ -587,14 +585,12 @@ export function createImageViewerModule(deps) {
       "pointerdown",
       (event) => {
         if (!imageViewerState) return;
-        if (imageViewerState.isSliding) return;
         body.setPointerCapture?.(event.pointerId);
         active.set(event.pointerId, { x: event.clientX, y: event.clientY });
         if (active.size === 1) {
           swipeStart = { x: event.clientX, y: event.clientY, t: Date.now() };
           startTx = imageViewerState.tx || 0;
           startTy = imageViewerState.ty || 0;
-          dragHandled = false;
         }
         if (active.size === 2) {
           startDist = getDist();
@@ -624,6 +620,32 @@ export function createImageViewerModule(deps) {
           return;
         }
 
+        if (active.size === 1 && swipeStart && (imageViewerState.scale || 1) <= 1.02) {
+          const p = active.get(event.pointerId);
+          if (!p) return;
+          const dx = p.x - swipeStart.x;
+          const dy = p.y - swipeStart.y;
+          if (Math.abs(dx) > IMAGE_VIEWER_DRAG_THRESHOLD_PX && Math.abs(dx) > Math.abs(dy) * 1.2) {
+            const target = (imageViewerState.index || 0) + (dx < 0 ? 1 : -1);
+            const prepared =
+              isPreparedViewerSlideTarget(target)
+                ? {
+                    direction: Number(imageViewerState.slideDirection || 0),
+                    width: Math.max(1, Number(imageViewerState.slideWidth || 0)),
+                  }
+                : prepareViewerSlide(target);
+            if (prepared) {
+              const width = Math.max(1, Number(prepared.width || imageViewerState.slideWidth || 0));
+              const offset = clampViewerDragOffset(dx, width);
+              imageViewerState.isDragging = true;
+              imageViewerState.dragDx = offset;
+              applyViewerSlideTransforms(offset, prepared.direction, width);
+              event.preventDefault();
+              return;
+            }
+          }
+        }
+
         if (active.size === 1 && (imageViewerState.scale || 1) > 1) {
           const p = active.get(event.pointerId);
           if (!p || !swipeStart) return;
@@ -635,40 +657,6 @@ export function createImageViewerModule(deps) {
             ty: startTy + dy,
           });
           event.preventDefault();
-          dragHandled = true;
-          return;
-        }
-
-        if (active.size === 1 && (imageViewerState.scale || 1) <= 1.02) {
-          const p = active.get(event.pointerId);
-          if (!p || !swipeStart) return;
-          const dx = p.x - swipeStart.x;
-          const dy = p.y - swipeStart.y;
-          if (Math.abs(dx) < IMAGE_VIEWER_DRAG_THRESHOLD_PX) return;
-          if (Math.abs(dx) <= Math.abs(dy) * 1.1) return;
-
-          const currentIndex = Number(imageViewerState.index || 0);
-          const targetIndex = dx < 0 ? currentIndex + 1 : currentIndex - 1;
-          const prepared =
-            Number(imageViewerState.slideTargetIndex) === Number(targetIndex)
-              ? {
-                  ...getImageViewerNodes(),
-                  idx: Number(imageViewerState.slideTargetIndex),
-                  direction: Number(imageViewerState.slideDirection || 0),
-                  width: Math.max(1, Number(imageViewerState.slideWidth || 0)),
-                }
-              : prepareViewerSlide(targetIndex);
-          if (!prepared?.direction) return;
-
-          let dragOffset = dx;
-          if (prepared.direction > 0) dragOffset = Math.min(0, dragOffset);
-          else dragOffset = Math.max(0, dragOffset);
-          const visualOffset = clampViewerDragVisualOffset(dragOffset, prepared.width);
-          imageViewerState.dragDx = dragOffset;
-          imageViewerState.isDragging = true;
-          applyViewerSlideTransforms(visualOffset, prepared.direction, prepared.width);
-          event.preventDefault();
-          dragHandled = true;
         }
       },
       { passive: false }
@@ -682,38 +670,31 @@ export function createImageViewerModule(deps) {
         if (active.size !== 0) return;
         const scale = imageViewerState.scale || 1;
         const now = Date.now();
-        if (imageViewerState.isDragging && scale <= 1.02) {
-          const dx = Number(imageViewerState.dragDx || 0);
-          const width = Math.max(1, Number(imageViewerState.slideWidth || 0));
-          const elapsedMs = Math.max(1, now - Number(swipeStart?.t || now));
-          const velocity = dx / elapsedMs;
-          const shouldCommit =
-            Math.abs(dx) >= width * IMAGE_VIEWER_COMMIT_RATIO ||
-            Math.abs(velocity) >= IMAGE_VIEWER_COMMIT_VELOCITY;
-          if (imageViewerState.slideTargetIndex != null && shouldCommit) {
-            startViewerSlide(imageViewerState.slideTargetIndex);
-          } else {
-            snapViewerSlideBack();
-          }
-          dragHandled = true;
-        } else if (swipeStart && scale <= 1.02) {
+        if (swipeStart && scale <= 1.02) {
           const dx = event.clientX - swipeStart.x;
           const dy = event.clientY - swipeStart.y;
-          if (Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy) * 1.2) {
-            if (dx < 0) setViewerIndex((imageViewerState.index || 0) + 1, { animate: true });
-            else setViewerIndex((imageViewerState.index || 0) - 1, { animate: true });
-            dragHandled = true;
+          const width = Math.max(1, Number(imageViewerState.slideWidth || getViewerSlideWidth()));
+          const shouldCommit =
+            Math.abs(dx) > width * IMAGE_VIEWER_COMMIT_RATIO &&
+            Math.abs(dx) > Math.abs(dy) * 1.2;
+          if (shouldCommit) {
+            startViewerSlide((imageViewerState.index || 0) + (dx < 0 ? 1 : -1));
+          } else if (imageViewerState.slideTargetIndex != null) {
+            snapViewerSlideBack();
           }
         }
-        if (!dragHandled && now - lastTapMs < 320) {
+        const moved = swipeStart
+          ? Math.abs(event.clientX - swipeStart.x) > IMAGE_VIEWER_DRAG_THRESHOLD_PX ||
+            Math.abs(event.clientY - swipeStart.y) > IMAGE_VIEWER_DRAG_THRESHOLD_PX
+          : false;
+        if (!moved && now - lastTapMs < 320) {
           const next = scale > 1.2 ? 1 : 2;
           setViewerTransform({ scale: next, tx: 0, ty: 0 });
           lastTapMs = 0;
-        } else if (!dragHandled) {
+        } else if (!moved) {
           lastTapMs = now;
         }
         swipeStart = null;
-        dragHandled = false;
       },
       { passive: true }
     );
@@ -763,7 +744,7 @@ export function createImageViewerModule(deps) {
       `<div id="imageViewerCurrentLayer" class="imageViewerSlideLayer imageViewerCurrentLayer">` +
       `<img id="imageViewerImg" class="imageViewerImg" alt="" />` +
       `</div>` +
-      `<div id="imageViewerIncomingLayer" class="imageViewerSlideLayer imageViewerIncomingLayer" aria-hidden="true">` +
+      `<div id="imageViewerIncomingLayer" class="imageViewerSlideLayer imageViewerIncomingLayer">` +
       `<img id="imageViewerImgIncoming" class="imageViewerImg" alt="" />` +
       `</div>` +
       `</div>` +
@@ -778,10 +759,7 @@ export function createImageViewerModule(deps) {
       `</div>`;
     documentRef.body.appendChild(backdrop);
 
-    const close = () => {
-      clearViewerSlideState();
-      backdrop.classList.remove("show");
-    };
+    const close = () => backdrop.classList.remove("show");
     wireBlurBackdropShield(backdrop, {
       onClose: close,
       modalSelector: ".imageViewer",
