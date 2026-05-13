@@ -624,6 +624,41 @@ function Get-RemoteUpdateBuildResultPath {
   return $null
 }
 
+function Add-RemoteUpdateLogLine {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Path,
+    [Parameter(Mandatory = $true)]
+    [string]$Line
+  )
+
+  $encoding = [System.Text.UTF8Encoding]::new($false)
+  $bytes = $encoding.GetBytes($Line + "`r`n")
+  for ($attempt = 0; $attempt -lt 20; $attempt++) {
+    try {
+      $stream = [System.IO.File]::Open(
+        $Path,
+        [System.IO.FileMode]::Append,
+        [System.IO.FileAccess]::Write,
+        [System.IO.FileShare]::ReadWrite
+      )
+      try {
+        $stream.Write($bytes, 0, $bytes.Length)
+      } finally {
+        $stream.Dispose()
+      }
+      return $true
+    } catch [System.IO.IOException] {
+      if ($attempt -ge 19) { return $false }
+      Start-Sleep -Milliseconds ([Math]::Min(200, 25 * ($attempt + 1)))
+    } catch {
+      return $false
+    }
+  }
+
+  return $false
+}
+
 function Write-RemoteUpdateLog {
   param(
     [Parameter(Mandatory = $true)]
@@ -638,11 +673,7 @@ function Write-RemoteUpdateLog {
       New-Item -ItemType Directory -Force -Path $parent | Out-Null
     }
     $timestamp = [DateTimeOffset]::UtcNow.ToString('dd-MM-yyyy HH:mm:ss.fff UTC')
-    [System.IO.File]::AppendAllText(
-      $logPath,
-      "[$timestamp] [build-root-exe] $Message`r`n",
-      [System.Text.UTF8Encoding]::new($false)
-    )
+    [void](Add-RemoteUpdateLogLine -Path $logPath -Line "[$timestamp] [build-root-exe] $Message")
   } catch {
     # Logging must never break install/rollback. The caller usually cannot surface
     # a secondary log-write failure once the runtime is being replaced.
