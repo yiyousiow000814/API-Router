@@ -619,6 +619,164 @@ describe("chatTimeline", () => {
     ]);
   });
 
+  it("reuses an optimistic user node when the first history snapshot appends the assistant", async () => {
+    const replayed = [];
+    state.activeThreadStarted = true;
+    state.activeThreadHistoryStatusType = "running";
+    state.activeThreadRolloutPath = "C:\\Users\\yiyou\\.codex\\sessions\\rollout.jsonl";
+    state.activeThreadMessages = [];
+    module.addChat("user", "hi", {
+      animate: false,
+      scroll: false,
+      source: "turnSendOptimisticUser",
+      messageKey: "client:thread-1:req-1",
+    });
+
+    await applyFullHistoryRender({
+      state,
+      threadId: "thread-1",
+      messages: [
+        { role: "user", text: "hi", kind: "", id: "client:thread-1:req-1" },
+        { role: "assistant", text: "你好。", kind: "" },
+      ],
+      prevMessages: [],
+      box: dom.chatBox,
+      preservedScrollTop: null,
+      inlineCommentaryArchiveCount: 0,
+      renderSig: "thread-1::history",
+      toolCount: 0,
+      forceFullRender: false,
+      options: {},
+      historyCommentary: null,
+      liveCommentarySnapshot: null,
+      deps: {
+        renderMessageBody: (_role, text) => `<span>${String(text || "")}</span>`,
+        addChat: module.addChat,
+        buildMsgNode: module.buildMsgNode,
+        clearChatMessages: module.clearChatMessages,
+        renderChatFull: async () => {},
+        pushLiveDebugEvent() {},
+        scrollChatToBottom() {},
+        canStartChatLiveFollow() {
+          return false;
+        },
+        maybeScheduleChatFollow() {},
+        scrollToBottomReliable() {},
+        scheduleChatLiveFollow() {},
+        finalizeThreadRenderEffects() {},
+        replayAssistantHistoryMessage(node, message, options = {}) {
+          replayed.push({
+            node,
+            text: String(message?.text || ""),
+            fromText: String(options.fromText || ""),
+          });
+        },
+      },
+    });
+
+    const userNodes = dom.chatBox.children.filter(
+      (child) => child.classList.contains("msg") && child.classList.contains("user")
+    );
+    const messageNodes = dom.chatBox.children.filter((child) => child.classList.contains("msg"));
+    expect(userNodes).toHaveLength(1);
+    expect(messageNodes.map((node) => ({
+      role: node.__webCodexRole,
+      key: node.attributes.get("data-msg-key") || "",
+      text: node.__webCodexRawText,
+    }))).toEqual([
+      { role: "user", key: "client:thread-1:req-1", text: "hi" },
+      { role: "assistant", key: "", text: "你好。" },
+    ]);
+    expect(replayed).toEqual([
+      expect.objectContaining({
+        text: "你好。",
+        fromText: "",
+      }),
+    ]);
+  });
+
+  it("updates a DOM-ahead running assistant snapshot without re-appending the optimistic user", async () => {
+    const replayed = [];
+    state.activeThreadStarted = true;
+    state.activeThreadHistoryStatusType = "running";
+    state.activeThreadRolloutPath = "C:\\Users\\yiyou\\.codex\\sessions\\rollout.jsonl";
+    state.activeThreadMessages = [
+      { role: "user", text: "old hi", kind: "" },
+      { role: "assistant", text: "你好。", kind: "" },
+    ];
+    dom.chatBox.appendChild(module.buildMsgNode({ role: "user", text: "old hi", kind: "" }));
+    dom.chatBox.appendChild(module.buildMsgNode({ role: "assistant", text: "你好。", kind: "" }));
+    dom.chatBox.appendChild(module.buildMsgNode({
+      role: "user",
+      text: "hi",
+      kind: "",
+      id: "client:thread-1:req-1",
+    }));
+    dom.chatBox.appendChild(module.buildMsgNode({ role: "assistant", text: "你", kind: "" }));
+
+    await applyFullHistoryRender({
+      state,
+      threadId: "thread-1",
+      messages: [
+        { role: "user", text: "old hi", kind: "" },
+        { role: "assistant", text: "你好。", kind: "" },
+        { role: "user", text: "hi", kind: "", id: "client:thread-1:req-1" },
+        { role: "assistant", text: "你好。", kind: "" },
+      ],
+      prevMessages: state.activeThreadMessages,
+      box: dom.chatBox,
+      preservedScrollTop: null,
+      inlineCommentaryArchiveCount: 0,
+      renderSig: "thread-1::history",
+      toolCount: 0,
+      forceFullRender: false,
+      options: {},
+      historyCommentary: null,
+      liveCommentarySnapshot: null,
+      deps: {
+        renderMessageBody: (_role, text) => `<span>${String(text || "")}</span>`,
+        addChat: module.addChat,
+        buildMsgNode: module.buildMsgNode,
+        clearChatMessages: module.clearChatMessages,
+        renderChatFull: async () => {},
+        pushLiveDebugEvent() {},
+        scrollChatToBottom() {},
+        canStartChatLiveFollow() {
+          return false;
+        },
+        maybeScheduleChatFollow() {},
+        scrollToBottomReliable() {},
+        scheduleChatLiveFollow() {},
+        finalizeThreadRenderEffects() {},
+        replayAssistantHistoryMessage(node, message, options = {}) {
+          replayed.push({
+            node,
+            text: String(message?.text || ""),
+            fromText: String(options.fromText || ""),
+          });
+        },
+      },
+    });
+
+    const messageNodes = dom.chatBox.children.filter((child) => child.classList.contains("msg"));
+    expect(messageNodes.map((node) => ({
+      role: node.__webCodexRole,
+      key: node.attributes.get("data-msg-key") || "",
+      text: node.__webCodexRawText,
+    }))).toEqual([
+      { role: "user", key: "", text: "old hi" },
+      { role: "assistant", key: "", text: "你好。" },
+      { role: "user", key: "client:thread-1:req-1", text: "hi" },
+      { role: "assistant", key: "", text: "你好。" },
+    ]);
+    expect(replayed).toEqual([
+      expect.objectContaining({
+        text: "你好。",
+        fromText: "你",
+      }),
+    ]);
+  });
+
   it("reconciles commentary archive insertions when the final assistant text changes", async () => {
     const clearCalls = [];
     const userNode = module.buildMsgNode({ role: "user", text: "hello", kind: "" });
