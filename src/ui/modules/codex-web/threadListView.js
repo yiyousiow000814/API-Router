@@ -120,6 +120,12 @@ export function buildThreadResumeUrl(threadId, options = {}) {
   return `/codex/threads/${encodeURIComponent(threadId)}/resume${query ? `?${query}` : ""}`;
 }
 
+const OPEN_THREAD_LIVE_FIRST_STATUSES = new Set(["running", "queued", "pending", "active", "reconnecting"]);
+
+function shouldSubscribeLiveBeforeHistory(threadStatusType = "") {
+  return OPEN_THREAD_LIVE_FIRST_STATUSES.has(String(threadStatusType || "").trim().toLowerCase());
+}
+
 export async function resumeThreadLiveOnOpen({
   threadId,
   workspace,
@@ -245,6 +251,11 @@ function resolvedOpenThreadWorkspace(state, workspaceHint = "") {
   const hint = String(workspaceHint || "").trim().toLowerCase();
   if (hint === "windows" || hint === "wsl2") return hint;
   return "";
+}
+
+function explicitOpenThreadWorkspace(workspaceHint = "") {
+  const hint = String(workspaceHint || "").trim().toLowerCase();
+  return hint === "windows" || hint === "wsl2" ? hint : "";
 }
 
 export function createThreadListViewModule(deps) {
@@ -631,6 +642,15 @@ export function createThreadListViewModule(deps) {
         const workspaceHint = selection.workspace;
         const rolloutPath = selection.rolloutPath;
         setChatOpening(true);
+        const explicitWorkspace = explicitOpenThreadWorkspace(workspaceHint);
+        const liveFirst = shouldSubscribeLiveBeforeHistory(selection.threadStatusType);
+        if (liveFirst) {
+          connectWs();
+          if (explicitWorkspace === "windows" || explicitWorkspace === "wsl2") {
+            syncEventSubscription();
+          }
+          setChatOpening(false);
+        }
         try {
           const label =
             workspaceHint === "wsl2" ? "WSL2" : workspaceHint === "windows" ? "WIN" : "AUTO";
@@ -647,9 +667,9 @@ export function createThreadListViewModule(deps) {
             setStatus(`Opened ${label} ${truncateLabel(id, 12)} history ${historyLatencyMs}ms`);
           }
           const runtimeWorkspace = resolvedOpenThreadWorkspace(state, workspaceHint);
-          connectWs();
+          if (!liveFirst) connectWs();
           if (runtimeWorkspace === "windows" || runtimeWorkspace === "wsl2") {
-            syncEventSubscription();
+            if (!liveFirst) syncEventSubscription();
             refreshWorkspaceRuntimeState(runtimeWorkspace, {
               silent: true,
               updateHeader: true,
@@ -673,7 +693,7 @@ export function createThreadListViewModule(deps) {
               .catch(() => null);
           if (state.openingThreadReqId === reqId) scheduleThreadRefresh();
           if (state.openingThreadReqId === reqId) {
-            setChatOpening(false);
+            if (!liveFirst) setChatOpening(false);
             state.chatShouldStickToBottom = true;
             scrollToBottomReliable();
           }
