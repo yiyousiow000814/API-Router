@@ -482,7 +482,7 @@ export function createTurnActionsModule(deps) {
     return true;
   }
 
-  function resetLiveTurnStateForNewTurn() {
+  function resetLiveTurnStateForNewTurn(options = {}) {
     const threadId = resolveCurrentThreadId(state);
     state.activeThreadHistoryReqSeq = Math.max(0, Number(state.activeThreadHistoryReqSeq || 0)) + 1;
     resetTurnPresentationState(state, { bumpLiveEpoch: true });
@@ -504,8 +504,10 @@ export function createTurnActionsModule(deps) {
     if (threadId) setSyntheticPendingUserInputs(threadId, []);
     clearTransientToolMessages();
     clearTransientThinkingMessages();
-    syncPendingTurnUi();
-    updateMobileComposerState();
+    if (options.syncUi !== false) {
+      syncPendingTurnUi();
+      updateMobileComposerState();
+    }
   }
 
   function clearPlanTurnArtifacts(threadId, options = {}) {
@@ -1332,8 +1334,45 @@ export function createTurnActionsModule(deps) {
       await executeSlashCommand(prompt, { ...options, threadId: targetThreadId });
       return;
     }
+    const turnAttachments = normalizeTurnAttachments(state.pendingAttachments);
     let activeThreadId = targetThreadId;
-    const primedPendingRuntime = primePendingTurnRuntime(activeThreadId, prompt);
+    const canShowExistingThreadOptimisticSend =
+      options.fromQueuedTurn !== true && !!String(activeThreadId || "").trim();
+    let clientMessageId = "";
+    let optimisticUserAppended = false;
+    let pendingBaselineTurnCount = 0;
+    let pendingBaselineUserCount = 0;
+    if (canShowExistingThreadOptimisticSend) {
+      clientMessageId = buildOptimisticClientMessageId(activeThreadId);
+      resetLiveTurnStateForNewTurn({ syncUi: false });
+      pendingBaselineTurnCount = activeThreadHistoryTurnCount(state, activeThreadId);
+      pendingBaselineUserCount = Math.max(
+        activeThreadHistoryUserCount(state, activeThreadId),
+        visibleUserMessageCount()
+      );
+      syncPendingTurnRuntime(state, activeThreadId, {
+        turnId: "",
+        running: true,
+        userMessage: prompt,
+        assistantMessage: "",
+        clientMessageId,
+        baselineTurnCount: pendingBaselineTurnCount,
+        baselineUserCount: pendingBaselineUserCount,
+      });
+      updateHeaderUi();
+      hideWelcomeCard();
+      appendOptimisticUserMessage(prompt, turnAttachments, clientMessageId, activeThreadId);
+      optimisticUserAppended = true;
+      state.chatShouldStickToBottom = true;
+      scrollToBottomReliable();
+      setMainTab("chat");
+      clearPromptValue();
+      state.pendingAttachments = [];
+      renderAttachmentPills([]);
+      syncPendingTurnUi();
+      updateMobileComposerState();
+    }
+    const primedPendingRuntime = optimisticUserAppended || primePendingTurnRuntime(activeThreadId, prompt);
     try {
       await waitPendingThreadResume(activeThreadId);
       activeThreadId = String(activeThreadId || "").trim();
@@ -1395,6 +1434,16 @@ export function createTurnActionsModule(deps) {
           reason: "turn.send.resume_failed",
         });
       }
+      if (optimisticUserAppended) {
+        const input = byId("mobilePromptInput");
+        if (input && !String(input.value || "").trim()) input.value = prompt;
+        if (!pendingAttachmentList().length) {
+          state.pendingAttachments = turnAttachments;
+          renderAttachmentPills(state.pendingAttachments);
+        }
+        updateMobileComposerState();
+        rollbackOptimisticPendingTurn(prompt, { restorePrompt: false });
+      }
       throw error;
     }
     const payload = buildTurnPayload({
@@ -1408,34 +1457,55 @@ export function createTurnActionsModule(deps) {
       planModeEnabled: state.planModeEnabled,
       fastModeEnabled: state.fastModeEnabled,
       permissionPreset: state.permissionPresetByWorkspace?.[workspace],
-      attachments: state.pendingAttachments,
+      attachments: turnAttachments,
     });
-    const turnAttachments = normalizeTurnAttachments(state.pendingAttachments);
     const shouldAnimateWorkspaceBadge = !state.activeThreadStarted;
     state.activeThreadStarted = true;
     state.activeThreadWorkspace = workspace;
-    const clientMessageId = buildOptimisticClientMessageId(activeThreadId);
+    if (!clientMessageId) clientMessageId = buildOptimisticClientMessageId(activeThreadId);
+    if (optimisticUserAppended) {
+      pendingBaselineTurnCount = Math.max(
+        0,
+        Number(state.activeThreadPendingTurnBaselineTurnCount || pendingBaselineTurnCount || 0)
+      );
+      pendingBaselineUserCount = Math.max(
+        0,
+        Number(state.activeThreadPendingTurnBaselineUserCount || pendingBaselineUserCount || 0)
+      );
+    } else {
+      pendingBaselineTurnCount = activeThreadHistoryTurnCount(state, activeThreadId);
+      pendingBaselineUserCount = Math.max(
+        activeThreadHistoryUserCount(state, activeThreadId),
+        visibleUserMessageCount()
+      );
+    }
     syncPendingTurnRuntime(state, activeThreadId, {
       turnId: "",
       running: true,
       userMessage: prompt,
       assistantMessage: "",
       clientMessageId,
-      baselineTurnCount: activeThreadHistoryTurnCount(state, activeThreadId),
-      baselineUserCount: Math.max(
-        activeThreadHistoryUserCount(state, activeThreadId),
-        visibleUserMessageCount()
-      ),
+      baselineTurnCount: pendingBaselineTurnCount,
+      baselineUserCount: pendingBaselineUserCount,
     });
     if (!primedPendingRuntime) {
       resetLiveTurnStateForNewTurn();
     }
     updateHeaderUi(shouldAnimateWorkspaceBadge);
-    hideWelcomeCard();
-    appendOptimisticUserMessage(prompt, turnAttachments, clientMessageId, activeThreadId);
-    state.chatShouldStickToBottom = true;
-    scrollToBottomReliable();
-    setMainTab("chat");
+    if (!optimisticUserAppended) {
+      hideWelcomeCard();
+      appendOptimisticUserMessage(prompt, turnAttachments, clientMessageId, activeThreadId);
+      optimisticUserAppended = true;
+      state.chatShouldStickToBottom = true;
+      scrollToBottomReliable();
+      setMainTab("chat");
+    } else if (
+      !state.activeThreadMessages.some((message) =>
+        String(message?.id || message?.clientMessageId || "").trim() === clientMessageId
+      )
+    ) {
+      appendOptimisticUserMessage(prompt, turnAttachments, clientMessageId, activeThreadId);
+    }
     clearPromptValue();
     state.pendingAttachments = [];
     renderAttachmentPills([]);

@@ -429,6 +429,174 @@ describe("turnActions", () => {
     expect(apiCalls).toEqual([]);
   });
 
+  it("clears the composer and appends one keyed optimistic user while an existing thread resumes", async () => {
+    const resume = createDeferred();
+    const apiCalls = [];
+    const chatCalls = [];
+    const renderedPills = [];
+    const pendingUiSnapshots = [];
+    const input = { value: "hi" };
+    let visibleUsers = 1;
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadWorkspace: "windows",
+      activeThreadOpenState: { threadId: "thread-1", loaded: true, resumeRequired: false },
+      activeThreadStarted: true,
+      activeThreadMessages: [],
+      pendingThreadResumes: new Map(),
+      pendingAttachments: [
+        {
+          kind: "image",
+          fileName: "screen.png",
+          mimeType: "image/png",
+          path: "C:\\uploads\\screen.png",
+        },
+      ],
+      selectedModel: "",
+      selectedReasoningEffort: "",
+      ws: null,
+      permissionPresetByWorkspace: { windows: "/permission auto" },
+      chatShouldStickToBottom: false,
+      planModeEnabled: false,
+      fastModeEnabled: false,
+    };
+    const module = createTurnActionsModule({
+      state,
+      byId: (id) => {
+        if (id === "mobilePromptInput") return input;
+        if (id === "chatBox") {
+          return {
+            querySelectorAll: (selector) => ({
+              length: selector === ".msg.user" ? visibleUsers : 0,
+            }),
+          };
+        }
+        return null;
+      },
+      api: async (path, options = {}) => {
+        apiCalls.push({
+          path,
+          options,
+          pendingAttachmentsAtCall: state.pendingAttachments.slice(),
+        });
+        if (path === "/codex/turns/start") return { threadId: "thread-1", turnId: "turn-1" };
+        throw new Error(`unexpected api call: ${path}`);
+      },
+      wsSend: () => false,
+      wsCall: async () => ({}),
+      nextReqId: () => "req-1",
+      connectWs: () => {},
+      syncEventSubscription: () => {},
+      getPromptValue: () => input.value,
+      getWorkspaceTarget: () => "windows",
+      getStartCwdForWorkspace: () => "C:\\repo",
+      waitPendingThreadResume: async () => resume.promise,
+      updateHeaderUi: () => {},
+      addChat: (role, text, options = {}) => {
+        if (role === "user") visibleUsers += 1;
+        chatCalls.push({ role, text, options });
+      },
+      clearChatMessages: () => {},
+      hideWelcomeCard: () => {},
+      showWelcomeCard: () => {},
+      clearPromptValue: () => {
+        input.value = "";
+      },
+      renderComposerContextLeft: () => {},
+      scrollToBottomReliable: () => {},
+      scheduleChatLiveFollow: () => {},
+      createAssistantStreamingMessage: () => ({}),
+      appendStreamingDelta: () => {},
+      finalizeAssistantMessage: () => {},
+      normalizeTextPayload: (value) => value,
+      maybeNotifyTurnDone: () => {},
+      renderAttachmentPills: (items) => renderedPills.push(items.map((item) => ({ ...item }))),
+      refreshThreads: async () => {},
+      refreshHosts: async () => {},
+      refreshPending: async () => {},
+      refreshWorkspaceRuntimeState: async () => null,
+      setStatus: () => {},
+      setActiveThread: (id) => {
+        state.activeThreadId = id;
+      },
+      setMainTab: () => {},
+      setMobileTab: () => {},
+      setChatOpening: () => {},
+      syncPendingTurnUi: () => {
+        pendingUiSnapshots.push({
+          running: state.activeThreadPendingTurnRunning,
+          userMessage: state.activeThreadPendingUserMessage,
+          clientMessageId: state.activeThreadPendingClientMessageId,
+        });
+      },
+      updateMobileComposerState: () => {},
+      clearTransientToolMessages: () => {},
+      clearTransientThinkingMessages: () => {},
+      clearLiveThreadConnectionStatus: () => {},
+      blockInSandbox: () => false,
+    });
+
+    const sendPromise = module.sendTurn();
+
+    expect(input.value).toBe("");
+    expect(state.pendingAttachments).toEqual([]);
+    expect(renderedPills.at(-1)).toEqual([]);
+    expect(state.activeThreadPendingTurnRunning).toBe(true);
+    expect(state.activeThreadPendingUserMessage).toBe("hi");
+    expect(state.activeThreadPendingClientMessageId).toBe("client:thread-1:req-1");
+    expect(state.activeThreadPendingTurnBaselineUserCount).toBe(1);
+    expect(chatCalls).toEqual([
+      {
+        role: "user",
+        text: "hi",
+        options: expect.objectContaining({
+          messageKey: "client:thread-1:req-1",
+          source: "turnSendOptimisticUser",
+          attachments: [
+            {
+              fileName: "screen.png",
+              kind: "path",
+              label: "screen.png",
+              rawPath: "C:\\uploads\\screen.png",
+              src: "/codex/file?path=C%3A%5Cuploads%5Cscreen.png",
+            },
+          ],
+        }),
+      },
+    ]);
+    expect(pendingUiSnapshots.at(-1)).toEqual({
+      running: true,
+      userMessage: "hi",
+      clientMessageId: "client:thread-1:req-1",
+    });
+
+    resume.resolve();
+    await sendPromise;
+
+    expect(chatCalls).toHaveLength(1);
+    expect(state.activeThreadPendingTurnBaselineUserCount).toBe(1);
+    expect(apiCalls).toEqual([
+      expect.objectContaining({
+        path: "/codex/turns/start",
+        pendingAttachmentsAtCall: [],
+        options: expect.objectContaining({
+          body: expect.objectContaining({
+            threadId: "thread-1",
+            prompt: "hi",
+            attachments: [
+              {
+                kind: "image",
+                fileName: "screen.png",
+                mimeType: "image/png",
+                path: "C:\\uploads\\screen.png",
+              },
+            ],
+          }),
+        }),
+      }),
+    ]);
+  });
+
   it("removes pending attachments from the send payload state", () => {
     const renderedPills = [];
     const statuses = [];
@@ -2852,12 +3020,6 @@ describe("turnActions", () => {
       commands: [],
     });
     expect(calls).toEqual([]);
-    expect(chatCalls).toEqual([]);
-
-    releasePendingResume();
-    await sendPromise;
-
-    expect(state.activeThreadPendingUserMessage).toBe("hello");
     expect(chatCalls).toEqual([
       {
         role: "user",
@@ -2869,6 +3031,12 @@ describe("turnActions", () => {
         },
       },
     ]);
+
+    releasePendingResume();
+    await sendPromise;
+
+    expect(state.activeThreadPendingUserMessage).toBe("hello");
+    expect(chatCalls).toHaveLength(1);
     expect(calls.map((call) => call.path)).toEqual([
       "/codex/threads/thread-1/resume?workspace=windows&rolloutPath=C%3A%5Crepo%5C.codex%5Csessions%5Crollout.jsonl",
       "/codex/turns/start",

@@ -2,6 +2,27 @@ function messageMatches(a, b) {
   return !!a && !!b && a.role === b.role && a.kind === b.kind && a.text === b.text;
 }
 
+function isMessagePrefix(previousMessages = [], nextMessages = []) {
+  if (!Array.isArray(previousMessages) || !Array.isArray(nextMessages)) return false;
+  if (previousMessages.length > nextMessages.length) return false;
+  return previousMessages.every((message, index) => messageMatches(message, nextMessages[index]));
+}
+
+function isPatchableMessageSequence(previousMessages = [], nextMessages = []) {
+  const previous = Array.isArray(previousMessages) ? previousMessages : [];
+  const next = Array.isArray(nextMessages) ? nextMessages : [];
+  if (previous.length > next.length) return false;
+  let previousIndex = 0;
+  for (const message of next) {
+    const previousMessage = previous[previousIndex] || null;
+    if (!previousMessage) continue;
+    if (previousMessage.role !== message.role || previousMessage.kind !== message.kind) return false;
+    if (previousMessage.text !== message.text && previousIndex !== previous.length - 1) return false;
+    previousIndex += 1;
+  }
+  return previousIndex === previous.length;
+}
+
 function isCommentaryArchiveMessage(message) {
   return String(message?.kind || "").trim() === "commentaryArchive";
 }
@@ -137,6 +158,9 @@ function resolvePatchSource(previousMessages, nextMessages, domNodes) {
   const previous = Array.isArray(previousMessages) ? previousMessages : [];
   const domMessages = getTimelineDomMessages(domNodes);
   if (domMessages.length && domMessages.length !== previous.length) {
+    if (isMessagePrefix(domMessages, nextMessages) || isPatchableMessageSequence(domMessages, nextMessages)) {
+      return { patch: [], previous: domMessages, source: "dom" };
+    }
     const domPatch = findCommentaryArchivePatch(domMessages, nextMessages);
     if (domPatch) return { patch: domPatch, previous: domMessages, source: "dom" };
   }
@@ -159,6 +183,14 @@ function planTimelinePatch({ previousMessages, nextMessages, domNodes }) {
     const previousMessage = previous[previousIndex] || null;
     if (!isCommentaryArchiveMessage(message)) {
       const node = domNodes[domIndex] || null;
+      if (!previousMessage) {
+        operations.push({
+          type: "insert",
+          anchorNode: node,
+          message,
+        });
+        continue;
+      }
       if (!node) return null;
       if (previousMessage && (previousMessage.role !== message.role || previousMessage.kind !== message.kind)) {
         return null;
@@ -251,6 +283,7 @@ export function reconcileTimelineMessages(params = {}) {
     } else {
       box.appendChild(node);
     }
+    replayMessage(node, operation.message, { fromText: "" });
     inserted += 1;
   }
   return { inserted, updated, source: patchSource.source };
