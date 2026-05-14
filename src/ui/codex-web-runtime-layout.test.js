@@ -13,6 +13,11 @@ describe("codex-web runtime layout", () => {
     expect(block).not.toMatch(/bottom:\s*0/i);
   });
 
+  it("keeps cached chat rows visible while the left drawer is opening", () => {
+    expect(source).not.toMatch(/body\.drawer-left-opening\s+#threadList/);
+    expect(source).toMatch(/body\.drawer-left-previewing\s+#threadList/);
+  });
+
   it("places the runtime activity inside the composer meta row as a compact inline hint", () => {
     expect(source).toContain('<div class="mobileComposerMetaRow">');
     expect(source).toContain('<div id="runtimeDock" class="runtimeDock" style="display:none;">');
