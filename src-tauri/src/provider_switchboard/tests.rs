@@ -802,6 +802,55 @@ mod tests {
     }
 
     #[test]
+    fn set_official_target_syncs_web_codex_runtime_home() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+
+        let state = crate::app_state::build_state(config_path.clone(), data_dir).expect("state");
+        let official_auth = json!({
+            "tokens": {
+                "access_token": "official-token"
+            }
+        });
+
+        let cli_home = tmp.path().join("cli-home");
+        std::fs::create_dir_all(&cli_home).unwrap();
+        std::fs::write(cli_auth_path(&cli_home), r#"{"OPENAI_API_KEY":"ao_gateway"}"#).unwrap();
+        std::fs::write(
+            cli_cfg_path(&cli_home),
+            "model_provider = \"api_router\"\nmodel = \"gpt-5.3-codex\"\n",
+        )
+        .unwrap();
+
+        let runtime_home = config_path.parent().unwrap().join("codex-home");
+        std::fs::create_dir_all(&runtime_home).unwrap();
+        std::fs::write(runtime_home.join("auth.json"), r#"{"OPENAI_API_KEY":"ao_stale"}"#)
+            .unwrap();
+        std::fs::write(
+            runtime_home.join("config.toml"),
+            "model_provider = \"api_router\"\nmodel = \"gpt-5.3-codex\"\n",
+        )
+        .unwrap();
+
+        let runtime = ProviderSwitchboardRuntime::from_app_state(&state);
+        set_target_for_runtime_with_official_auth(
+            &runtime,
+            vec![cli_home.to_string_lossy().to_string()],
+            "official".to_string(),
+            None,
+            Some(official_auth.clone()),
+        )
+        .expect("switch official");
+
+        let runtime_cfg = std::fs::read_to_string(runtime_home.join("config.toml")).unwrap();
+        assert!(!runtime_cfg.contains("model_provider = \"api_router\""));
+        let runtime_auth = read_json(&runtime_home.join("auth.json")).expect("runtime auth");
+        assert_eq!(runtime_auth, official_auth);
+    }
+
+    #[test]
     fn sync_gateway_target_for_rotated_token_updates_web_codex_runtime_auth_home() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let config_path = tmp.path().join("user-data").join("config.toml");
