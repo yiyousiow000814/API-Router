@@ -1,7 +1,7 @@
 use super::web_codex_home::{web_codex_rpc_home_override_for_target, WorkspaceTarget};
 use super::web_codex_rollout_import::{
     import_rollout_from_known_path, import_windows_rollout_into_codex_home,
-    import_wsl_rollout_into_codex_home, resume_import_order,
+    import_wsl_rollout_into_codex_home, resume_import_order, sanitize_official_resume_rollout,
 };
 use super::web_codex_rollout_path::runtime_path_should_override_existing;
 use super::web_codex_session_runtime::{
@@ -656,6 +656,8 @@ impl CodexSessionManager {
                 rollout_path,
             )
             .map_err(|import_error| format!("import failed: {import_error}"))?;
+            sanitize_official_resume_rollout(self.home_override(), Some(rollout_path))
+                .map_err(|sanitize_error| format!("sanitize failed: {sanitize_error}"))?;
         }
         match resume_thread_once(self, &params).await {
             Ok(value) => Ok(value),

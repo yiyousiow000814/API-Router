@@ -159,12 +159,90 @@ pub(super) fn import_rollout_file_into_codex_home(
                 _ => same_len,
             };
             if same_content && up_to_date {
+                sanitize_official_resume_rollout(
+                    codex_home,
+                    Some(dst_file.to_string_lossy().as_ref()),
+                )?;
                 return Ok(true);
             }
         }
     }
     std::fs::copy(src_file, &dst_file).map_err(|e| e.to_string())?;
+    sanitize_official_resume_rollout(codex_home, Some(dst_file.to_string_lossy().as_ref()))?;
     Ok(true)
+}
+
+fn config_text_uses_model_provider(config_text: &str) -> bool {
+    config_text.lines().any(|line| {
+        let trimmed = line.trim_start();
+        trimmed.starts_with("model_provider ")
+            || trimmed.starts_with("model_provider\t")
+            || trimmed.starts_with("model_provider=")
+            || trimmed.starts_with("model_provider_id ")
+            || trimmed.starts_with("model_provider_id\t")
+            || trimmed.starts_with("model_provider_id=")
+    })
+}
+
+fn rollout_line_without_gateway_session_provider(line: &str) -> Option<String> {
+    let mut value = serde_json::from_str::<Value>(line).ok()?;
+    if value.get("type").and_then(Value::as_str) != Some("session_meta") {
+        return None;
+    }
+    let payload = value.get_mut("payload")?.as_object_mut()?;
+    if payload.get("model_provider").and_then(Value::as_str) != Some("api_router") {
+        return None;
+    }
+    payload.remove("model_provider")?;
+    Some(value.to_string())
+}
+
+fn strip_gateway_session_provider_from_rollout_path(path: &Path) -> Result<bool, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let has_trailing_newline = text.ends_with('\n');
+    let mut changed = false;
+    let lines = text
+        .lines()
+        .map(|line| {
+            if let Some(next) = rollout_line_without_gateway_session_provider(line) {
+                changed = true;
+                next
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>();
+    if !changed {
+        return Ok(false);
+    }
+    let mut next = lines.join("\n");
+    if has_trailing_newline {
+        next.push('\n');
+    }
+    std::fs::write(path, next).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+pub(super) fn sanitize_official_resume_rollout(
+    codex_home: Option<&str>,
+    rollout_path: Option<&str>,
+) -> Result<bool, String> {
+    let home = codex_home_dir_for_override(codex_home)?;
+    let config_text = std::fs::read_to_string(home.join("config.toml")).unwrap_or_default();
+    if config_text_uses_model_provider(&config_text) {
+        return Ok(false);
+    }
+    let Some(path) = rollout_path
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    else {
+        return Ok(false);
+    };
+    if !path.exists() || !path.is_file() {
+        return Ok(false);
+    }
+    strip_gateway_session_provider_from_rollout_path(&path)
 }
 
 fn linux_wsl_path_to_windows_path(path: &str) -> Option<PathBuf> {
@@ -249,7 +327,7 @@ mod tests {
     use super::codex_home_dir_for_override;
     use super::{
         import_rollout_file_into_codex_home, import_rollout_from_known_path, resume_import_order,
-        WorkspaceTarget,
+        sanitize_official_resume_rollout, WorkspaceTarget,
     };
     #[cfg(target_os = "windows")]
     use crate::orchestrator::gateway::web_codex_home::{lock_wsl_identity_cache, WslIdentityCache};
@@ -319,6 +397,102 @@ mod tests {
             .join("imported")
             .join("019c7766-db34-7c43-a808-b2e8f356c907.jsonl")
             .exists());
+    }
+
+    #[test]
+    fn sanitize_official_resume_rollout_removes_gateway_session_provider() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let codex_home = temp.path().join(".codex");
+        std::fs::create_dir_all(&codex_home).expect("create home");
+        std::fs::write(codex_home.join("config.toml"), "model = \"gpt-5.4\"\n")
+            .expect("write config");
+        let rollout = codex_home
+            .join("sessions")
+            .join("2026")
+            .join("03")
+            .join("20")
+            .join("rollout-thread-1.jsonl");
+        std::fs::create_dir_all(rollout.parent().expect("rollout parent"))
+            .expect("create rollout parent");
+        std::fs::write(
+            &rollout,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-1\",\"model_provider\":\"api_router\",\"model\":\"gpt-5.4\"}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\"}}\n",
+            ),
+        )
+        .expect("write rollout");
+
+        let changed = sanitize_official_resume_rollout(
+            Some(codex_home.to_string_lossy().as_ref()),
+            Some(rollout.to_string_lossy().as_ref()),
+        )
+        .expect("sanitize");
+
+        assert!(changed);
+        let next = std::fs::read_to_string(&rollout).expect("read rollout");
+        assert!(!next.contains("\"model_provider\":\"api_router\""));
+        assert!(next.contains("\"model\":\"gpt-5.4\""));
+    }
+
+    #[test]
+    fn sanitize_official_resume_rollout_keeps_gateway_runtime_rollout() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let codex_home = temp.path().join(".codex");
+        std::fs::create_dir_all(&codex_home).expect("create home");
+        std::fs::write(
+            codex_home.join("config.toml"),
+            "model_provider = \"api_router\"\nmodel = \"gpt-5.4\"\n",
+        )
+        .expect("write config");
+        let rollout = codex_home.join("sessions").join("rollout-thread-1.jsonl");
+        std::fs::create_dir_all(rollout.parent().expect("rollout parent"))
+            .expect("create rollout parent");
+        std::fs::write(
+            &rollout,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-1\",\"model_provider\":\"api_router\"}}\n",
+        )
+        .expect("write rollout");
+
+        let changed = sanitize_official_resume_rollout(
+            Some(codex_home.to_string_lossy().as_ref()),
+            Some(rollout.to_string_lossy().as_ref()),
+        )
+        .expect("sanitize");
+
+        assert!(!changed);
+        let next = std::fs::read_to_string(&rollout).expect("read rollout");
+        assert!(next.contains("\"model_provider\":\"api_router\""));
+    }
+
+    #[test]
+    fn import_rollout_file_sanitizes_official_runtime_copy() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let codex_home = temp.path().join(".codex");
+        std::fs::create_dir_all(&codex_home).expect("create home");
+        std::fs::write(codex_home.join("config.toml"), "model = \"gpt-5.4\"\n")
+            .expect("write config");
+        let source_file = temp.path().join("rollout-thread-1.jsonl");
+        std::fs::write(
+            &source_file,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-1\",\"model_provider\":\"api_router\"}}\n",
+        )
+        .expect("write source");
+
+        let imported = import_rollout_file_into_codex_home(
+            Some(codex_home.to_string_lossy().as_ref()),
+            "thread-1",
+            Path::new(&source_file),
+        )
+        .expect("import");
+
+        assert!(imported);
+        let imported_file = codex_home
+            .join("sessions")
+            .join("imported")
+            .join("thread-1.jsonl");
+        let next = std::fs::read_to_string(imported_file).expect("read imported");
+        assert!(!next.contains("\"model_provider\":\"api_router\""));
     }
 
     #[test]
