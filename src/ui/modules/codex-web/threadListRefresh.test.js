@@ -280,6 +280,100 @@ describe("threadListRefresh", () => {
     expect(state.threadListLoading).toBe(false);
   });
 
+  it("does not replay the list when cached threads render while refresh is in flight", async () => {
+    vi.useFakeTimers();
+    const rendered = [];
+    let renderedDom = false;
+    let resolveApi;
+    const previous = [{ id: "thread-a", title: "Stable chat", workspace: "windows", cwd: "C:\\repo", updatedAt: 1 }];
+    const next = [{ id: "thread-a", title: "Stable chat", workspace: "windows", cwd: "C:\\repo", updatedAt: 2, status: { type: "running" } }];
+    const state = {
+      threadItemsAll: previous,
+      threadItems: previous,
+      threadItemsByWorkspace: { windows: previous, wsl2: [] },
+      threadWorkspaceHydratedByWorkspace: { windows: true, wsl2: false },
+      threadRefreshAbortByWorkspace: { windows: null, wsl2: null },
+      threadRefreshReqSeqByWorkspace: { windows: 0, wsl2: 0 },
+      threadListRenderSigByWorkspace: { windows: "thread-a:1::Stable chat:repo", wsl2: "" },
+      threadListDeferredRenderTimerByWorkspace: { windows: 0, wsl2: 0 },
+      threadListAnimationHoldUntilByWorkspace: { windows: 0, wsl2: 0 },
+      threadListPendingVisibleAnimationByWorkspace: { windows: true, wsl2: false },
+      workspaceAvailability: { windowsInstalled: true, wsl2Installed: false },
+    };
+    const listNode = {
+      isConnected: true,
+      querySelector(selector) {
+        const query = String(selector || "");
+        if (query.includes(".threadListState") || query.includes(".threadListPlainState")) return null;
+        if (query.includes(".groupCard") || query.includes(".itemCard")) {
+          return renderedDom ? { nodeType: 1 } : null;
+        }
+        return null;
+      },
+      closest: () => null,
+      getBoundingClientRect: () => ({ left: -390, top: 0, right: -1, bottom: 480, width: 389, height: 480 }),
+    };
+    const module = createThreadListRefreshModule({
+      state,
+      byId: (id) => (id === "threadList" ? listNode : null),
+      windowRef: { getComputedStyle: () => ({ display: "block", visibility: "visible" }), innerWidth: 390, innerHeight: 900 },
+      documentRef: {
+        documentElement: { clientWidth: 390, clientHeight: 900 },
+        body: { classList: { contains: () => false } },
+      },
+      api: vi.fn(
+        () =>
+          new Promise((resolve) => {
+            resolveApi = resolve;
+          })
+      ),
+      ensureArrayItems: (value) => (Array.isArray(value?.data) ? value.data : Array.isArray(value) ? value : []),
+      normalizeWorkspaceTarget: (value) => (value === "wsl2" ? "wsl2" : "windows"),
+      getWorkspaceTarget: () => "windows",
+      getStartCwdForWorkspace: () => "",
+      sortThreadsByNewest: (items) => [...items].sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0)),
+      filterThreadsForWorkspace: (items) => items,
+      hasDualWorkspaceTargets: () => true,
+      detectWorkspaceAvailabilityFromThreads: () => ({
+        windowsInstalled: true,
+        wsl2Installed: false,
+      }),
+      buildThreadRenderSig: (items) =>
+        items
+          .map((item) => `${item.id}:${item.updatedAt}:${item.status?.type || ""}:${item.title}:repo`)
+          .join("|"),
+      persistThreadsCache: vi.fn(),
+      syncActiveThreadMetaFromList: vi.fn(),
+      updateHeaderUi: vi.fn(),
+      pushThreadAnimDebug: vi.fn(),
+      renderThreads: (items) => {
+        renderedDom = true;
+        rendered.push(items.map((entry) => entry.id));
+      },
+      applyWorkspaceUi: vi.fn(),
+      setStatus: vi.fn(),
+      THREAD_FORCE_REFRESH_MIN_INTERVAL_MS: 1800,
+    });
+    try {
+      const refresh = module.refreshThreads("windows", { silent: false });
+      await vi.advanceTimersByTimeAsync(20);
+      expect(rendered).toEqual([["thread-a"]]);
+
+      resolveApi({
+        items: next,
+        meta: { workspace: "windows", cacheHit: true, refreshing: false },
+      });
+      await refresh;
+
+      expect(rendered).toEqual([["thread-a"]]);
+      expect(state.threadItems).toEqual([{ ...next[0], __workspaceQueryTarget: "windows" }]);
+      expect(state.threadListAnimateNextRender).toBeFalsy();
+      expect(state.threadListRenderSigByWorkspace.windows).toBe("thread-a:2:running:Stable chat:repo");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does not replay cached visible-list animation when refresh returns the same rendered chats", async () => {
     const rendered = [];
     const previous = [{ id: "thread-a", workspace: "windows", cwd: "C:\\repo", updatedAt: 1 }];

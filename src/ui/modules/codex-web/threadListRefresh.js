@@ -266,10 +266,10 @@ export function createThreadListRefreshModule(deps) {
       const previousItems = Array.isArray(state.threadItemsByWorkspace[target])
         ? state.threadItemsByWorkspace[target]
         : [];
-      const threadListNode = byId("threadList");
-      const domWasPlaceholder =
-        !!threadListNode?.querySelector?.(".threadListState, .threadListPlainState") ||
-        !threadListNode?.querySelector?.(".groupCard, .itemCard");
+      const threadListNodeBeforeFetch = byId("threadList");
+      const domWasPlaceholderBeforeFetch =
+        !!threadListNodeBeforeFetch?.querySelector?.(".threadListState, .threadListPlainState") ||
+        !threadListNodeBeforeFetch?.querySelector?.(".groupCard, .itemCard");
       const previousIdSet = new Set(previousItems.map((item) => item?.id || item?.threadId || "").filter(Boolean));
       const data = await api(`/codex/threads?${query}`, { signal: controller.signal });
       const apiTrace = data && typeof data === "object" ? data.__apiTrace || null : null;
@@ -348,6 +348,10 @@ export function createThreadListRefreshModule(deps) {
         nextNewThreadIdSet.add(id);
       }
       const shouldAnimateFullList = previousItems.length === 0 && items.length > 0;
+      const threadListNode = byId("threadList");
+      const domWasPlaceholder =
+        !!threadListNode?.querySelector?.(".threadListState, .threadListPlainState") ||
+        !threadListNode?.querySelector?.(".groupCard, .itemCard");
       const canAnimatePendingVisibleNow =
         domWasPlaceholder &&
         !!state.threadListPendingVisibleAnimationByWorkspace?.[target] &&
@@ -411,6 +415,7 @@ export function createThreadListRefreshModule(deps) {
         force,
         silent,
         domWasPlaceholder,
+        domWasPlaceholderBeforeFetch,
         previousCount: previousItems.length,
         nextCount: items.length,
         sigSame: state.threadListRenderSigByWorkspace[target] === nextSig,
