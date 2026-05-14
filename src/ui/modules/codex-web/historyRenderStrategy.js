@@ -33,6 +33,7 @@ function allButLastMatch(previous, next) {
 
 function isSamePrefix(previous, next) {
   if (!Array.isArray(previous) || !Array.isArray(next) || previous.length > next.length) return false;
+  if (previous.length === 0) return false;
   for (let index = 0; index < previous.length; index += 1) {
     if (!messageFullyMatches(previous[index], next[index])) return false;
   }
