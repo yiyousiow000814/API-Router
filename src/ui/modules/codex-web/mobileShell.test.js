@@ -245,6 +245,70 @@ describe("mobileShell", () => {
     expect(state.threadListAnimateNextRender).toBe(true);
   });
 
+  it("renders cached workspace chats when opening the drawer during thread loading", () => {
+    const body = {
+      _classes: new Set(),
+      classList: {
+        contains(name) {
+          return body._classes.has(name);
+        },
+        add(...names) {
+          for (const name of names) body._classes.add(name);
+        },
+        remove(...names) {
+          for (const name of names) body._classes.delete(name);
+        },
+      },
+    };
+    const backdrop = {
+      classList: {
+        toggle() {},
+      },
+    };
+    const cached = [{ id: "win-thread", workspace: "windows" }];
+    const rendered = [];
+    const state = {
+      drawerOpenPhaseTimer: 0,
+      threadListVisibleOpenAnimationUntil: 0,
+      threadListPendingSidebarOpenAnimation: false,
+      threadListVisibleAnimationTimer: 0,
+      threadListLoading: true,
+      threadItems: [],
+      threadItemsByWorkspace: { windows: cached, wsl2: [] },
+      threadListPendingVisibleAnimationByWorkspace: { windows: false, wsl2: false },
+      threadListAnimateNextRender: false,
+      threadListAnimateThreadIds: new Set(),
+      threadListExpandAnimateGroupKeys: new Set(),
+      threadListSkipScrollRestoreOnce: false,
+    };
+    const module = createMobileShellModule({
+      state,
+      byId(id) {
+        if (id === "mobileDrawerBackdrop") return backdrop;
+        return null;
+      },
+      documentRef: { body },
+      normalizeWorkspaceTarget(value) {
+        return value;
+      },
+      getWorkspaceTarget() {
+        return "windows";
+      },
+      pushThreadAnimDebug() {},
+      renderThreads(items) {
+        rendered.push(items);
+      },
+      hideSlashCommandMenu() {},
+    });
+
+    module.setMobileTab("threads");
+
+    expect(rendered).toEqual([cached]);
+    expect(state.threadItems).toBe(cached);
+    expect(state.threadListPendingSidebarOpenAnimation).toBe(false);
+    expect(state.threadListAnimateNextRender).toBe(true);
+  });
+
   it("drags the thread drawer with a left-edge swipe on mobile", () => {
     const handlers = new Map();
     const body = {
