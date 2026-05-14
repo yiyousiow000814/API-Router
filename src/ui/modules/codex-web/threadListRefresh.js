@@ -324,7 +324,10 @@ export function createThreadListRefreshModule(deps) {
       }
       const shouldAnimateFullList = previousItems.length === 0 && items.length > 0;
       const canAnimatePendingVisibleNow =
-        !!state.threadListPendingVisibleAnimationByWorkspace?.[target] && isThreadListActuallyVisible() && items.length > 0;
+        domWasPlaceholder &&
+        !!state.threadListPendingVisibleAnimationByWorkspace?.[target] &&
+        isThreadListActuallyVisible() &&
+        items.length > 0;
       state.threadItemsByWorkspace[target] = items;
       state.threadWorkspaceHydratedByWorkspace[target] = true;
       if (!state.threadRefreshCompletedAtByWorkspace || typeof state.threadRefreshCompletedAtByWorkspace !== "object") {
