@@ -92,6 +92,47 @@ describe("threadListRefresh", () => {
     });
   });
 
+  it("does not re-render threads when workspace availability is unchanged", () => {
+    const rendered = [];
+    const state = {
+      workspaceAvailability: {
+        windowsInstalled: true,
+        wsl2Installed: true,
+      },
+      threadItemsAll: [{ id: "thread-a", workspace: "windows", cwd: "C:\\repo", updatedAt: 1 }],
+      threadItems: [{ id: "thread-a", workspace: "windows", cwd: "C:\\repo", updatedAt: 1 }],
+    };
+    const module = createThreadListRefreshModule({
+      state,
+      byId: () => null,
+      windowRef: { getComputedStyle: () => ({ display: "block", visibility: "visible" }), innerWidth: 1280, innerHeight: 720 },
+      documentRef: { documentElement: { clientWidth: 1280, clientHeight: 720 }, body: { classList: { contains: () => false } } },
+      api: vi.fn(),
+      ensureArrayItems: (value) => (Array.isArray(value) ? value : []),
+      normalizeWorkspaceTarget: (value) => value,
+      getWorkspaceTarget: () => "windows",
+      getStartCwdForWorkspace: () => "",
+      sortThreadsByNewest: (items) => items,
+      filterThreadsForWorkspace: (items) => items,
+      hasDualWorkspaceTargets: () => true,
+      detectWorkspaceAvailabilityFromThreads: vi.fn(),
+      buildThreadRenderSig: vi.fn(),
+      persistThreadsCache: vi.fn(),
+      syncActiveThreadMetaFromList: vi.fn(),
+      updateHeaderUi: vi.fn(),
+      pushThreadAnimDebug: vi.fn(),
+      renderThreads: (items) => rendered.push(items.map((entry) => entry.id)),
+      applyWorkspaceUi: vi.fn(),
+      setStatus: vi.fn(),
+      THREAD_FORCE_REFRESH_MIN_INTERVAL_MS: 1800,
+    });
+
+    module.updateWorkspaceAvailability(true, true);
+
+    expect(rendered).toEqual([]);
+    expect(state.threadItems.map((item) => item.id)).toEqual(["thread-a"]);
+  });
+
   it("upserts provisional live thread items into the active workspace cache", () => {
     const rendered = [];
     const persisted = vi.fn();

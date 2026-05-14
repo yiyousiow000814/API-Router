@@ -157,12 +157,17 @@ export function createThreadListRefreshModule(deps) {
   }
 
   function updateWorkspaceAvailability(windowsInstalled, wsl2Installed, options = {}) {
+    const nextWindowsInstalled = !!windowsInstalled;
+    const nextWsl2Installed = !!wsl2Installed;
+    const availabilityChanged =
+      !!state.workspaceAvailability?.windowsInstalled !== nextWindowsInstalled ||
+      !!state.workspaceAvailability?.wsl2Installed !== nextWsl2Installed;
     state.workspaceAvailability = {
-      windowsInstalled: !!windowsInstalled,
-      wsl2Installed: !!wsl2Installed,
+      windowsInstalled: nextWindowsInstalled,
+      wsl2Installed: nextWsl2Installed,
     };
     applyWorkspaceUi();
-    if (state.threadItemsAll.length && options.applyFilter !== false) applyThreadFilter();
+    if (availabilityChanged && state.threadItemsAll.length && options.applyFilter !== false) applyThreadFilter();
   }
 
   function upsertProvisionalThreadItem(item) {

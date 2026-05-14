@@ -216,6 +216,25 @@ export function createMobileShellModule(deps) {
     if (shouldOpenDrawerWithAnimation(tab, wasThreadsOpen)) {
       const currentWorkspaceKey = normalizeWorkspaceTarget(getWorkspaceTarget());
       const hasThreadItems = Array.isArray(state.threadItems) && state.threadItems.length > 0;
+      const animateExistingThreadListDom = (list) => {
+        if (!list?.querySelectorAll) return false;
+        const groups = Array.from(list.querySelectorAll(".groupCard") || []);
+        const headers = Array.from(list.querySelectorAll(".groupHeader") || []);
+        const items = Array.from(list.querySelectorAll(".itemCard") || []);
+        if (!groups.length && !items.length) return false;
+        groups.forEach((node, index) => {
+          node.classList?.add?.("groupEnter");
+          node.style?.setProperty?.("--thread-group-enter-delay", `${Math.min(640, index * 120)}ms`);
+        });
+        headers.forEach((node) => {
+          node.classList?.add?.("threadHeaderEnter");
+        });
+        items.forEach((node, index) => {
+          node.classList?.add?.("threadEnter");
+          node.style?.setProperty?.("--thread-enter-delay", `${Math.min(420, index * 28)}ms`);
+        });
+        return true;
+      };
       const scheduleVisibleThreadListAnimation = () => {
         if (state.threadListVisibleAnimationTimer) {
           clearTimeoutRef(state.threadListVisibleAnimationTimer);
@@ -230,6 +249,16 @@ export function createMobileShellModule(deps) {
           if (list?.querySelector?.(".groupCard.groupEnter, .itemCard.threadEnter")) {
             state.threadListPendingSidebarOpenAnimation = false;
             state.threadListPendingVisibleAnimationByWorkspace[currentWorkspaceKey] = false;
+            return;
+          }
+          if (list?.querySelector?.(".groupCard, .itemCard") && animateExistingThreadListDom(list)) {
+            pushThreadAnimDebug("setMobileTab:animateExistingDom", { currentWorkspaceKey, hasThreadItems: true });
+            state.threadListPendingSidebarOpenAnimation = false;
+            state.threadListPendingVisibleAnimationByWorkspace[currentWorkspaceKey] = false;
+            state.threadListAnimateNextRender = false;
+            state.threadListAnimateThreadIds = new Set();
+            state.threadListExpandAnimateGroupKeys = new Set();
+            state.threadListSkipScrollRestoreOnce = true;
             return;
           }
           pushThreadAnimDebug("setMobileTab:animateVisibleNow", { currentWorkspaceKey, hasThreadItems: true });
