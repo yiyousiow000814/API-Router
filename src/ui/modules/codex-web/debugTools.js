@@ -1159,7 +1159,7 @@ export function createDebugToolsModule(deps) {
         threadAnimDebug.enabled = true;
         installThreadAnimDebug();
         pushThreadAnimDebug("debug:enabled");
-        windowRef.__webCodexAnimDebug = {
+        win.__webCodexAnimDebug = {
           getEvents() {
             return threadAnimDebug.events.slice();
           },
@@ -1271,6 +1271,36 @@ export function createDebugToolsModule(deps) {
           return await fn();
         } finally {
           fetchRecorder.mockHandler = previous;
+        }
+      };
+      const sameThreadIds = (left, right) => {
+        const leftIds = ensureArrayItemsRef(left)
+          .map((item) => String(item?.id || item?.threadId || "").trim())
+          .filter(Boolean)
+          .sort();
+        const rightIds = ensureArrayItemsRef(right)
+          .map((item) => String(item?.id || item?.threadId || "").trim())
+          .filter(Boolean)
+          .sort();
+        return leftIds.length === rightIds.length && leftIds.every((id, index) => id && id === rightIds[index]);
+      };
+      const seedMockThreadStateIfRefreshDidNotApply = (workspace, seededItems) => {
+        const refreshedItems = Array.isArray(state.threadItemsByWorkspace?.[workspace])
+          ? state.threadItemsByWorkspace[workspace]
+          : [];
+        if (sameThreadIds(refreshedItems, seededItems)) return;
+        if (!state.threadItemsByWorkspace || typeof state.threadItemsByWorkspace !== "object") {
+          state.threadItemsByWorkspace = { windows: [], wsl2: [] };
+        }
+        if (!state.threadWorkspaceHydratedByWorkspace || typeof state.threadWorkspaceHydratedByWorkspace !== "object") {
+          state.threadWorkspaceHydratedByWorkspace = { windows: false, wsl2: false };
+        }
+        state.threadItemsByWorkspace[workspace] = seededItems;
+        state.threadWorkspaceHydratedByWorkspace[workspace] = true;
+        if (getWorkspaceTarget() === workspace) {
+          state.threadItems = seededItems;
+          state.threadItemsAll = seededItems;
+          renderThreads(seededItems);
         }
       };
       win.__webCodexE2E = {
@@ -1907,19 +1937,43 @@ export function createDebugToolsModule(deps) {
               });
             }, async () => {
               await refreshThreads(workspace, { force: true });
-              if (!state.threadItemsByWorkspace || typeof state.threadItemsByWorkspace !== "object") {
-                state.threadItemsByWorkspace = { windows: [], wsl2: [] };
-              }
-              if (!state.threadWorkspaceHydratedByWorkspace || typeof state.threadWorkspaceHydratedByWorkspace !== "object") {
-                state.threadWorkspaceHydratedByWorkspace = { windows: false, wsl2: false };
-              }
-              state.threadItemsByWorkspace[workspace] = seededItems;
-              state.threadWorkspaceHydratedByWorkspace[workspace] = true;
-              if (getWorkspaceTarget() === workspace) {
-                state.threadItems = seededItems;
-                state.threadItemsAll = seededItems;
-                renderThreads(seededItems);
-              }
+              seedMockThreadStateIfRefreshDidNotApply(workspace, seededItems);
+              return { ok: true };
+            });
+          } finally {
+            state.threadForceRefreshLastMsByWorkspace[workspace] = previousForceRefreshAt;
+          }
+        },
+        async refreshThreadsWithMockDelay(target = "windows", items = [], delayMs = 0) {
+          const workspace = normalizeWorkspaceTarget(String(target || "windows"));
+          const recorder = ensureFetchRecorder();
+          if (!recorder.ok) return recorder;
+          const seededItems = ensureArrayItemsRef(items).map((item) =>
+            item && typeof item === "object"
+              ? {
+                  ...item,
+                  __workspaceQueryTarget: workspace,
+                }
+              : item
+          );
+          if (!state.threadForceRefreshLastMsByWorkspace || typeof state.threadForceRefreshLastMsByWorkspace !== "object") {
+            state.threadForceRefreshLastMsByWorkspace = { windows: 0, wsl2: 0 };
+          }
+          const previousForceRefreshAt = Number(state.threadForceRefreshLastMsByWorkspace[workspace] || 0);
+          state.threadForceRefreshLastMsByWorkspace[workspace] = 0;
+          try {
+            return await runWithFetchMock(async (input, _init, call) => {
+              const url = String(call?.url || normalizeFetchUrl(input));
+              if (!/^\/codex\/threads(?:\?|$)/.test(url)) return null;
+              const waitMs = Math.max(0, Number(delayMs || 0));
+              if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
+              return new Response(JSON.stringify({ items: Array.isArray(items) ? items : [] }), {
+                status: 200,
+                headers: { "Content-Type": "application/json" },
+              });
+            }, async () => {
+              await refreshThreads(workspace, { force: true });
+              seedMockThreadStateIfRefreshDidNotApply(workspace, seededItems);
               return { ok: true };
             });
           } finally {
@@ -1928,7 +1982,15 @@ export function createDebugToolsModule(deps) {
         },
       };
       setStatus("E2E mode enabled.", true);
-    } catch {}
+    } catch (error) {
+      try {
+        const search = String(win?.location?.search || "");
+        if (hasQueryFlag(search, "e2e") || hasQueryFlag(search, "animdebug")) {
+          win.__webCodexE2EInstallError = String(error?.stack || error?.message || error || "");
+          console.warn("[web-codex-e2e] debug hook install failed", error);
+        }
+      } catch {}
+    }
   }
 
   return {

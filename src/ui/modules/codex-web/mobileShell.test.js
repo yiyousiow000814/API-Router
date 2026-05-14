@@ -344,6 +344,88 @@ describe("mobileShell", () => {
     expect(state.threadListPendingVisibleAnimationByWorkspace.windows).toBe(true);
   });
 
+  it("does not restart thread list entry animation when refresh already started it", () => {
+    const timers = [];
+    const body = {
+      _classes: new Set(),
+      classList: {
+        contains(name) {
+          return body._classes.has(name);
+        },
+        add(...names) {
+          for (const name of names) body._classes.add(name);
+        },
+        remove(...names) {
+          for (const name of names) body._classes.delete(name);
+        },
+      },
+      style: {
+        removeProperty() {},
+      },
+    };
+    const backdrop = {
+      classList: {
+        toggle() {},
+        remove() {},
+      },
+    };
+    const threadList = {
+      querySelector(selector) {
+        return String(selector || "").includes("groupEnter") ? { nodeType: 1 } : null;
+      },
+    };
+    const state = {
+      drawerOpenPhaseTimer: 0,
+      threadListVisibleOpenAnimationUntil: 0,
+      threadListPendingSidebarOpenAnimation: false,
+      threadListVisibleAnimationTimer: 0,
+      threadListLoading: false,
+      threadItems: [{ id: "t1" }],
+      threadListPendingVisibleAnimationByWorkspace: { windows: true, wsl2: false },
+      threadListAnimateNextRender: false,
+      threadListAnimateThreadIds: new Set(),
+      threadListExpandAnimateGroupKeys: new Set(),
+      threadListSkipScrollRestoreOnce: false,
+    };
+    const rendered = [];
+    const module = createMobileShellModule({
+      state,
+      byId(id) {
+        if (id === "mobileDrawerBackdrop") return backdrop;
+        if (id === "threadList") return threadList;
+        return null;
+      },
+      documentRef: { body },
+      normalizeWorkspaceTarget(value) {
+        return value;
+      },
+      getWorkspaceTarget() {
+        return "windows";
+      },
+      pushThreadAnimDebug() {},
+      renderThreads(items) {
+        rendered.push(items.map((item) => item.id));
+      },
+      hideSlashCommandMenu() {},
+      setTimeoutRef(callback, delayMs) {
+        const timer = { callback, delayMs };
+        timers.push(timer);
+        return timer;
+      },
+      clearTimeoutRef(timer) {
+        const index = timers.indexOf(timer);
+        if (index >= 0) timers.splice(index, 1);
+      },
+    });
+
+    module.setMobileTab("threads");
+    timers.find((timer) => timer.delayMs > 220)?.callback();
+
+    expect(rendered).toEqual([]);
+    expect(state.threadListAnimateNextRender).toBe(false);
+    expect(state.threadListPendingVisibleAnimationByWorkspace.windows).toBe(false);
+  });
+
   it("drags the thread drawer with a left-edge swipe on mobile", () => {
     const handlers = new Map();
     const body = {

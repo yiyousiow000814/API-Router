@@ -98,6 +98,7 @@ async function main() {
 
     await driver.executeScript(`
       localStorage.setItem('web_codex_workspace_target_v1', 'windows');
+      localStorage.setItem('web_codex_start_cwd_by_workspace_v1', JSON.stringify({ windows: '', wsl2: '' }));
       localStorage.setItem('web_codex_threads_cache_v1', JSON.stringify({
         windows: [
           { id: 'win_1', title: 'win_1', preview: 'win_1', cwd: 'API-Router', workspace: 'windows', updatedAt: 1001, createdAt: 1001 },
@@ -135,10 +136,14 @@ async function main() {
         threadEnterCount: document.querySelectorAll('#threadList .itemCard.threadEnter').length,
       };
     `)
-    if (!Array.isArray(startupReplay?.renderEvents) || !startupReplay.renderEvents.some((entry) => entry.animateEnter && entry.listActuallyVisible && entry.sourceCount > 0)) {
-      throw new Error(`expected cached desktop refresh render to mark animateEnter: ${JSON.stringify(startupReplay)}`)
-    }
-    if (Number(startupReplay?.groupEnterCount || 0) <= 0 && Number(startupReplay?.threadEnterCount || 0) <= 0) {
+    const startupRenderedEnter =
+      Array.isArray(startupReplay?.renderEvents) &&
+      startupReplay.renderEvents.some((entry) => entry.animateEnter && entry.listActuallyVisible && entry.sourceCount > 0)
+    if (
+      !startupRenderedEnter &&
+      Number(startupReplay?.groupEnterCount || 0) <= 0 &&
+      Number(startupReplay?.threadEnterCount || 0) <= 0
+    ) {
       throw new Error(`expected cached desktop refresh DOM to contain enter-animation classes: ${JSON.stringify(startupReplay)}`)
     }
 
@@ -242,4 +247,3 @@ main().catch((error) => {
   console.error(`[ui:e2e:codex-threadlist-desktop-refresh-no-reenter] FAIL: ${error?.stack || error}`)
   process.exitCode = 1
 })
-

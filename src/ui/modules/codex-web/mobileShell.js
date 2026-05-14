@@ -226,6 +226,12 @@ export function createMobileShellModule(deps) {
           state.threadListVisibleAnimationTimer = 0;
           if (!documentRef.body.classList.contains("drawer-left-open")) return;
           if (!Array.isArray(state.threadItems) || !state.threadItems.length) return;
+          const list = byId("threadList");
+          if (list?.querySelector?.(".groupCard.groupEnter, .itemCard.threadEnter")) {
+            state.threadListPendingSidebarOpenAnimation = false;
+            state.threadListPendingVisibleAnimationByWorkspace[currentWorkspaceKey] = false;
+            return;
+          }
           pushThreadAnimDebug("setMobileTab:animateVisibleNow", { currentWorkspaceKey, hasThreadItems: true });
           state.threadListPendingSidebarOpenAnimation = false;
           state.threadListPendingVisibleAnimationByWorkspace[currentWorkspaceKey] = true;

@@ -66,6 +66,12 @@ export function createThreadListRefreshModule(deps) {
     }, waitMs);
   }
 
+  function cancelThreadListVisibleAnimationRender() {
+    if (!state.threadListVisibleAnimationTimer) return;
+    clearTimeout(state.threadListVisibleAnimationTimer);
+    state.threadListVisibleAnimationTimer = 0;
+  }
+
   function scheduleThreadListDeferredRender(workspaceTarget, delayMs = 0) {
     const target = normalizeWorkspaceTarget(workspaceTarget);
     const existingTimer = Number(state.threadListDeferredRenderTimerByWorkspace?.[target] || 0);
@@ -129,6 +135,25 @@ export function createThreadListRefreshModule(deps) {
     if (!Array.isArray(items) || !items.length) return;
     const nextAvailability = detectWorkspaceAvailabilityFromThreads(items, state.workspaceAvailability);
     updateWorkspaceAvailability(nextAvailability.windowsInstalled, nextAvailability.wsl2Installed, { applyFilter: false });
+  }
+
+  function threadVisibleTitleSig(item) {
+    const id = String(item?.id || item?.threadId || "").trim();
+    const preview = String(item?.preview || "").replace(/\s+/g, " ").trim();
+    const title = String(item?.title || item?.name || preview || id || "").trim();
+    return `${id}:${title}:${String(item?.cwd || item?.project || item?.directory || item?.path || item?.workspace || "").trim()}`;
+  }
+
+  function buildVisibleThreadListSig(items, currentTarget) {
+    return sortThreadsByNewest(
+      filterThreadsForWorkspace(Array.isArray(items) ? items : [], {
+        hasDualWorkspaceTargets: hasDualWorkspaceTargets(),
+        currentTarget,
+        startCwd: getStartCwdForWorkspace(currentTarget),
+      })
+    )
+      .map(threadVisibleTitleSig)
+      .join("|");
   }
 
   function updateWorkspaceAvailability(windowsInstalled, wsl2Installed, options = {}) {
@@ -355,6 +380,24 @@ export function createThreadListRefreshModule(deps) {
         0,
         Number(state.threadListAnimationHoldUntilByWorkspace?.[target] || 0) - Date.now()
       );
+      const drawerOpening =
+        documentRef.body.classList.contains("drawer-left-opening") ||
+        (
+          documentRef.body.classList.contains("drawer-left-open") &&
+          Date.now() < Math.max(0, Number(state.threadListVisibleOpenAnimationUntil || 0))
+        );
+      const hasRenderedThreadDom = !!threadListNode?.querySelector?.(".groupCard, .itemCard");
+      const visibleListSigSame =
+        hasRenderedThreadDom &&
+        previousItems.length > 0 &&
+        items.length > 0 &&
+        buildVisibleThreadListSig(previousItems, target) === buildVisibleThreadListSig(items, target);
+      const shouldDeferDrawerOpeningRender =
+        !force &&
+        activeBefore &&
+        drawerOpening &&
+        documentRef.body.classList.contains("drawer-left-open") &&
+        items.length > 0;
       const shouldDeferVisibleRerender =
         !force &&
         getWorkspaceTarget() === target &&
@@ -378,6 +421,8 @@ export function createThreadListRefreshModule(deps) {
         canAnimatePendingVisibleNow,
         animationHoldRemainingMs,
         shouldDeferVisibleRerender,
+        shouldDeferDrawerOpeningRender,
+        visibleListSigSame,
         pendingVisibleAnimation: !!state.threadListPendingVisibleAnimationByWorkspace?.[target],
         listActuallyVisible: isThreadListActuallyVisible(),
       });
@@ -390,7 +435,51 @@ export function createThreadListRefreshModule(deps) {
         state.threadListAnimateThreadIds = new Set();
         return;
       }
+      if (
+        !force &&
+        activeBefore &&
+        visibleListSigSame &&
+        nextNewThreadIdSet.size === 0 &&
+        !shouldAnimateFullList &&
+        !shouldAnimateVisibleListFromPlaceholder &&
+        !canAnimatePendingVisibleNow
+      ) {
+        state.threadListRenderSigByWorkspace[target] = nextSig;
+        state.threadItemsAll = items;
+        state.threadItems = sortThreadsByNewest(
+          filterThreadsForWorkspace(items, {
+            hasDualWorkspaceTargets: hasDualWorkspaceTargets(),
+            currentTarget: target,
+            startCwd: getStartCwdForWorkspace(target),
+          })
+        );
+        state.threadListAnimateThreadIds = new Set();
+        state.threadListPendingVisibleAnimationByWorkspace[target] = false;
+        cancelThreadListVisibleAnimationRender();
+        updateWorkspaceAvailabilityFromThreads(items);
+        syncActiveThreadMetaFromList();
+        updateHeaderUi();
+        return;
+      }
       state.threadListRenderSigByWorkspace[target] = nextSig;
+      if (shouldDeferDrawerOpeningRender) {
+        state.threadItemsAll = items;
+        state.threadItems = sortThreadsByNewest(
+          filterThreadsForWorkspace(items, {
+            hasDualWorkspaceTargets: hasDualWorkspaceTargets(),
+            currentTarget: target,
+            startCwd: getStartCwdForWorkspace(target),
+          })
+        );
+        state.threadListPendingVisibleAnimationByWorkspace[target] = true;
+        state.threadListAnimateNextRender = false;
+        state.threadListAnimateThreadIds = new Set();
+        updateWorkspaceAvailabilityFromThreads(items);
+        syncActiveThreadMetaFromList();
+        updateHeaderUi();
+        scheduleThreadListVisibleAnimationRender(230);
+        return;
+      }
       if (shouldDeferVisibleRerender) {
         pushThreadAnimDebug("refreshThreads:deferVisibleRerender", {
           target,
@@ -413,6 +502,7 @@ export function createThreadListRefreshModule(deps) {
       updateWorkspaceAvailabilityFromThreads(items);
       syncActiveThreadMetaFromList();
       cancelThreadListDeferredRender(target);
+      cancelThreadListVisibleAnimationRender();
       applyThreadFilter();
       updateHeaderUi();
     } finally {

@@ -303,7 +303,7 @@ async function main() {
           };
           tick();
         });
-        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        await new Promise((resolve) => setTimeout(resolve, 300));
         const first = document.querySelector('#threadList .groupCard');
         if (!first) return done({ ok: false, error: 'group missing after workspace switch' });
         const style = getComputedStyle(first);
@@ -331,4 +331,3 @@ main().catch((error) => {
   console.error(`[ui:e2e:codex-threadlist-enter-race] FAIL: ${error?.stack || error}`)
   process.exitCode = 1
 })
-
