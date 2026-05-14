@@ -283,7 +283,11 @@ pub(super) fn sanitize_official_resume_rollout(
     rollout_path: Option<&str>,
 ) -> Result<bool, String> {
     let home = codex_home_dir_for_override(codex_home)?;
-    let config_text = std::fs::read_to_string(home.join("config.toml")).unwrap_or_default();
+    let config_text = match std::fs::read_to_string(home.join("config.toml")) {
+        Ok(value) => value,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.to_string()),
+    };
     if config_text_uses_model_provider(&config_text) {
         return Ok(false);
     }
@@ -305,7 +309,11 @@ pub(super) fn sync_resume_state_model_provider(
     thread_id: &str,
 ) -> Result<bool, String> {
     let home = codex_home_dir_for_override(codex_home)?;
-    let config_text = std::fs::read_to_string(home.join("config.toml")).unwrap_or_default();
+    let config_text = match std::fs::read_to_string(home.join("config.toml")) {
+        Ok(value) => value,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.to_string()),
+    };
     let active_provider =
         config_text_model_provider(&config_text).unwrap_or_else(|| "openai".to_string());
     let state_path = home.join("state_5.sqlite");
@@ -590,6 +598,43 @@ mod tests {
             .expect("read provider");
         assert!(changed);
         assert_eq!(provider, "openai");
+    }
+
+    #[test]
+    fn sync_resume_state_model_provider_keeps_thread_when_config_is_missing() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let codex_home = temp.path().join(".codex");
+        std::fs::create_dir_all(&codex_home).expect("create home");
+        let state = codex_home.join("state_5.sqlite");
+        let conn = rusqlite::Connection::open(&state).expect("open sqlite");
+        conn.execute(
+            "CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT NOT NULL)",
+            [],
+        )
+        .expect("create threads");
+        conn.execute(
+            "INSERT INTO threads (id, model_provider) VALUES (?1, ?2)",
+            ["thread-1", "api_router"],
+        )
+        .expect("insert thread");
+        drop(conn);
+
+        let changed = sync_resume_state_model_provider(
+            Some(codex_home.to_string_lossy().as_ref()),
+            "thread-1",
+        )
+        .expect("missing config should be a no-op");
+
+        let conn = rusqlite::Connection::open(&state).expect("open sqlite");
+        let provider: String = conn
+            .query_row(
+                "SELECT model_provider FROM threads WHERE id = ?1",
+                ["thread-1"],
+                |row| row.get(0),
+            )
+            .expect("read provider");
+        assert!(!changed);
+        assert_eq!(provider, "api_router");
     }
 
     #[test]

@@ -1,8 +1,7 @@
 use super::web_codex_home::{web_codex_rpc_home_override_for_target, WorkspaceTarget};
 use super::web_codex_rollout_import::{
     import_rollout_from_known_path, import_windows_rollout_into_codex_home,
-    import_wsl_rollout_into_codex_home, resume_import_order, sanitize_official_resume_rollout,
-    sync_resume_state_model_provider,
+    import_wsl_rollout_into_codex_home, resume_import_order, sync_resume_state_model_provider,
 };
 use super::web_codex_rollout_path::runtime_path_should_override_existing;
 use super::web_codex_session_runtime::{
@@ -661,8 +660,6 @@ impl CodexSessionManager {
                 rollout_path,
             )
             .map_err(|import_error| format!("import failed: {import_error}"))?;
-            sanitize_official_resume_rollout(self.home_override(), Some(rollout_path))
-                .map_err(|sanitize_error| format!("sanitize failed: {sanitize_error}"))?;
         }
         match resume_thread_once(self, &params).await {
             Ok(value) => Ok(value),
@@ -1535,8 +1532,13 @@ mod tests {
         let source_rollout_path = source_root
             .join("sessions")
             .join("rollout-thread-resume.jsonl");
-        std::fs::write(&source_rollout_path, "{\"thread_id\":\"thread-resume\"}\n")
-            .expect("write rollout source");
+        std::fs::write(
+            &source_rollout_path,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-resume\",\"model_provider\":\"api_router\",\"model\":\"gpt-5.4\"}}\n",
+        )
+        .expect("write rollout source");
+        std::fs::write(home.path.join("config.toml"), "model = \"gpt-5.4\"\n")
+            .expect("write official config");
         upsert_thread_item_hint(
             WorkspaceTarget::Windows,
             json!({
@@ -1615,6 +1617,16 @@ mod tests {
             .join("imported")
             .join("thread-resume.jsonl");
         assert!(imported_rollout.is_file(), "imported rollout should exist");
+        let source_after = std::fs::read_to_string(&source_rollout_path).expect("read source");
+        assert!(
+            source_after.contains("\"model_provider\":\"api_router\""),
+            "resume should not mutate the source rollout outside the web runtime home"
+        );
+        let imported_after = std::fs::read_to_string(&imported_rollout).expect("read imported");
+        assert!(
+            !imported_after.contains("\"model_provider\":\"api_router\""),
+            "imported official runtime copy should be sanitized"
+        );
 
         crate::codex_app_server::_set_test_request_handler(None).await;
         let _ = std::fs::remove_dir_all(source_root);

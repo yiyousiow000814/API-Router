@@ -2766,8 +2766,16 @@ fn detect_home_config_fingerprint(codex_home: Option<&str>) -> String {
     for name in ["config.toml", "auth.json"] {
         name.hash(&mut hasher);
         let path = home.join(name);
-        match std::fs::read(&path) {
-            Ok(bytes) => bytes.hash(&mut hasher),
+        match std::fs::metadata(&path) {
+            Ok(metadata) => {
+                metadata.len().hash(&mut hasher);
+                metadata
+                    .modified()
+                    .ok()
+                    .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|duration| duration.as_nanos())
+                    .hash(&mut hasher);
+            }
             Err(error) => {
                 "missing".hash(&mut hasher);
                 error.kind().hash(&mut hasher);
