@@ -33,6 +33,15 @@ fn toggle_sandbox_variant(value: &str) -> Option<String> {
     }
 }
 
+fn normalize_resume_sandbox_variant(value: &str) -> String {
+    match value.trim() {
+        "dangerFullAccess" => "danger-full-access".to_string(),
+        "readOnly" => "read-only".to_string(),
+        "workspaceWrite" => "workspace-write".to_string(),
+        value => value.to_string(),
+    }
+}
+
 fn toggle_sandbox_schema(params: &Value) -> Value {
     let mut next = params.clone();
     let Some(obj) = next.as_object_mut() else {
@@ -759,15 +768,21 @@ fn build_turn_start_recovery_resume_params(thread_id: &str, turn_params: &Value)
                 params.insert(key.to_string(), value.clone());
             }
         }
-        if let Some(value) = turn_params.get("sandbox") {
-            params.insert("sandbox".to_string(), value.clone());
+        if let Some(value) = turn_params.get("sandbox").and_then(Value::as_str) {
+            params.insert(
+                "sandbox".to_string(),
+                Value::String(normalize_resume_sandbox_variant(value)),
+            );
         } else if let Some(value) = turn_params
             .get("sandboxPolicy")
             .and_then(Value::as_object)
             .and_then(|policy| policy.get("type"))
-            .cloned()
+            .and_then(Value::as_str)
         {
-            params.insert("sandbox".to_string(), value);
+            params.insert(
+                "sandbox".to_string(),
+                Value::String(normalize_resume_sandbox_variant(value)),
+            );
         }
     }
     Value::Object(params)
@@ -1863,7 +1878,7 @@ mod tests {
                         );
                         assert_eq!(
                             params.get("sandbox").and_then(Value::as_str),
-                            Some("dangerFullAccess")
+                            Some("danger-full-access")
                         );
                         assert!(params.get("prompt").is_none());
                         Ok(json!({
@@ -1926,9 +1941,35 @@ mod tests {
                 "threadId": "thread-options",
                 "serviceTier": null,
                 "approvalPolicy": "never",
-                "sandbox": "dangerFullAccess"
+                "sandbox": "danger-full-access"
             })
         );
+    }
+
+    #[test]
+    fn turn_start_recovery_resume_params_normalize_all_sandbox_variants() {
+        for (input, expected) in [
+            ("dangerFullAccess", "danger-full-access"),
+            ("danger-full-access", "danger-full-access"),
+            ("workspaceWrite", "workspace-write"),
+            ("workspace-write", "workspace-write"),
+            ("readOnly", "read-only"),
+            ("read-only", "read-only"),
+        ] {
+            let params = build_turn_start_recovery_resume_params(
+                "thread-options",
+                &json!({
+                    "threadId": "thread-options",
+                    "sandboxPolicy": { "type": input }
+                }),
+            );
+
+            assert_eq!(
+                params.get("sandbox").and_then(Value::as_str),
+                Some(expected),
+                "sandbox variant {input} should normalize for thread/resume"
+            );
+        }
     }
 
     #[tokio::test]
