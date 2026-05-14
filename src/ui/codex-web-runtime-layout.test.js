@@ -285,6 +285,11 @@ describe("codex-web runtime layout", () => {
     expect(source).toMatch(/translateZ\(0\)\s+rotate\(360deg\)/i);
   });
 
+  it("keeps the thread list visible while the mobile drawer is opening", () => {
+    expect(source).not.toMatch(/body\.drawer-left-opening\s+#threadList/i);
+    expect(source).toMatch(/body\.drawer-left-previewing\s+#threadList\s*\{[\s\S]*?opacity:\s*0/i);
+  });
+
   it("uses an edge-to-edge phone layout instead of an inset floating card", () => {
     expect(source).toContain("@media (max-width: 720px) {");
     expect(source).toContain("--mobile-bottom-clearance: max(34px, calc(env(safe-area-inset-bottom, 0px) + 18px));");
