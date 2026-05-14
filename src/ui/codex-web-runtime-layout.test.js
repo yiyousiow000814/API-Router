@@ -274,6 +274,17 @@ describe("codex-web runtime layout", () => {
     expect(source).toMatch(/body\.floating-composer-layout \.chatOpeningOverlay\s*\{[\s\S]*?bottom:\s*calc\(var\(--composer-float-height, 148px\) \+ 20px \+ var\(--mobile-bottom-clearance,\s*env\(safe-area-inset-bottom, 0px\)\)\)/);
   });
 
+  it("keeps the chat opening spinner restartable on iOS WebKit", () => {
+    const spinnerMatch = source.match(/\.chatOpeningSpinner\s*\{([^}]+)\}/s);
+    expect(spinnerMatch).toBeTruthy();
+    const spinnerBlock = spinnerMatch?.[1] || "";
+    expect(spinnerBlock).toMatch(/-webkit-animation:\s*chat-opening-spin 0\.8s linear infinite/i);
+    expect(spinnerBlock).toMatch(/\banimation:\s*chat-opening-spin 0\.8s linear infinite/i);
+    expect(spinnerBlock).toMatch(/will-change:\s*transform/i);
+    expect(source).toMatch(/@-webkit-keyframes chat-opening-spin\s*\{/i);
+    expect(source).toMatch(/translateZ\(0\)\s+rotate\(360deg\)/i);
+  });
+
   it("uses an edge-to-edge phone layout instead of an inset floating card", () => {
     expect(source).toContain("@media (max-width: 720px) {");
     expect(source).toContain("--mobile-bottom-clearance: max(34px, calc(env(safe-area-inset-bottom, 0px) + 18px));");
