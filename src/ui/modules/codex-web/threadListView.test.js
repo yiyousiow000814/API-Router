@@ -402,6 +402,330 @@ describe("threadListView", () => {
     );
   });
 
+  it("subscribes live state before slow history finishes when opening a running chat", async () => {
+    const list = createFakeElement("div");
+    const body = createFakeElement("body");
+    const events = [];
+    let resolveHistory;
+    const historyPromise = new Promise((resolve) => {
+      resolveHistory = resolve;
+    });
+    const state = {
+      threadItems: [],
+      threadItemsAll: [],
+      threadSearchQuery: "",
+      threadListLoading: false,
+      threadListLoadingTarget: "",
+      workspaceAvailability: { windowsInstalled: true, wsl2Installed: true },
+      threadListPendingVisibleAnimationByWorkspace: {},
+      threadListAnimationHoldUntilByWorkspace: {},
+      threadListVisibleOpenAnimationUntil: 0,
+      threadListAnimateNextRender: false,
+      threadListAnimateThreadIds: new Set(),
+      threadListExpandAnimateGroupKeys: new Set(),
+      threadListCollapseAnimateGroupKeys: new Set(),
+      threadListChevronOpenAnimateKeys: new Set(),
+      threadListChevronCloseAnimateKeys: new Set(),
+      threadListSkipScrollRestoreOnce: false,
+      collapsedWorkspaceKeys: new Set(),
+      threadGroupCollapseInitializedByWorkspace: { windows: true, wsl2: true },
+      favoriteThreadIds: new Set(),
+      activeThreadHistoryThreadId: "",
+      activeThreadHistoryIncomplete: false,
+      activeThreadHistoryStatusType: "",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingTurnThreadId: "",
+      activeThreadWorkspace: "windows",
+      activeThreadRolloutPath: "",
+      openingThreadReqId: 0,
+      openingThreadAbort: null,
+      pendingThreadResumes: new Map(),
+      threadAttachTransportById: new Map(),
+      activeThreadId: "",
+      chatShouldStickToBottom: false,
+    };
+    const module = createThreadListViewModule({
+      state,
+      byId(id) {
+        return id === "threadList" ? list : null;
+      },
+      escapeHtml(value) {
+        return String(value || "");
+      },
+      normalizeWorkspaceTarget(value) {
+        return String(value || "").toLowerCase() === "wsl2" ? "wsl2" : "windows";
+      },
+      getWorkspaceTarget() {
+        return "windows";
+      },
+      hasDualWorkspaceTargets() {
+        return true;
+      },
+      pushThreadAnimDebug() {},
+      isThreadListActuallyVisible() {
+        return true;
+      },
+      workspaceKeyOfThread(thread) {
+        return thread.workspace;
+      },
+      truncateLabel(value) {
+        return String(value || "");
+      },
+      relativeTimeLabel() {
+        return "";
+      },
+      pickThreadTimestamp() {
+        return Date.now();
+      },
+      setMainTab() {},
+      setMobileTab() {},
+      setActiveThread(threadId) {
+        state.activeThreadId = threadId;
+      },
+      setChatOpening(open) {
+        events.push(open ? "chat-opening:on" : "chat-opening:off");
+      },
+      detectThreadWorkspaceTarget(thread) {
+        return thread.workspace;
+      },
+      loadThreadMessages: async (threadId) => {
+        events.push(`history:start:${threadId}`);
+        await historyPromise;
+        events.push(`history:finish:${threadId}`);
+        state.activeThreadHistoryThreadId = threadId;
+        state.activeThreadHistoryIncomplete = true;
+        state.activeThreadHistoryStatusType = "running";
+      },
+      api: async (path, options = {}) => {
+        events.push(`${options.method || "GET"}:${path}`);
+        return { ok: true };
+      },
+      connectWs() {
+        events.push("ws:connect");
+      },
+      syncEventSubscription() {
+        events.push("ws:sync");
+      },
+      registerPendingThreadResume(map, threadId, promise) {
+        map.set(threadId, promise);
+      },
+      onPendingTurnStateChange() {},
+      refreshWorkspaceRuntimeState: async (workspace) => {
+        events.push(`runtime:${workspace}`);
+      },
+      updateHeaderUi() {
+        events.push("header:update");
+      },
+      setStatus(message) {
+        events.push(`status:${message}`);
+      },
+      scheduleThreadRefresh() {
+        events.push("threads:refresh");
+      },
+      scrollToBottomReliable() {
+        events.push("chat:scroll-bottom");
+      },
+      windowRef: { getComputedStyle() { return { paddingTop: "0px", paddingBottom: "0px" }; } },
+      documentRef: {
+        body,
+        createElement(tagName) {
+          return createFakeElement(tagName);
+        },
+      },
+      requestAnimationFrameRef(callback) {
+        callback();
+        return 1;
+      },
+      performanceRef: { now() { return 0; } },
+      localStorageRef: { setItem() {} },
+      FAVORITE_THREADS_KEY: "favorites",
+    });
+
+    const thread = { id: "thread-running", workspace: "windows", title: "Active", status: { type: "running" } };
+    module.renderThreads([thread]);
+    const card = list.children[0]?.children[1]?.children[0];
+
+    card.onclick();
+    await flushAsyncWork();
+
+    expect(events).toEqual([
+      "chat-opening:on",
+      "ws:connect",
+      "ws:sync",
+      "chat-opening:off",
+      "history:start:thread-running",
+    ]);
+
+    resolveHistory();
+    await flushAsyncWork();
+  });
+
+  it("does not reuse the previous workspace before opening history resolves", async () => {
+    const list = createFakeElement("div");
+    const body = createFakeElement("body");
+    const events = [];
+    let resolveHistory;
+    const historyPromise = new Promise((resolve) => {
+      resolveHistory = resolve;
+    });
+    const state = {
+      threadItems: [],
+      threadItemsAll: [],
+      threadSearchQuery: "",
+      threadListLoading: false,
+      threadListLoadingTarget: "",
+      workspaceAvailability: { windowsInstalled: true, wsl2Installed: true },
+      threadListPendingVisibleAnimationByWorkspace: {},
+      threadListAnimationHoldUntilByWorkspace: {},
+      threadListVisibleOpenAnimationUntil: 0,
+      threadListAnimateNextRender: false,
+      threadListAnimateThreadIds: new Set(),
+      threadListExpandAnimateGroupKeys: new Set(),
+      threadListCollapseAnimateGroupKeys: new Set(),
+      threadListChevronOpenAnimateKeys: new Set(),
+      threadListChevronCloseAnimateKeys: new Set(),
+      threadListSkipScrollRestoreOnce: false,
+      collapsedWorkspaceKeys: new Set(),
+      threadGroupCollapseInitializedByWorkspace: { windows: true, wsl2: true },
+      favoriteThreadIds: new Set(),
+      activeThreadHistoryThreadId: "",
+      activeThreadHistoryIncomplete: false,
+      activeThreadHistoryStatusType: "",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingTurnThreadId: "",
+      activeThreadWorkspace: "windows",
+      activeThreadRolloutPath: "",
+      openingThreadReqId: 0,
+      openingThreadAbort: null,
+      pendingThreadResumes: new Map(),
+      threadAttachTransportById: new Map(),
+      activeThreadId: "previous-thread",
+      chatShouldStickToBottom: false,
+    };
+    const module = createThreadListViewModule({
+      state,
+      byId(id) {
+        return id === "threadList" ? list : null;
+      },
+      escapeHtml(value) {
+        return String(value || "");
+      },
+      normalizeWorkspaceTarget(value) {
+        return String(value || "").toLowerCase() === "wsl2" ? "wsl2" : "windows";
+      },
+      getWorkspaceTarget() {
+        return "windows";
+      },
+      hasDualWorkspaceTargets() {
+        return true;
+      },
+      pushThreadAnimDebug() {},
+      isThreadListActuallyVisible() {
+        return true;
+      },
+      workspaceKeyOfThread(thread) {
+        return thread.workspace || "unknown";
+      },
+      truncateLabel(value) {
+        return String(value || "");
+      },
+      relativeTimeLabel() {
+        return "";
+      },
+      pickThreadTimestamp() {
+        return Date.now();
+      },
+      setMainTab() {},
+      setMobileTab() {},
+      setActiveThread(threadId) {
+        state.activeThreadId = threadId;
+      },
+      setChatOpening(open) {
+        events.push(open ? "chat-opening:on" : "chat-opening:off");
+      },
+      detectThreadWorkspaceTarget() {
+        return "unknown";
+      },
+      loadThreadMessages: async (threadId) => {
+        events.push(`history:start:${threadId}`);
+        await historyPromise;
+        state.activeThreadWorkspace = "wsl2";
+        state.activeThreadHistoryThreadId = threadId;
+        state.activeThreadHistoryIncomplete = true;
+        state.activeThreadHistoryStatusType = "running";
+        events.push(`history:finish:${threadId}`);
+      },
+      api: async (path, options = {}) => {
+        events.push(`${options.method || "GET"}:${path}`);
+        return { turnId: "turn-1" };
+      },
+      connectWs() {
+        events.push("ws:connect");
+      },
+      syncEventSubscription() {
+        events.push("ws:sync");
+      },
+      registerPendingThreadResume(map, threadId, promise) {
+        map.set(threadId, promise);
+      },
+      onPendingTurnStateChange() {
+        events.push("pending:update");
+      },
+      refreshWorkspaceRuntimeState: async (workspace) => {
+        events.push(`runtime:${workspace}`);
+      },
+      updateHeaderUi() {
+        events.push("header:update");
+      },
+      setStatus(message) {
+        events.push(`status:${message}`);
+      },
+      scheduleThreadRefresh() {
+        events.push("threads:refresh");
+      },
+      scrollToBottomReliable() {
+        events.push("chat:scroll-bottom");
+      },
+      windowRef: { getComputedStyle() { return { paddingTop: "0px", paddingBottom: "0px" }; } },
+      documentRef: {
+        body,
+        createElement(tagName) {
+          return createFakeElement(tagName);
+        },
+      },
+      requestAnimationFrameRef(callback) {
+        callback();
+        return 1;
+      },
+      performanceRef: { now() { return 0; } },
+      localStorageRef: { setItem() {} },
+      FAVORITE_THREADS_KEY: "favorites",
+    });
+
+    const thread = { id: "thread-unknown", title: "Active", status: { type: "running" } };
+    module.renderThreads([thread]);
+    const card = list.children[0]?.children[1]?.children[0];
+
+    card.onclick();
+    await flushAsyncWork();
+
+    expect(events).toEqual([
+      "chat-opening:on",
+      "ws:connect",
+      "chat-opening:off",
+      "history:start:thread-unknown",
+    ]);
+
+    resolveHistory();
+    await flushAsyncWork();
+
+    expect(events).toContain("runtime:wsl2");
+    expect(events).toContain("POST:/codex/threads/thread-unknown/resume?workspace=wsl2");
+    expect(events).not.toContain("ws:sync");
+    expect(events).not.toContain("runtime:windows");
+    expect(events).not.toContain("POST:/codex/threads/thread-unknown/resume?workspace=windows");
+  });
+
   it("builds resume urls with workspace and rolloutPath", () => {
     expect(
       buildThreadResumeUrl("thread-1", {

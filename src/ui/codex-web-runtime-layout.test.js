@@ -271,6 +271,7 @@ describe("codex-web runtime layout", () => {
     expect(source).toMatch(/body\.floating-composer-layout \.chatPanel\s*\{[\s\S]*?height:\s*calc\(var\(--visual-viewport-height,\s*var\(--app-height,\s*100vh\)\)\s*-\s*16px\)/);
     expect(source).toMatch(/body\.floating-composer-layout \.composer\s*\{[\s\S]*?bottom:\s*var\(--mobile-bottom-clearance,\s*calc\(10px \+ env\(safe-area-inset-bottom, 0px\)\)\)/);
     expect(source).toMatch(/body\.floating-composer-layout \.messages\s*\{[\s\S]*?padding-bottom:\s*calc\(var\(--composer-float-height, 148px\) \+ 20px \+ var\(--mobile-bottom-clearance,\s*env\(safe-area-inset-bottom, 0px\)\)\)/);
+    expect(source).toMatch(/body\.floating-composer-layout \.chatOpeningOverlay\s*\{[\s\S]*?bottom:\s*calc\(var\(--composer-float-height, 148px\) \+ 20px \+ var\(--mobile-bottom-clearance,\s*env\(safe-area-inset-bottom, 0px\)\)\)/);
   });
 
   it("uses an edge-to-edge phone layout instead of an inset floating card", () => {
