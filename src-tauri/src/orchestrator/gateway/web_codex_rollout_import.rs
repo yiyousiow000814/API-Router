@@ -1,5 +1,6 @@
 use super::*;
 use crate::orchestrator::gateway::web_codex_rollout_path::rollout_path_is_already_in_codex_home;
+use rusqlite::{params, OptionalExtension};
 use std::path::{Path, PathBuf};
 
 pub(super) fn codex_home_dir_for_override(codex_home: Option<&str>) -> Result<PathBuf, String> {
@@ -245,6 +246,40 @@ pub(super) fn sanitize_official_resume_rollout(
     strip_gateway_session_provider_from_rollout_path(&path)
 }
 
+pub(super) fn sanitize_official_resume_state(
+    codex_home: Option<&str>,
+    thread_id: &str,
+) -> Result<bool, String> {
+    let home = codex_home_dir_for_override(codex_home)?;
+    let config_text = std::fs::read_to_string(home.join("config.toml")).unwrap_or_default();
+    if config_text_uses_model_provider(&config_text) {
+        return Ok(false);
+    }
+    let state_path = home.join("state_5.sqlite");
+    if !state_path.exists() || !state_path.is_file() {
+        return Ok(false);
+    }
+    let conn = rusqlite::Connection::open(&state_path).map_err(|e| e.to_string())?;
+    let provider: Option<String> = conn
+        .query_row(
+            "SELECT model_provider FROM threads WHERE id = ?1",
+            params![thread_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if provider.as_deref() != Some("api_router") {
+        return Ok(false);
+    }
+    let changed = conn
+        .execute(
+            "UPDATE threads SET model_provider = ?1 WHERE id = ?2 AND model_provider = ?3",
+            params!["openai", thread_id, "api_router"],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(changed > 0)
+}
+
 fn linux_wsl_path_to_windows_path(path: &str) -> Option<PathBuf> {
     if !cfg!(target_os = "windows") {
         return None;
@@ -327,7 +362,7 @@ mod tests {
     use super::codex_home_dir_for_override;
     use super::{
         import_rollout_file_into_codex_home, import_rollout_from_known_path, resume_import_order,
-        sanitize_official_resume_rollout, WorkspaceTarget,
+        sanitize_official_resume_rollout, sanitize_official_resume_state, WorkspaceTarget,
     };
     #[cfg(target_os = "windows")]
     use crate::orchestrator::gateway::web_codex_home::{lock_wsl_identity_cache, WslIdentityCache};
@@ -463,6 +498,83 @@ mod tests {
         assert!(!changed);
         let next = std::fs::read_to_string(&rollout).expect("read rollout");
         assert!(next.contains("\"model_provider\":\"api_router\""));
+    }
+
+    #[test]
+    fn sanitize_official_resume_state_rewrites_gateway_thread_provider() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let codex_home = temp.path().join(".codex");
+        std::fs::create_dir_all(&codex_home).expect("create home");
+        std::fs::write(codex_home.join("config.toml"), "model = \"gpt-5.4\"\n")
+            .expect("write config");
+        let state = codex_home.join("state_5.sqlite");
+        let conn = rusqlite::Connection::open(&state).expect("open sqlite");
+        conn.execute(
+            "CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT NOT NULL)",
+            [],
+        )
+        .expect("create threads");
+        conn.execute(
+            "INSERT INTO threads (id, model_provider) VALUES (?1, ?2)",
+            ["thread-1", "api_router"],
+        )
+        .expect("insert thread");
+        drop(conn);
+
+        let changed =
+            sanitize_official_resume_state(Some(codex_home.to_string_lossy().as_ref()), "thread-1")
+                .expect("sanitize");
+
+        let conn = rusqlite::Connection::open(&state).expect("open sqlite");
+        let provider: String = conn
+            .query_row(
+                "SELECT model_provider FROM threads WHERE id = ?1",
+                ["thread-1"],
+                |row| row.get(0),
+            )
+            .expect("read provider");
+        assert!(changed);
+        assert_eq!(provider, "openai");
+    }
+
+    #[test]
+    fn sanitize_official_resume_state_keeps_gateway_thread_provider() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let codex_home = temp.path().join(".codex");
+        std::fs::create_dir_all(&codex_home).expect("create home");
+        std::fs::write(
+            codex_home.join("config.toml"),
+            "model_provider = \"api_router\"\nmodel = \"gpt-5.4\"\n",
+        )
+        .expect("write config");
+        let state = codex_home.join("state_5.sqlite");
+        let conn = rusqlite::Connection::open(&state).expect("open sqlite");
+        conn.execute(
+            "CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT NOT NULL)",
+            [],
+        )
+        .expect("create threads");
+        conn.execute(
+            "INSERT INTO threads (id, model_provider) VALUES (?1, ?2)",
+            ["thread-1", "api_router"],
+        )
+        .expect("insert thread");
+        drop(conn);
+
+        let changed =
+            sanitize_official_resume_state(Some(codex_home.to_string_lossy().as_ref()), "thread-1")
+                .expect("sanitize");
+
+        let conn = rusqlite::Connection::open(&state).expect("open sqlite");
+        let provider: String = conn
+            .query_row(
+                "SELECT model_provider FROM threads WHERE id = ?1",
+                ["thread-1"],
+                |row| row.get(0),
+            )
+            .expect("read provider");
+        assert!(!changed);
+        assert_eq!(provider, "api_router");
     }
 
     #[test]
