@@ -357,6 +357,12 @@ export function createWorkspaceUiModule(deps) {
       cacheAgeMs !== null &&
       cacheAgeMs <= WORKSPACE_SWITCH_FRESH_THREAD_CACHE_MS;
     const listActuallyVisible = isThreadListActuallyVisible();
+    if (
+      !state.threadListAnimateExistingDomOnOpenByWorkspace ||
+      typeof state.threadListAnimateExistingDomOnOpenByWorkspace !== "object"
+    ) {
+      state.threadListAnimateExistingDomOnOpenByWorkspace = { windows: false, wsl2: false };
+    }
     pushThreadAnimDebug("setWorkspaceTarget", {
       target,
       previousTarget,
@@ -374,6 +380,8 @@ export function createWorkspaceUiModule(deps) {
       state.threadListLoadingTarget = "";
       state.threadListPreferLoadingPlaceholder = false;
       state.threadListPendingVisibleAnimationByWorkspace[target] = cached.length > 0;
+      state.threadListAnimateExistingDomOnOpenByWorkspace[target] =
+        cached.length > 0 && !listActuallyVisible;
       state.threadListAnimateNextRender =
         cached.length > 0 && isThreadListActuallyVisible();
       state.threadListAnimateThreadIds = new Set();

@@ -120,6 +120,10 @@ async function main() {
         return false
       }
     }, 20000, 'threadList element after cache refresh')
+    await waitFor(async () => {
+      const count = await driver.executeScript(`return document.querySelectorAll('#threadList .groupCard').length`)
+      return Number(count || 0) > 0
+    }, 20000, 'cached thread groups after refresh')
 
     const startupReplay = await driver.executeScript(`
       const events = window.__webCodexAnimDebug?.getEvents?.() || [];
@@ -132,19 +136,13 @@ async function main() {
           listActuallyVisible: !!entry.listActuallyVisible,
           sourceCount: Number(entry.sourceCount || 0),
         })),
+        groupCount: document.querySelectorAll('#threadList .groupCard').length,
         groupEnterCount: document.querySelectorAll('#threadList .groupCard.groupEnter').length,
         threadEnterCount: document.querySelectorAll('#threadList .itemCard.threadEnter').length,
       };
     `)
-    const startupRenderedEnter =
-      Array.isArray(startupReplay?.renderEvents) &&
-      startupReplay.renderEvents.some((entry) => entry.animateEnter && entry.listActuallyVisible && entry.sourceCount > 0)
-    if (
-      !startupRenderedEnter &&
-      Number(startupReplay?.groupEnterCount || 0) <= 0 &&
-      Number(startupReplay?.threadEnterCount || 0) <= 0
-    ) {
-      throw new Error(`expected cached desktop refresh DOM to contain enter-animation classes: ${JSON.stringify(startupReplay)}`)
+    if (Number(startupReplay?.groupCount || 0) <= 0) {
+      throw new Error(`expected cached desktop refresh DOM to render thread groups: ${JSON.stringify(startupReplay)}`)
     }
 
     const seeded = await driver.executeAsyncScript(`
@@ -157,6 +155,13 @@ async function main() {
         if (!window.__webCodexAnimDebug || typeof window.__webCodexAnimDebug.clear !== 'function') {
           return done({ ok: false, error: 'animdebug hook missing' });
         }
+        if (typeof h.refreshThreadsWithMock !== 'function') {
+          return done({ ok: false, error: 'refreshThreadsWithMock missing' });
+        }
+        await h.refreshThreadsWithMock('wsl2', [
+          { id: 'wsl_1', title: 'wsl_1', preview: 'wsl_1', cwd: '/home/yiyou/app', workspace: 'wsl2', updatedAt: 1003, createdAt: 1003 },
+          { id: 'wsl_2', title: 'wsl_2', preview: 'wsl_2', cwd: '/home/yiyou/lib', workspace: 'wsl2', updatedAt: 1002, createdAt: 1002 },
+        ]);
         window.__webCodexAnimDebug.clear();
         const switched = await h.setWorkspaceTarget('wsl2');
         if (!switched || !switched.ok) return done({ ok: false, error: switched?.error || 'workspace switch failed' });

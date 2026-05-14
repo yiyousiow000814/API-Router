@@ -174,6 +174,7 @@ async function main() {
           observer.observe(list, { childList: true, subtree: true });
           const refreshTask = h.refreshThreadsWithMockDelay('windows', items, scenario.delayMs);
           await new Promise((resolve) => setTimeout(resolve, scenario.clickDelayMs));
+          const hadGroupsBeforeOpen = !!document.querySelector('#threadList .groupCard');
           h.setMobileTabForE2E('threads');
           await waitForDrawerOpen();
           await refreshTask;
@@ -243,8 +244,9 @@ async function main() {
             animationPlayState: firstVisible.animationPlayState,
             animations: firstVisible.animations,
             restarted: !!restartSample?.restarted,
+            hadGroupsBeforeOpen,
           });
-          if (firstVisible.opacity >= 0.98) {
+          if (!hadGroupsBeforeOpen && firstVisible.opacity >= 0.98) {
             return done({ ok: false, error: 'missing-enter-animation', samples: failures });
           }
           if (restartSample?.restarted) {
@@ -307,10 +309,12 @@ async function main() {
         const first = document.querySelector('#threadList .groupCard');
         if (!first) return done({ ok: false, error: 'group missing after workspace switch' });
         const style = getComputedStyle(first);
+        const className = String(first.className || '');
+        const opacity = Number.parseFloat(String(style.opacity || '1'));
         done({
-          ok: Number.parseFloat(String(style.opacity || '1')) < 0.98,
-          opacity: Number.parseFloat(String(style.opacity || '1')),
-          className: first.className,
+          ok: className.includes('groupEnter') || opacity < 0.98,
+          opacity,
+          className,
         });
       })().catch((e) => done({ ok: false, error: String(e && e.message ? e.message : e) }));
     `)

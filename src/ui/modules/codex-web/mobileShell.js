@@ -235,6 +235,27 @@ export function createMobileShellModule(deps) {
         });
         return true;
       };
+      const animateExistingDomOnOpen =
+        !!state.threadListAnimateExistingDomOnOpenByWorkspace?.[currentWorkspaceKey];
+      const existingList = byId("threadList");
+      if (
+        hasThreadItems &&
+        animateExistingDomOnOpen &&
+        existingList?.querySelector?.(".groupCard, .itemCard") &&
+        animateExistingThreadListDom(existingList)
+      ) {
+        pushThreadAnimDebug("setMobileTab:animateExistingDomOnOpen", { currentWorkspaceKey, hasThreadItems: true });
+        state.threadListPendingSidebarOpenAnimation = false;
+        state.threadListPendingVisibleAnimationByWorkspace[currentWorkspaceKey] = false;
+        if (state.threadListAnimateExistingDomOnOpenByWorkspace) {
+          state.threadListAnimateExistingDomOnOpenByWorkspace[currentWorkspaceKey] = false;
+        }
+        state.threadListAnimateNextRender = false;
+        state.threadListAnimateThreadIds = new Set();
+        state.threadListExpandAnimateGroupKeys = new Set();
+        state.threadListSkipScrollRestoreOnce = true;
+        return;
+      }
       const scheduleVisibleThreadListAnimation = () => {
         if (state.threadListVisibleAnimationTimer) {
           clearTimeoutRef(state.threadListVisibleAnimationTimer);
@@ -251,10 +272,13 @@ export function createMobileShellModule(deps) {
             state.threadListPendingVisibleAnimationByWorkspace[currentWorkspaceKey] = false;
             return;
           }
-          if (list?.querySelector?.(".groupCard, .itemCard") && animateExistingThreadListDom(list)) {
-            pushThreadAnimDebug("setMobileTab:animateExistingDom", { currentWorkspaceKey, hasThreadItems: true });
+          if (list?.querySelector?.(".groupCard, .itemCard")) {
+            pushThreadAnimDebug("setMobileTab:keepExistingDom", { currentWorkspaceKey, hasThreadItems: true });
             state.threadListPendingSidebarOpenAnimation = false;
             state.threadListPendingVisibleAnimationByWorkspace[currentWorkspaceKey] = false;
+            if (state.threadListAnimateExistingDomOnOpenByWorkspace) {
+              state.threadListAnimateExistingDomOnOpenByWorkspace[currentWorkspaceKey] = false;
+            }
             state.threadListAnimateNextRender = false;
             state.threadListAnimateThreadIds = new Set();
             state.threadListExpandAnimateGroupKeys = new Set();

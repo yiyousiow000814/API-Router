@@ -93,6 +93,7 @@ export function createInitialState() {
     threadListExpandAnimateGroupKeys: new Set(),
     threadListPendingSidebarOpenAnimation: false,
     threadListPendingVisibleAnimationByWorkspace: { windows: false, wsl2: false },
+    threadListAnimateExistingDomOnOpenByWorkspace: { windows: false, wsl2: false },
     threadListVisibleOpenAnimationUntil: 0,
     threadListVisibleAnimationTimer: 0,
     threadListAnimationHoldUntilByWorkspace: { windows: 0, wsl2: 0 },
