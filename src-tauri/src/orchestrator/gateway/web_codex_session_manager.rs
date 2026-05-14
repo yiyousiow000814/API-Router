@@ -1,7 +1,7 @@
 use super::web_codex_home::{web_codex_rpc_home_override_for_target, WorkspaceTarget};
 use super::web_codex_rollout_import::{
     import_rollout_from_known_path, import_windows_rollout_into_codex_home,
-    import_wsl_rollout_into_codex_home, resume_import_order,
+    import_wsl_rollout_into_codex_home, resume_import_order, sync_resume_state_model_provider,
 };
 use super::web_codex_rollout_path::runtime_path_should_override_existing;
 use super::web_codex_session_runtime::{
@@ -30,6 +30,15 @@ fn toggle_sandbox_variant(value: &str) -> Option<String> {
         "workspaceWrite" => Some("workspace-write".to_string()),
         "workspace-write" => Some("workspaceWrite".to_string()),
         _ => None,
+    }
+}
+
+fn normalize_resume_sandbox_variant(value: &str) -> String {
+    match value.trim() {
+        "dangerFullAccess" => "danger-full-access".to_string(),
+        "readOnly" => "read-only".to_string(),
+        "workspaceWrite" => "workspace-write".to_string(),
+        value => value.to_string(),
     }
 }
 
@@ -362,6 +371,8 @@ impl CodexSessionManager {
         thread_id: &str,
         params: Value,
     ) -> Result<TurnStartOutcome, String> {
+        sync_resume_state_model_provider(self.home_override(), thread_id)
+            .map_err(|sanitize_error| format!("sanitize failed: {sanitize_error}"))?;
         let result = match turn_start_once(self, &params).await {
             Ok(value) => value,
             Err(first_error) => {
@@ -379,7 +390,7 @@ impl CodexSessionManager {
                     None => None,
                 };
                 if let Some(rollout_path) = known_rollout_path.as_deref() {
-                    let imported = import_rollout_from_known_path(
+                    import_rollout_from_known_path(
                         self.home_override(),
                         thread_id,
                         self.workspace_target,
@@ -388,34 +399,13 @@ impl CodexSessionManager {
                     .map_err(|import_error| {
                         format!("{first_error}; import failed: {import_error}")
                     })?;
-                    if imported {
-                        match turn_start_once(self, &params).await {
-                            Ok(value) => value,
-                            Err(retry_error) => {
-                                return Err(format!("{first_error}; retry failed: {retry_error}"));
-                            }
-                        }
-                    } else {
-                        match turn_start_retry_in_alternate_home(
-                            thread_id,
-                            &params,
-                            &first_error,
-                            self.workspace_target,
-                        )
-                        .await
-                        {
-                            Ok(value) => value,
-                            Err(error) => return Err(error),
-                        }
+                    match resume_then_retry_turn_start(self, thread_id, &params, &first_error).await
+                    {
+                        Ok(value) => value,
+                        Err(error) => return Err(error),
                     }
                 } else {
-                    match turn_start_retry_in_alternate_home(
-                        thread_id,
-                        &params,
-                        &first_error,
-                        self.workspace_target,
-                    )
-                    .await
+                    match resume_then_retry_turn_start(self, thread_id, &params, &first_error).await
                     {
                         Ok(value) => value,
                         Err(error) => return Err(error),
@@ -648,6 +638,8 @@ impl CodexSessionManager {
         params: Value,
         known_rollout_path: Option<&str>,
     ) -> Result<Value, String> {
+        sync_resume_state_model_provider(self.home_override(), thread_id)
+            .map_err(|sanitize_error| format!("sanitize failed: {sanitize_error}"))?;
         if let Some(rollout_path) = known_rollout_path {
             import_rollout_from_known_path(
                 self.home_override(),
@@ -741,6 +733,59 @@ async fn resume_thread_once(
     let value = manager.request("thread/resume", params.clone()).await?;
     record_runtime_thread_state(manager.workspace_target, manager.home_override(), &value);
     Ok(value)
+}
+
+async fn resume_then_retry_turn_start(
+    manager: &CodexSessionManager,
+    thread_id: &str,
+    params: &Value,
+    first_error: &str,
+) -> Result<Value, String> {
+    let resume_params = build_turn_start_recovery_resume_params(thread_id, params);
+    match resume_thread_once(manager, &resume_params).await {
+        Ok(_) => turn_start_once(manager, params)
+            .await
+            .map_err(|retry_error| format!("{first_error}; retry failed: {retry_error}")),
+        Err(resume_error) => turn_start_retry_in_alternate_home(
+            thread_id,
+            params,
+            first_error,
+            manager.workspace_target,
+        )
+        .await
+        .map_err(|error| format!("{error}; resume failed: {resume_error}")),
+    }
+}
+
+fn build_turn_start_recovery_resume_params(thread_id: &str, turn_params: &Value) -> Value {
+    let mut params = serde_json::Map::from_iter([(
+        "threadId".to_string(),
+        Value::String(thread_id.to_string()),
+    )]);
+    if let Some(turn_params) = turn_params.as_object() {
+        for key in ["serviceTier", "approvalPolicy"] {
+            if let Some(value) = turn_params.get(key) {
+                params.insert(key.to_string(), value.clone());
+            }
+        }
+        if let Some(value) = turn_params.get("sandbox").and_then(Value::as_str) {
+            params.insert(
+                "sandbox".to_string(),
+                Value::String(normalize_resume_sandbox_variant(value)),
+            );
+        } else if let Some(value) = turn_params
+            .get("sandboxPolicy")
+            .and_then(Value::as_object)
+            .and_then(|policy| policy.get("type"))
+            .and_then(Value::as_str)
+        {
+            params.insert(
+                "sandbox".to_string(),
+                Value::String(normalize_resume_sandbox_variant(value)),
+            );
+        }
+    }
+    Value::Object(params)
 }
 
 async fn turn_start_once(manager: &CodexSessionManager, params: &Value) -> Result<Value, String> {
@@ -1399,7 +1444,7 @@ mod tests {
     use serde_json::json;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc,
+        Arc, Mutex,
     };
 
     struct TestWebCodexHomeGuard {
@@ -1528,8 +1573,13 @@ mod tests {
         let source_rollout_path = source_root
             .join("sessions")
             .join("rollout-thread-resume.jsonl");
-        std::fs::write(&source_rollout_path, "{\"thread_id\":\"thread-resume\"}\n")
-            .expect("write rollout source");
+        std::fs::write(
+            &source_rollout_path,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-resume\",\"model_provider\":\"api_router\",\"model\":\"gpt-5.4\"}}\n",
+        )
+        .expect("write rollout source");
+        std::fs::write(home.path.join("config.toml"), "model = \"gpt-5.4\"\n")
+            .expect("write official config");
         upsert_thread_item_hint(
             WorkspaceTarget::Windows,
             json!({
@@ -1608,6 +1658,16 @@ mod tests {
             .join("imported")
             .join("thread-resume.jsonl");
         assert!(imported_rollout.is_file(), "imported rollout should exist");
+        let source_after = std::fs::read_to_string(&source_rollout_path).expect("read source");
+        assert!(
+            source_after.contains("\"model_provider\":\"api_router\""),
+            "resume should not mutate the source rollout outside the web runtime home"
+        );
+        let imported_after = std::fs::read_to_string(&imported_rollout).expect("read imported");
+        assert!(
+            !imported_after.contains("\"model_provider\":\"api_router\""),
+            "imported official runtime copy should be sanitized"
+        );
 
         crate::codex_app_server::_set_test_request_handler(None).await;
         let _ = std::fs::remove_dir_all(source_root);
@@ -1675,8 +1735,8 @@ mod tests {
             .join("rollout-thread-missing.jsonl");
         std::fs::write(&source_rollout_path, "{\"thread_id\":\"thread-missing\"}\n")
             .expect("write rollout source");
-        let request_count = Arc::new(AtomicUsize::new(0));
-        let request_count_ref = request_count.clone();
+        let methods = Arc::new(Mutex::new(Vec::new()));
+        let methods_ref = methods.clone();
         crate::orchestrator::gateway::web_codex_session_runtime::upsert_workspace_thread_runtime(
             Some(WorkspaceTarget::Windows),
             web_codex_rpc_home_override_for_target(Some(WorkspaceTarget::Windows)).as_deref(),
@@ -1692,16 +1752,36 @@ mod tests {
         );
         crate::codex_app_server::_set_test_request_handler(Some(Arc::new(
             move |_home, method, params| {
-                assert_eq!(method, "turn/start");
                 assert_eq!(
                     params.get("threadId").and_then(Value::as_str),
                     Some("thread-missing")
                 );
-                let call = request_count_ref.fetch_add(1, Ordering::SeqCst);
-                if call == 0 {
-                    Err("thread not found: thread-missing".to_string())
-                } else {
-                    Ok(json!({ "turnId": "turn-retried" }))
+                methods_ref
+                    .lock()
+                    .expect("methods lock")
+                    .push(method.to_string());
+                match method {
+                    "turn/start" => {
+                        let turn_starts = methods_ref
+                            .lock()
+                            .expect("methods lock")
+                            .iter()
+                            .filter(|method| method.as_str() == "turn/start")
+                            .count();
+                        if turn_starts == 1 {
+                            Err("thread not found: thread-missing".to_string())
+                        } else {
+                            Ok(json!({ "turnId": "turn-retried" }))
+                        }
+                    }
+                    "thread/resume" => Ok(json!({
+                        "thread": {
+                            "id": "thread-missing",
+                            "path": source_rollout_path.to_string_lossy(),
+                            "status": { "type": "idle" }
+                        }
+                    })),
+                    other => Err(format!("{other} should not be called")),
                 }
             },
         )))
@@ -1720,7 +1800,10 @@ mod tests {
             outcome.result.get("turnId").and_then(Value::as_str),
             Some("turn-retried")
         );
-        assert_eq!(request_count.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            methods.lock().expect("methods lock").as_slice(),
+            ["turn/start", "thread/resume", "turn/start"]
+        );
         let imported_rollout = home
             .path
             .join("sessions")
@@ -1730,6 +1813,163 @@ mod tests {
 
         crate::codex_app_server::_set_test_request_handler(None).await;
         let _ = std::fs::remove_dir_all(source_root);
+    }
+
+    #[tokio::test]
+    async fn turn_start_resumes_known_thread_before_retrying_missing_thread() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        let home = isolate_windows_web_codex_home();
+        _clear_workspace_runtime_registry_for_test();
+        clear_threads_workspace_index_for_test();
+        let rollout_path = home
+            .path
+            .join("sessions")
+            .join("2026")
+            .join("05")
+            .join("07")
+            .join("rollout-thread-notloaded.jsonl");
+        std::fs::create_dir_all(rollout_path.parent().expect("rollout parent"))
+            .expect("runtime rollout dir");
+        std::fs::write(&rollout_path, "{\"thread_id\":\"thread-notloaded\"}\n")
+            .expect("write runtime rollout");
+        crate::orchestrator::gateway::web_codex_session_runtime::upsert_workspace_thread_runtime(
+            Some(WorkspaceTarget::Windows),
+            web_codex_rpc_home_override_for_target(Some(WorkspaceTarget::Windows)).as_deref(),
+            crate::orchestrator::gateway::web_codex_session_runtime::WorkspaceThreadRuntimeUpdate {
+                thread_id: "thread-notloaded",
+                cwd: Some("C:\\repo"),
+                rollout_path: rollout_path.to_str(),
+                status: Some("notLoaded"),
+                last_event_id: None,
+                last_turn_id: None,
+                clear_last_turn_id: false,
+            },
+        );
+        let methods = Arc::new(Mutex::new(Vec::new()));
+        let methods_ref = methods.clone();
+        crate::codex_app_server::_set_test_request_handler(Some(Arc::new(
+            move |_home, method, params| {
+                assert_eq!(
+                    params.get("threadId").and_then(Value::as_str),
+                    Some("thread-notloaded")
+                );
+                methods_ref
+                    .lock()
+                    .expect("methods lock")
+                    .push(method.to_string());
+                match method {
+                    "turn/start" => {
+                        let turn_starts = methods_ref
+                            .lock()
+                            .expect("methods lock")
+                            .iter()
+                            .filter(|method| method.as_str() == "turn/start")
+                            .count();
+                        if turn_starts == 1 {
+                            Err("thread not found: thread-notloaded".to_string())
+                        } else {
+                            Ok(json!({ "turnId": "turn-after-resume" }))
+                        }
+                    }
+                    "thread/resume" => {
+                        assert_eq!(
+                            params.get("approvalPolicy").and_then(Value::as_str),
+                            Some("never")
+                        );
+                        assert_eq!(
+                            params.get("sandbox").and_then(Value::as_str),
+                            Some("danger-full-access")
+                        );
+                        assert!(params.get("prompt").is_none());
+                        Ok(json!({
+                            "thread": {
+                                "id": "thread-notloaded",
+                                "path": rollout_path.to_string_lossy(),
+                                "status": { "type": "idle" }
+                            }
+                        }))
+                    }
+                    other => Err(format!("{other} should not be called")),
+                }
+            },
+        )))
+        .await;
+
+        let manager = CodexSessionManager::new(parse_workspace_target("windows"));
+        let outcome = manager
+            .turn_start(
+                "thread-notloaded",
+                json!({
+                    "threadId": "thread-notloaded",
+                    "workspace": "windows",
+                    "approvalPolicy": "never",
+                    "sandboxPolicy": { "type": "dangerFullAccess" },
+                    "prompt": "hi"
+                }),
+            )
+            .await
+            .expect("turn/start should resume a not-loaded thread before retrying");
+
+        assert_eq!(
+            outcome.result.get("turnId").and_then(Value::as_str),
+            Some("turn-after-resume")
+        );
+        assert_eq!(
+            methods.lock().expect("methods lock").as_slice(),
+            ["turn/start", "thread/resume", "turn/start"]
+        );
+
+        crate::codex_app_server::_set_test_request_handler(None).await;
+    }
+
+    #[test]
+    fn turn_start_recovery_resume_params_preserve_resume_options() {
+        let params = build_turn_start_recovery_resume_params(
+            "thread-options",
+            &json!({
+                "threadId": "thread-options",
+                "serviceTier": null,
+                "approvalPolicy": "never",
+                "sandboxPolicy": { "type": "dangerFullAccess" },
+                "prompt": "hi"
+            }),
+        );
+
+        assert_eq!(
+            params,
+            json!({
+                "threadId": "thread-options",
+                "serviceTier": null,
+                "approvalPolicy": "never",
+                "sandbox": "danger-full-access"
+            })
+        );
+    }
+
+    #[test]
+    fn turn_start_recovery_resume_params_normalize_all_sandbox_variants() {
+        for (input, expected) in [
+            ("dangerFullAccess", "danger-full-access"),
+            ("danger-full-access", "danger-full-access"),
+            ("workspaceWrite", "workspace-write"),
+            ("workspace-write", "workspace-write"),
+            ("readOnly", "read-only"),
+            ("read-only", "read-only"),
+        ] {
+            let params = build_turn_start_recovery_resume_params(
+                "thread-options",
+                &json!({
+                    "threadId": "thread-options",
+                    "sandboxPolicy": { "type": input }
+                }),
+            );
+
+            assert_eq!(
+                params.get("sandbox").and_then(Value::as_str),
+                Some(expected),
+                "sandbox variant {input} should normalize for thread/resume"
+            );
+        }
     }
 
     #[tokio::test]

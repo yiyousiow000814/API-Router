@@ -119,6 +119,7 @@ export function shouldResumeThreadAfterOpen(openState = {}) {
 }
 
 export function shouldResumeThreadBeforeSend(openState = {}) {
+  if (normalizeThreadStatusType(openState?.threadStatusType) === "notloaded") return true;
   if (openState && typeof openState === "object" && openState.resumeRequired === true) return true;
   return !(openState && typeof openState === "object" && openState.loaded === true);
 }

@@ -2361,6 +2361,30 @@ async fn model_list_runtime_changed(
     true
 }
 
+async fn home_config_changed(
+    codex_home: Option<&str>,
+    server: &std::sync::Arc<Mutex<AppServer>>,
+) -> bool {
+    let previous = {
+        let srv = server.lock().await;
+        srv.home_config_fingerprint.clone()
+    };
+    let current = detect_home_config_fingerprint(codex_home);
+    if current == previous {
+        return false;
+    }
+    push_debug_event(
+        "app.server.home_config.changed",
+        serde_json::json!({
+            "home": normalize_home_key(codex_home).as_ref(),
+            "previous": previous,
+            "current": current,
+        }),
+    )
+    .await;
+    true
+}
+
 fn should_recheck_runtime_fingerprint(last_checked_at: Instant) -> bool {
     last_checked_at.elapsed() >= APP_SERVER_RUNTIME_RECHECK_AFTER
 }
@@ -2725,17 +2749,53 @@ struct AppServer {
     next_id: i64,
     runtime_fingerprint: String,
     runtime_fingerprint_checked_at: Instant,
+    home_config_fingerprint: String,
+}
+
+fn detect_home_config_fingerprint(codex_home: Option<&str>) -> String {
+    let Some(home) = codex_home
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(resolve_default_codex_home)
+    else {
+        return String::new();
+    };
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for name in ["config.toml", "auth.json"] {
+        name.hash(&mut hasher);
+        let path = home.join(name);
+        match std::fs::metadata(&path) {
+            Ok(metadata) => {
+                metadata.len().hash(&mut hasher);
+                metadata
+                    .modified()
+                    .ok()
+                    .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|duration| duration.as_nanos())
+                    .hash(&mut hasher);
+            }
+            Err(error) => {
+                "missing".hash(&mut hasher);
+                error.kind().hash(&mut hasher);
+            }
+        }
+    }
+    format!("{:016x}", hasher.finish())
 }
 
 impl AppServer {
     async fn spawn(codex_home: Option<&str>) -> Result<Self, String> {
         let home = normalize_home_key(codex_home).to_string();
         let runtime_fingerprint = detect_app_server_runtime_fingerprint(codex_home).await;
+        let home_config_fingerprint = detect_home_config_fingerprint(codex_home);
         push_debug_event(
             "app.server.spawn.start",
             serde_json::json!({
                 "home": home,
                 "runtimeFingerprint": runtime_fingerprint.as_str(),
+                "homeConfigFingerprint": home_config_fingerprint.as_str(),
             }),
         )
         .await;
@@ -2788,6 +2848,7 @@ impl AppServer {
             next_id: 1,
             runtime_fingerprint,
             runtime_fingerprint_checked_at: Instant::now(),
+            home_config_fingerprint,
         };
         let _ = server
             .request(
@@ -2894,6 +2955,25 @@ mod tests {
         assert!(should_recheck_runtime_fingerprint(
             Instant::now() - APP_SERVER_RUNTIME_RECHECK_AFTER - Duration::from_secs(1)
         ));
+    }
+
+    #[test]
+    fn home_config_fingerprint_changes_when_codex_config_changes() {
+        let _guard = lock_tests();
+        let _home = isolate_default_codex_home();
+        let codex_home = std::env::var("CODEX_HOME").expect("isolated codex home");
+        let config_path = PathBuf::from(&codex_home).join("config.toml");
+        std::fs::write(&config_path, "model = \"gpt-5.4\"\n").expect("write config");
+
+        let before = detect_home_config_fingerprint(Some(codex_home.as_str()));
+        std::fs::write(
+            &config_path,
+            "model_provider = \"api_router\"\nmodel = \"gpt-5.4\"\n",
+        )
+        .expect("write changed config");
+        let after = detect_home_config_fingerprint(Some(codex_home.as_str()));
+
+        assert_ne!(before, after);
     }
 
     #[test]
@@ -4658,6 +4738,23 @@ pub async fn request_in_home(
                 srv.is_dead().unwrap_or(true)
             };
             if !dead {
+                if home_config_changed(codex_home, &server).await {
+                    let removed = {
+                        let mut guard = lock.lock().await;
+                        if guard
+                            .get(&key)
+                            .is_some_and(|current| std::sync::Arc::ptr_eq(current, &server))
+                        {
+                            guard.remove(&key)
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(removed) = removed {
+                        let _ = stop_app_server(codex_home, &removed, "home-config-changed").await;
+                    }
+                    continue;
+                }
                 if method == "model/list" && model_list_runtime_changed(codex_home, &server).await {
                     let removed = {
                         let mut guard = lock.lock().await;

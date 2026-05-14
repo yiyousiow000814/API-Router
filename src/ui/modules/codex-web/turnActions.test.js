@@ -2641,6 +2641,88 @@ describe("turnActions", () => {
     expect(state.activeThreadOpenState?.loaded).toBe(true);
   });
 
+  it("resumes stale loaded threads after runtime restart before starting a turn", async () => {
+    const calls = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadWorkspace: "windows",
+      activeThreadRolloutPath: "C:\\repo\\.codex\\sessions\\rollout.jsonl",
+      activeThreadOpenState: {
+        threadId: "thread-1",
+        threadStatusType: "notLoaded",
+        resumeRequired: false,
+        resumeReason: "loaded",
+        loaded: true,
+      },
+      activeThreadStarted: true,
+      activeThreadMessages: [],
+      pendingThreadResumes: new Map(),
+      chatShouldStickToBottom: false,
+      selectedModel: "",
+      selectedReasoningEffort: "",
+      ws: null,
+    };
+    const module = createTurnActionsModule({
+      state,
+      byId: () => ({ value: "" }),
+      api: async (path, options = {}) => {
+        calls.push({ path, method: options.method || "GET", body: options.body || null });
+        if (String(path).startsWith("/codex/threads/thread-1/resume")) {
+          return { threadId: "thread-1" };
+        }
+        if (path === "/codex/turns/start") {
+          return { threadId: "thread-1" };
+        }
+        throw new Error(`unexpected api call: ${path}`);
+      },
+      wsSend: () => false,
+      wsCall: async () => ({}),
+      nextReqId: () => "req-1",
+      connectWs: () => {},
+      syncEventSubscription: () => {},
+      getPromptValue: () => "hello",
+      getWorkspaceTarget: () => "windows",
+      getStartCwdForWorkspace: () => "",
+      waitPendingThreadResume: async () => {},
+      registerPendingThreadResume: () => {},
+      updateHeaderUi: () => {},
+      addChat: () => {},
+      clearChatMessages: () => {},
+      hideWelcomeCard: () => {},
+      showWelcomeCard: () => {},
+      clearPromptValue: () => {},
+      renderComposerContextLeft: () => {},
+      scrollToBottomReliable: () => {},
+      scheduleChatLiveFollow: () => {},
+      createAssistantStreamingMessage: () => ({ msg: null, body: null }),
+      appendStreamingDelta: () => {},
+      finalizeAssistantMessage: () => {},
+      normalizeTextPayload: (value) => value,
+      maybeNotifyTurnDone: () => {},
+      renderAttachmentPills: () => {},
+      refreshThreads: async () => {},
+      refreshHosts: async () => {},
+      refreshPending: async () => {},
+      setStatus: () => {},
+      setActiveThread: (id) => {
+        state.activeThreadId = id;
+      },
+      setMainTab: () => {},
+      setMobileTab: () => {},
+      setChatOpening: () => {},
+      blockInSandbox: () => false,
+    });
+
+    await module.sendTurn();
+
+    expect(calls.map((call) => call.path)).toEqual([
+      "/codex/threads/thread-1/resume?workspace=windows&rolloutPath=C%3A%5Crepo%5C.codex%5Csessions%5Crollout.jsonl",
+      "/codex/turns/start",
+    ]);
+    expect(state.activeThreadOpenState?.loaded).toBe(true);
+    expect(state.activeThreadOpenState?.threadStatusType).toBe("");
+  });
+
   it("resumes history-open threads before starting a turn even when they were only attached, not loaded", async () => {
     const calls = [];
     const state = {
