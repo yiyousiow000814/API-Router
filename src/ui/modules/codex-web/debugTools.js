@@ -1129,8 +1129,9 @@ export function createDebugToolsModule(deps) {
     const recordAnimationEvent = (eventType) => (event) => {
       const target = event?.target;
       if (!(target instanceof HTMLElement)) return;
-      if (!target.classList.contains("groupCard")) return;
+      if (target.id !== "threadList" && !target.classList.contains("groupCard")) return;
       pushThreadAnimDebug(`animation:${eventType}`, {
+        targetId: target.id || "",
         groupKey: target.getAttribute("data-group-key") || "",
         className: target.className,
         animationName: String(event?.animationName || ""),

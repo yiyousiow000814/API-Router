@@ -468,7 +468,47 @@ describe("mobileShell", () => {
         },
       },
     };
+    const group2 = {
+      style: {
+        props: {},
+        setProperty(name, value) {
+          this.props[name] = value;
+        },
+      },
+      classList: {
+        classes: new Set(["groupCard"]),
+        add(...names) {
+          for (const name of names) this.classes.add(name);
+        },
+        contains(name) {
+          return this.classes.has(name);
+        },
+      },
+    };
     const header = {
+      style: {
+        props: {},
+        setProperty(name, value) {
+          this.props[name] = value;
+        },
+      },
+      classList: {
+        classes: new Set(["groupHeader"]),
+        add(...names) {
+          for (const name of names) this.classes.add(name);
+        },
+        contains(name) {
+          return this.classes.has(name);
+        },
+      },
+    };
+    const header2 = {
+      style: {
+        props: {},
+        setProperty(name, value) {
+          this.props[name] = value;
+        },
+      },
       classList: {
         classes: new Set(["groupHeader"]),
         add(...names) {
@@ -480,6 +520,23 @@ describe("mobileShell", () => {
       },
     };
     const item = {
+      style: {
+        props: {},
+        setProperty(name, value) {
+          this.props[name] = value;
+        },
+      },
+      classList: {
+        classes: new Set(["itemCard"]),
+        add(...names) {
+          for (const name of names) this.classes.add(name);
+        },
+        contains(name) {
+          return this.classes.has(name);
+        },
+      },
+    };
+    const item2 = {
       style: {
         props: {},
         setProperty(name, value) {
@@ -520,9 +577,9 @@ describe("mobileShell", () => {
       },
       querySelectorAll(selector) {
         const query = String(selector || "");
-        if (query === ".groupCard") return [group];
-        if (query === ".groupHeader") return [header];
-        if (query === ".itemCard") return [item];
+        if (query === ".groupCard") return [group, group2];
+        if (query === ".groupHeader") return [header, header2];
+        if (query === ".itemCard") return [item, item2];
         return [];
       },
     };
@@ -575,8 +632,17 @@ describe("mobileShell", () => {
     expect(rendered).toEqual([]);
     expect(threadList.classList.contains("threadListDrawerEnter")).toBe(true);
     expect(group.classList.contains("groupEnter")).toBe(false);
+    expect(group2.classList.contains("groupEnter")).toBe(false);
     expect(header.classList.contains("threadHeaderEnter")).toBe(false);
+    expect(header2.classList.contains("threadHeaderEnter")).toBe(false);
     expect(item.classList.contains("threadEnter")).toBe(false);
+    expect(item2.classList.contains("threadEnter")).toBe(false);
+    expect(Object.keys(group.style.props)).toEqual([]);
+    expect(Object.keys(group2.style.props)).toEqual([]);
+    expect(Object.keys(header.style.props)).toEqual([]);
+    expect(Object.keys(header2.style.props)).toEqual([]);
+    expect(Object.keys(item.style.props)).toEqual([]);
+    expect(Object.keys(item2.style.props)).toEqual([]);
     expect(state.threadListPendingVisibleAnimationByWorkspace.windows).toBe(false);
     expect(timers.some((timer) => timer.delayMs === 240)).toBe(false);
   });

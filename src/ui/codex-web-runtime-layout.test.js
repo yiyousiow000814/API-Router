@@ -20,8 +20,11 @@ describe("codex-web runtime layout", () => {
 
   it("defines a drawer-open animation for cached chat rows without reusing render entry classes", () => {
     expect(source).toContain("threadListDrawerEnter");
-    expect(source).toMatch(/#threadList\.threadListDrawerEnter\s+\.groupCard/);
-    expect(source).toMatch(/#threadList\.threadListDrawerEnter\s+\.itemCard/);
+    expect(source).toMatch(/#threadList\.threadListDrawerEnter\s*\{/);
+    expect(source).not.toMatch(/#threadList\.threadListDrawerEnter\s+\.groupCard/);
+    expect(source).not.toMatch(/#threadList\.threadListDrawerEnter\s+\.itemCard/);
+    const drawerKeyframes = source.match(/@keyframes thread-list-drawer-content-enter\s*\{([\s\S]*?)\n    \}/);
+    expect(drawerKeyframes?.[1] || "").not.toMatch(/opacity/i);
   });
 
   it("places the runtime activity inside the composer meta row as a compact inline hint", () => {

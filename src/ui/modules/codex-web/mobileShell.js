@@ -241,26 +241,13 @@ export function createMobileShellModule(deps) {
         return true;
       };
       const animateDrawerOpeningThreadListDom = (list) => {
-        if (!list?.querySelectorAll || !list?.querySelector?.(".groupCard, .itemCard")) return false;
-        const groups = Array.from(list.querySelectorAll(".groupCard") || []);
-        const headers = Array.from(list.querySelectorAll(".groupHeader") || []);
-        const items = Array.from(list.querySelectorAll(".itemCard") || []);
-        if (!groups.length && !items.length) return false;
+        if (!list?.querySelector?.(".groupCard, .itemCard")) return false;
         if (state.threadListDrawerEnterTimer) {
           clearTimeoutRef(state.threadListDrawerEnterTimer);
           state.threadListDrawerEnterTimer = 0;
         }
         list.classList?.remove?.("threadListDrawerEnter");
         if (typeof list.getBoundingClientRect === "function") list.getBoundingClientRect();
-        groups.forEach((node, index) => {
-          node.style?.setProperty?.("--thread-group-enter-delay", `${Math.min(520, index * 80)}ms`);
-        });
-        headers.forEach((node, index) => {
-          node.style?.setProperty?.("--thread-group-enter-delay", `${Math.min(520, index * 80)}ms`);
-        });
-        items.forEach((node, index) => {
-          node.style?.setProperty?.("--thread-enter-delay", `${Math.min(320, index * 22)}ms`);
-        });
         list.classList?.add?.("threadListDrawerEnter");
         state.threadListDrawerEnterTimer = setTimeoutRef(() => {
           state.threadListDrawerEnterTimer = 0;
