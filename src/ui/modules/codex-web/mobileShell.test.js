@@ -426,7 +426,7 @@ describe("mobileShell", () => {
     expect(state.threadListPendingVisibleAnimationByWorkspace.windows).toBe(false);
   });
 
-  it("does not replay existing thread list DOM when opening the drawer", () => {
+  it("animates existing thread list DOM on drawer open without re-rendering it", () => {
     const timers = [];
     const body = {
       _classes: new Set(),
@@ -497,6 +497,21 @@ describe("mobileShell", () => {
       },
     };
     const threadList = {
+      classList: {
+        classes: new Set(),
+        add(...names) {
+          for (const name of names) this.classes.add(name);
+        },
+        remove(...names) {
+          for (const name of names) this.classes.delete(name);
+        },
+        contains(name) {
+          return this.classes.has(name);
+        },
+      },
+      getBoundingClientRect() {
+        return { width: 280, height: 640 };
+      },
       querySelector(selector) {
         const query = String(selector || "");
         if (query.includes("groupEnter") || query.includes("threadEnter")) return null;
@@ -556,13 +571,14 @@ describe("mobileShell", () => {
     });
 
     module.setMobileTab("threads");
-    timers.find((timer) => timer.delayMs > 220)?.callback();
 
     expect(rendered).toEqual([]);
+    expect(threadList.classList.contains("threadListDrawerEnter")).toBe(true);
     expect(group.classList.contains("groupEnter")).toBe(false);
     expect(header.classList.contains("threadHeaderEnter")).toBe(false);
     expect(item.classList.contains("threadEnter")).toBe(false);
     expect(state.threadListPendingVisibleAnimationByWorkspace.windows).toBe(false);
+    expect(timers.some((timer) => timer.delayMs === 240)).toBe(false);
   });
 
   it("animates workspace-switched existing thread list DOM before the drawer paints", () => {

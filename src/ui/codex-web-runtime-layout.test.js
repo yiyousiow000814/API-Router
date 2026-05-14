@@ -18,6 +18,12 @@ describe("codex-web runtime layout", () => {
     expect(source).toMatch(/body\.drawer-left-previewing\s+#threadList/);
   });
 
+  it("defines a drawer-open animation for cached chat rows without reusing render entry classes", () => {
+    expect(source).toContain("threadListDrawerEnter");
+    expect(source).toMatch(/#threadList\.threadListDrawerEnter\s+\.groupCard/);
+    expect(source).toMatch(/#threadList\.threadListDrawerEnter\s+\.itemCard/);
+  });
+
   it("places the runtime activity inside the composer meta row as a compact inline hint", () => {
     expect(source).toContain('<div class="mobileComposerMetaRow">');
     expect(source).toContain('<div id="runtimeDock" class="runtimeDock" style="display:none;">');

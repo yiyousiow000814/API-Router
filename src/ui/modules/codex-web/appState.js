@@ -96,6 +96,7 @@ export function createInitialState() {
     threadListAnimateExistingDomOnOpenByWorkspace: { windows: false, wsl2: false },
     threadListVisibleOpenAnimationUntil: 0,
     threadListVisibleAnimationTimer: 0,
+    threadListDrawerEnterTimer: 0,
     threadListAnimationHoldUntilByWorkspace: { windows: 0, wsl2: 0 },
     threadListDeferredRenderTimerByWorkspace: { windows: 0, wsl2: 0 },
     threadListSkipScrollRestoreOnce: false,
