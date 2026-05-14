@@ -131,6 +131,8 @@ export function createMobileShellModule(deps) {
     pushThreadAnimDebug,
     renderThreads,
     hideSlashCommandMenu = () => {},
+    setTimeoutRef = setTimeout,
+    clearTimeoutRef = clearTimeout,
   } = deps;
 
   function getLeftDrawerPanel() {
@@ -182,7 +184,7 @@ export function createMobileShellModule(deps) {
     documentRef.body.classList.remove("drawer-left-open", "drawer-right-open");
     documentRef.body.classList.remove("drawer-left-opening", "drawer-right-opening");
     if (state.drawerOpenPhaseTimer) {
-      clearTimeout(state.drawerOpenPhaseTimer);
+      clearTimeoutRef(state.drawerOpenPhaseTimer);
       state.drawerOpenPhaseTimer = 0;
     }
     if (tab === "threads") documentRef.body.classList.add("drawer-left-open");
@@ -190,14 +192,14 @@ export function createMobileShellModule(deps) {
     if (shouldOpenDrawerWithAnimation(tab, wasThreadsOpen)) {
       state.threadListVisibleOpenAnimationUntil = Date.now() + 520;
       documentRef.body.classList.add("drawer-left-opening");
-      state.drawerOpenPhaseTimer = setTimeout(() => {
+      state.drawerOpenPhaseTimer = setTimeoutRef(() => {
         documentRef.body.classList.remove("drawer-left-opening");
         state.drawerOpenPhaseTimer = 0;
       }, 220);
     }
     if (tab === "tools") {
       documentRef.body.classList.add("drawer-right-opening");
-      state.drawerOpenPhaseTimer = setTimeout(() => {
+      state.drawerOpenPhaseTimer = setTimeoutRef(() => {
         documentRef.body.classList.remove("drawer-right-opening");
         state.drawerOpenPhaseTimer = 0;
       }, 220);
@@ -207,33 +209,44 @@ export function createMobileShellModule(deps) {
       state.threadListPendingSidebarOpenAnimation = false;
       state.threadListVisibleOpenAnimationUntil = 0;
       if (state.threadListVisibleAnimationTimer) {
-        clearTimeout(state.threadListVisibleAnimationTimer);
+        clearTimeoutRef(state.threadListVisibleAnimationTimer);
         state.threadListVisibleAnimationTimer = 0;
       }
     }
     if (shouldOpenDrawerWithAnimation(tab, wasThreadsOpen)) {
       const currentWorkspaceKey = normalizeWorkspaceTarget(getWorkspaceTarget());
       const hasThreadItems = Array.isArray(state.threadItems) && state.threadItems.length > 0;
-      const animateVisibleThreadListNow = () => {
-        pushThreadAnimDebug("setMobileTab:animateVisibleNow", { currentWorkspaceKey, hasThreadItems });
-        state.threadListPendingVisibleAnimationByWorkspace[currentWorkspaceKey] = true;
-        state.threadListAnimateNextRender = true;
-        state.threadListAnimateThreadIds = new Set();
-        state.threadListExpandAnimateGroupKeys = new Set();
-        state.threadListSkipScrollRestoreOnce = true;
-        renderThreads(state.threadItems);
+      const scheduleVisibleThreadListAnimation = () => {
+        if (state.threadListVisibleAnimationTimer) {
+          clearTimeoutRef(state.threadListVisibleAnimationTimer);
+          state.threadListVisibleAnimationTimer = 0;
+        }
+        pushThreadAnimDebug("setMobileTab:scheduleVisibleAnimation", { currentWorkspaceKey, hasThreadItems });
+        state.threadListVisibleAnimationTimer = setTimeoutRef(() => {
+          state.threadListVisibleAnimationTimer = 0;
+          if (!documentRef.body.classList.contains("drawer-left-open")) return;
+          if (!Array.isArray(state.threadItems) || !state.threadItems.length) return;
+          pushThreadAnimDebug("setMobileTab:animateVisibleNow", { currentWorkspaceKey, hasThreadItems: true });
+          state.threadListPendingSidebarOpenAnimation = false;
+          state.threadListPendingVisibleAnimationByWorkspace[currentWorkspaceKey] = true;
+          state.threadListAnimateNextRender = true;
+          state.threadListAnimateThreadIds = new Set();
+          state.threadListExpandAnimateGroupKeys = new Set();
+          state.threadListSkipScrollRestoreOnce = true;
+          renderThreads(state.threadItems);
+        }, 240);
       };
       if (state.threadListLoading) {
         if (hasThreadItems) {
           state.threadListPendingSidebarOpenAnimation = false;
-          animateVisibleThreadListNow();
+          scheduleVisibleThreadListAnimation();
         } else {
           pushThreadAnimDebug("setMobileTab:pendingSidebarAnimation", { currentWorkspaceKey });
           state.threadListPendingSidebarOpenAnimation = true;
         }
         return;
       }
-      if (hasThreadItems) animateVisibleThreadListNow();
+      if (hasThreadItems) scheduleVisibleThreadListAnimation();
     }
   }
 

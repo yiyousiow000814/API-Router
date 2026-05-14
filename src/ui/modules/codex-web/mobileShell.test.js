@@ -174,6 +174,7 @@ describe("mobileShell", () => {
   });
 
   it("keeps drawer content hidden during open drag preview and restores entry animation after release", () => {
+    const timers = [];
     const body = {
       _classes: new Set(),
       classList: {
@@ -232,6 +233,15 @@ describe("mobileShell", () => {
       pushThreadAnimDebug() {},
       renderThreads() {},
       hideSlashCommandMenu() {},
+      setTimeoutRef(callback, delayMs) {
+        const timer = { callback, delayMs };
+        timers.push(timer);
+        return timer;
+      },
+      clearTimeoutRef(timer) {
+        const index = timers.indexOf(timer);
+        if (index >= 0) timers.splice(index, 1);
+      },
     });
 
     body.classList.add("drawer-left-dragging");
@@ -242,7 +252,96 @@ describe("mobileShell", () => {
     expect(body._classes.has("drawer-left-opening")).toBe(true);
     expect(body._classes.has("drawer-left-previewing")).toBe(false);
     expect(state.threadListVisibleOpenAnimationUntil).toBeGreaterThan(0);
+    expect(state.threadListAnimateNextRender).toBe(false);
+
+    timers.find((timer) => timer.delayMs === 220)?.callback();
+    expect(state.threadListAnimateNextRender).toBe(false);
+
+    timers.find((timer) => timer.delayMs > 220)?.callback();
     expect(state.threadListAnimateNextRender).toBe(true);
+  });
+
+  it("defers visible thread list entry animation until the drawer is open", () => {
+    const timers = [];
+    const body = {
+      _classes: new Set(),
+      classList: {
+        contains(name) {
+          return body._classes.has(name);
+        },
+        add(...names) {
+          for (const name of names) body._classes.add(name);
+        },
+        remove(...names) {
+          for (const name of names) body._classes.delete(name);
+        },
+      },
+      style: {
+        removeProperty() {},
+      },
+    };
+    const backdrop = {
+      classList: {
+        toggle() {},
+        remove() {},
+      },
+    };
+    const state = {
+      drawerOpenPhaseTimer: 0,
+      threadListVisibleOpenAnimationUntil: 0,
+      threadListPendingSidebarOpenAnimation: false,
+      threadListVisibleAnimationTimer: 0,
+      threadListLoading: false,
+      threadItems: [{ id: "t1" }, { id: "t2" }],
+      threadListPendingVisibleAnimationByWorkspace: { windows: false, wsl2: false },
+      threadListAnimateNextRender: false,
+      threadListAnimateThreadIds: new Set(),
+      threadListExpandAnimateGroupKeys: new Set(),
+      threadListSkipScrollRestoreOnce: false,
+    };
+    const rendered = [];
+    const module = createMobileShellModule({
+      state,
+      byId(id) {
+        if (id === "mobileDrawerBackdrop") return backdrop;
+        return null;
+      },
+      documentRef: { body },
+      normalizeWorkspaceTarget(value) {
+        return value;
+      },
+      getWorkspaceTarget() {
+        return "windows";
+      },
+      pushThreadAnimDebug() {},
+      renderThreads(items) {
+        rendered.push(items.map((item) => item.id));
+      },
+      hideSlashCommandMenu() {},
+      setTimeoutRef(callback, delayMs) {
+        const timer = { callback, delayMs };
+        timers.push(timer);
+        return timer;
+      },
+      clearTimeoutRef(timer) {
+        const index = timers.indexOf(timer);
+        if (index >= 0) timers.splice(index, 1);
+      },
+    });
+
+    module.setMobileTab("threads");
+
+    expect(rendered).toEqual([]);
+    expect(state.threadListAnimateNextRender).toBe(false);
+    expect(body._classes.has("drawer-left-opening")).toBe(true);
+
+    timers.find((timer) => timer.delayMs === 220)?.callback();
+    expect(rendered).toEqual([]);
+
+    timers.find((timer) => timer.delayMs > 220)?.callback();
+    expect(rendered).toEqual([["t1", "t2"]]);
+    expect(state.threadListAnimateNextRender).toBe(true);
+    expect(state.threadListPendingVisibleAnimationByWorkspace.windows).toBe(true);
   });
 
   it("drags the thread drawer with a left-edge swipe on mobile", () => {
