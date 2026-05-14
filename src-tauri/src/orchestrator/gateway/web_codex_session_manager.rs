@@ -2,7 +2,7 @@ use super::web_codex_home::{web_codex_rpc_home_override_for_target, WorkspaceTar
 use super::web_codex_rollout_import::{
     import_rollout_from_known_path, import_windows_rollout_into_codex_home,
     import_wsl_rollout_into_codex_home, resume_import_order, sanitize_official_resume_rollout,
-    sanitize_official_resume_state,
+    sync_resume_state_model_provider,
 };
 use super::web_codex_rollout_path::runtime_path_should_override_existing;
 use super::web_codex_session_runtime::{
@@ -363,6 +363,8 @@ impl CodexSessionManager {
         thread_id: &str,
         params: Value,
     ) -> Result<TurnStartOutcome, String> {
+        sync_resume_state_model_provider(self.home_override(), thread_id)
+            .map_err(|sanitize_error| format!("sanitize failed: {sanitize_error}"))?;
         let result = match turn_start_once(self, &params).await {
             Ok(value) => value,
             Err(first_error) => {
@@ -649,7 +651,7 @@ impl CodexSessionManager {
         params: Value,
         known_rollout_path: Option<&str>,
     ) -> Result<Value, String> {
-        sanitize_official_resume_state(self.home_override(), thread_id)
+        sync_resume_state_model_provider(self.home_override(), thread_id)
             .map_err(|sanitize_error| format!("sanitize failed: {sanitize_error}"))?;
         if let Some(rollout_path) = known_rollout_path {
             import_rollout_from_known_path(
