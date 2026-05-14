@@ -213,33 +213,21 @@ export function createMobileShellModule(deps) {
     }
     if (shouldOpenDrawerWithAnimation(tab, wasThreadsOpen)) {
       const currentWorkspaceKey = normalizeWorkspaceTarget(getWorkspaceTarget());
-      const cachedWorkspaceItems = Array.isArray(state.threadItemsByWorkspace?.[currentWorkspaceKey])
-        ? state.threadItemsByWorkspace[currentWorkspaceKey]
-        : [];
-      const visibleThreadItems =
-        Array.isArray(state.threadItems) && state.threadItems.length > 0
-          ? state.threadItems
-          : cachedWorkspaceItems;
-      const hasThreadItems = Array.isArray(visibleThreadItems) && visibleThreadItems.length > 0;
+      const hasThreadItems = Array.isArray(state.threadItems) && state.threadItems.length > 0;
       const animateVisibleThreadListNow = () => {
         pushThreadAnimDebug("setMobileTab:animateVisibleNow", { currentWorkspaceKey, hasThreadItems });
-        if (visibleThreadItems !== state.threadItems) {
-          state.threadItems = visibleThreadItems;
-          state.threadItemsAll = visibleThreadItems;
-        }
         state.threadListPendingVisibleAnimationByWorkspace[currentWorkspaceKey] = true;
         state.threadListAnimateNextRender = true;
         state.threadListAnimateThreadIds = new Set();
         state.threadListExpandAnimateGroupKeys = new Set();
         state.threadListSkipScrollRestoreOnce = true;
-        renderThreads(visibleThreadItems);
+        renderThreads(state.threadItems);
       };
       if (state.threadListLoading) {
         if (hasThreadItems) {
           state.threadListPendingSidebarOpenAnimation = false;
           animateVisibleThreadListNow();
         } else {
-          renderThreads(state.threadItems);
           pushThreadAnimDebug("setMobileTab:pendingSidebarAnimation", { currentWorkspaceKey });
           state.threadListPendingSidebarOpenAnimation = true;
         }

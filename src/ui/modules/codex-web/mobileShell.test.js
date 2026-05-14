@@ -245,7 +245,7 @@ describe("mobileShell", () => {
     expect(state.threadListAnimateNextRender).toBe(true);
   });
 
-  it("renders cached workspace chats when opening the drawer during thread loading", () => {
+  it("does not promote cached workspace chats when opening the drawer during thread loading", () => {
     const body = {
       _classes: new Set(),
       classList: {
@@ -266,6 +266,7 @@ describe("mobileShell", () => {
       },
     };
     const cached = [{ id: "win-thread", workspace: "windows" }];
+    const currentItems = [];
     const rendered = [];
     const state = {
       drawerOpenPhaseTimer: 0,
@@ -273,7 +274,8 @@ describe("mobileShell", () => {
       threadListPendingSidebarOpenAnimation: false,
       threadListVisibleAnimationTimer: 0,
       threadListLoading: true,
-      threadItems: [],
+      threadItems: currentItems,
+      threadItemsAll: [],
       threadItemsByWorkspace: { windows: cached, wsl2: [] },
       threadListPendingVisibleAnimationByWorkspace: { windows: false, wsl2: false },
       threadListAnimateNextRender: false,
@@ -303,10 +305,11 @@ describe("mobileShell", () => {
 
     module.setMobileTab("threads");
 
-    expect(rendered).toEqual([cached]);
-    expect(state.threadItems).toBe(cached);
-    expect(state.threadListPendingSidebarOpenAnimation).toBe(false);
-    expect(state.threadListAnimateNextRender).toBe(true);
+    expect(rendered).toEqual([]);
+    expect(state.threadItems).toBe(currentItems);
+    expect(state.threadItemsAll).toEqual([]);
+    expect(state.threadListPendingSidebarOpenAnimation).toBe(true);
+    expect(state.threadListAnimateNextRender).toBe(false);
   });
 
   it("drags the thread drawer with a left-edge swipe on mobile", () => {
