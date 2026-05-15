@@ -2154,6 +2154,20 @@ try {
     -FilePath $NodeCli `
     -ArgumentList @($RunWithWinSdkCli, 'cargo', 'build', '--manifest-path', (Join-Path $RepoRoot 'src-tauri\Cargo.toml'), '--release', '--bin', 'api_router_updater') `
     -FailureLabel 'updater build'
+  Invoke-BuildStage `
+    -Phase 'embed_updater_manifest' `
+    -Label 'Embedding updater manifest' `
+    -Detail 'Forcing updater asInvoker execution level before installation' `
+    -FilePath $NodeCli `
+    -ArgumentList @((Join-Path $RepoRoot 'tools\build\apply-updater-manifest.mjs'), '--exe', $SrcUpdaterExe, '--manifest', (Join-Path $RepoRoot 'src-tauri\windows\api-router-updater.manifest')) `
+    -FailureLabel 'updater manifest embed'
+  Invoke-BuildStage `
+    -Phase 'check_updater_manifest' `
+    -Label 'Checking updater manifest' `
+    -Detail 'Verifying updater runs without UAC installer detection' `
+    -FilePath $NodeCli `
+    -ArgumentList @((Join-Path $RepoRoot 'tools\checks\check-updater-manifest.mjs'), '--exe', $SrcUpdaterExe) `
+    -FailureLabel 'updater manifest check'
   Write-RemoteUpdateLog ("Primary build stages completed in {0}" -f (Get-StageDurationText $buildStartedAtUnixMs))
 
   if (-not $NoCopy) {
