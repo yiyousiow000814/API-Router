@@ -76,6 +76,7 @@ export function EventsTable({
   const [copiedMessageKey, setCopiedMessageKey] = useState<string | null>(null)
   const [messageDialog, setMessageDialog] = useState<{ title: string; text: string } | null>(null)
   const [expandableMessageKeys, setExpandableMessageKeys] = useState<Record<string, true>>({})
+  const [activeFocusFlashNonce, setActiveFocusFlashNonce] = useState(0)
   const allEvents = events ?? []
   const allEventIds = useMemo(() => allEvents.map((event) => eventIdentity(event)), [allEvents])
   const firstIndexByEventId = useMemo(() => {
@@ -399,16 +400,19 @@ export function EventsTable({
 
   useEffect(() => {
     if (!focusNonce || !focusEvent) return
+    setActiveFocusFlashNonce(focusNonce)
     const row = focusRowRef.current
-    if (!row) return
-    row.scrollIntoView({ block: 'center', behavior: 'smooth' })
-    row.classList.remove('aoEventRowFocusFlash')
-    // Force reflow so repeated focus requests replay the animation.
-    void row.getBoundingClientRect()
-    row.classList.add('aoEventRowFocusFlash')
+    if (row) {
+      row.scrollIntoView({ block: 'center', behavior: 'smooth' })
+      row.classList.remove('aoEventRowFocusFlash')
+      // Force reflow so repeated focus requests replay the animation.
+      void row.getBoundingClientRect()
+      row.classList.add('aoEventRowFocusFlash')
+    }
     if (focusFlashTimerRef.current != null) window.clearTimeout(focusFlashTimerRef.current)
     focusFlashTimerRef.current = window.setTimeout(() => {
-      row.classList.remove('aoEventRowFocusFlash')
+      setActiveFocusFlashNonce((prev) => (prev === focusNonce ? 0 : prev))
+      row?.classList.remove('aoEventRowFocusFlash')
       focusFlashTimerRef.current = null
     }, 1400)
   }, [focusEvent, focusNonce])
@@ -456,11 +460,14 @@ export function EventsTable({
           .join('\n')
       : ''
 
+    const isFocusFlashing = isFocus && activeFocusFlashNonce === focusNonce
     return (
       <tr
         key={key}
         ref={isFocus ? focusRowRef : undefined}
-        className={`${isError ? 'aoEventRowError' : isWarning ? 'aoEventRowWarning' : ''}`.trim() || undefined}
+        className={`${isError ? 'aoEventRowError' : isWarning ? 'aoEventRowWarning' : ''} ${
+          isFocusFlashing ? 'aoEventRowFocusFlash' : ''
+        }`.trim() || undefined}
       >
         <td title={fmtWhen(e.unix_ms)}>{fmtAgo(e.unix_ms)}</td>
         <td className="aoEventsMono" title={sessionTitle}>
