@@ -368,6 +368,44 @@ describe("threadListRefresh", () => {
     });
   });
 
+  it("skips thread refresh while e2e pause is enabled", async () => {
+    const api = vi.fn();
+    const state = {
+      threadRefreshPausedForE2E: true,
+      threadRefreshPromiseByWorkspace: {},
+    };
+    const module = createThreadListRefreshModule({
+      state,
+      byId: () => null,
+      windowRef: { getComputedStyle: () => ({ display: "block", visibility: "visible" }), innerWidth: 1280, innerHeight: 720 },
+      documentRef: {
+        documentElement: { clientWidth: 1280, clientHeight: 720 },
+        body: { classList: { contains: () => false } },
+      },
+      api,
+      ensureArrayItems: (value) => (Array.isArray(value) ? value : []),
+      normalizeWorkspaceTarget: (value) => (value === "wsl2" ? "wsl2" : "windows"),
+      getWorkspaceTarget: () => "windows",
+      getStartCwdForWorkspace: () => "",
+      sortThreadsByNewest: (items) => items,
+      filterThreadsForWorkspace: (items) => items,
+      hasDualWorkspaceTargets: () => true,
+      detectWorkspaceAvailabilityFromThreads: vi.fn(),
+      buildThreadRenderSig: vi.fn(),
+      persistThreadsCache: vi.fn(),
+      syncActiveThreadMetaFromList: vi.fn(),
+      updateHeaderUi: vi.fn(),
+      pushThreadAnimDebug: vi.fn(),
+      renderThreads: vi.fn(),
+      applyWorkspaceUi: vi.fn(),
+      setStatus: vi.fn(),
+      THREAD_FORCE_REFRESH_MIN_INTERVAL_MS: 1800,
+    });
+
+    await expect(module.refreshThreads("windows", { force: true })).resolves.toBe(false);
+    expect(api).not.toHaveBeenCalled();
+  });
+
   it("coalesces overlapping non-force refreshes for the same workspace", async () => {
     let resolveApi;
     const apiCalls = [];

@@ -1,4 +1,5 @@
 use super::current_unix_secs;
+use crate::orchestrator::gateway::session_meta_identity::SessionMetaIdentity;
 use crate::orchestrator::gateway::web_codex_home::{
     default_windows_codex_dir, web_codex_wsl_session_home_for_launch, WorkspaceTarget,
 };
@@ -418,70 +419,18 @@ fn scan_session_file_uncached(path: &Path) -> Option<SessionFileScan> {
             continue;
         };
         if v.get("type").and_then(|x| x.as_str()) == Some("session_meta") && meta.is_none() {
-            let payload = v.get("payload").and_then(|x| x.as_object())?;
-            let id = payload
-                .get("id")
-                .and_then(|x| x.as_str())
-                .or_else(|| payload.get("session_id").and_then(|x| x.as_str()))
-                .map(str::trim)
-                .unwrap_or_default()
-                .to_string();
-            let cwd = payload
-                .get("cwd")
-                .and_then(|x| x.as_str())
-                .map(str::trim)
-                .unwrap_or_default()
-                .to_string();
+            let identity = SessionMetaIdentity::from_session_meta_event(&v)?;
+            let id = identity.session_id;
+            let cwd = identity.cwd.unwrap_or_default();
             if !id.is_empty() && !cwd.is_empty() {
-                let created_at = payload
-                    .get("created_at")
-                    .and_then(parse_json_i64)
-                    .or_else(|| payload.get("createdAt").and_then(parse_json_i64))
-                    .unwrap_or(0);
-                let session_source = payload.get("source").cloned();
-                let has_subagent_source = payload
-                    .get("source")
-                    .and_then(|x| x.get("subagent"))
-                    .is_some();
-                let has_agent_role = payload
-                    .get("agent_role")
-                    .and_then(|x| x.as_str())
-                    .map(str::trim)
-                    .map(|v| !v.is_empty())
-                    .unwrap_or(false);
-                let has_agent_nickname = payload
-                    .get("agent_nickname")
-                    .and_then(|x| x.as_str())
-                    .map(str::trim)
-                    .map(|v| !v.is_empty())
-                    .unwrap_or(false);
-                let agent_parent_session_id = payload
-                    .get("source")
-                    .and_then(|x| x.get("subagent").or_else(|| x.get("subAgent")))
-                    .and_then(|x| x.get("thread_spawn").or_else(|| x.get("threadSpawn")))
-                    .and_then(|x| {
-                        x.get("parent_thread_id")
-                            .or_else(|| x.get("parentThreadId"))
-                    })
-                    .and_then(|x| x.as_str())
-                    .map(str::trim)
-                    .filter(|v| !v.is_empty())
-                    .map(str::to_string);
-                let agent_role = payload
-                    .get("agent_role")
-                    .or_else(|| payload.get("agentRole"))
-                    .and_then(|x| x.as_str())
-                    .map(str::trim)
-                    .filter(|v| !v.is_empty())
-                    .map(str::to_string);
                 meta = Some(ParsedSessionMeta {
                     id,
                     cwd,
-                    created_at,
-                    session_source,
-                    is_subagent: has_subagent_source || has_agent_role || has_agent_nickname,
-                    agent_parent_session_id,
-                    agent_role,
+                    created_at: identity.created_at.unwrap_or(0),
+                    session_source: identity.source,
+                    is_subagent: identity.is_agent,
+                    agent_parent_session_id: identity.agent_parent_session_id,
+                    agent_role: identity.agent_role,
                 });
             }
             continue;
@@ -567,20 +516,6 @@ fn scan_session_file_uncached(path: &Path) -> Option<SessionFileScan> {
         preview,
         filter_reason,
     })
-}
-
-fn parse_json_i64(value: &Value) -> Option<i64> {
-    if let Some(v) = value.as_i64() {
-        return Some(v);
-    }
-    if let Some(v) = value.as_u64().and_then(|n| i64::try_from(n).ok()) {
-        return Some(v);
-    }
-    value
-        .as_str()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .and_then(|s| s.parse::<i64>().ok())
 }
 
 fn file_updated_unix_secs(path: &Path) -> i64 {
@@ -995,12 +930,12 @@ def parse_session_candidate(p, stat_result):
                     continue
                 if obj.get("type") == "session_meta" and not sid:
                     payload = obj.get("payload") or {{}}
-                    sid = str(payload.get("id") or payload.get("session_id") or sid).strip()
+                    sid = str(payload.get("id") or payload.get("session_id") or payload.get("sessionId") or sid).strip()
                     cwd = str(payload.get("cwd") or cwd).strip()
                     created_raw = payload.get("created_at") or payload.get("createdAt")
                     source = payload.get("source")
                     session_source = source
-                    source_subagent = source.get("subagent") if isinstance(source, dict) else None
+                    source_subagent = source.get("subagent") or source.get("subAgent") if isinstance(source, dict) else None
                     thread_spawn = None
                     if isinstance(source_subagent, dict):
                         thread_spawn = source_subagent.get("thread_spawn") or source_subagent.get("threadSpawn")
@@ -1009,11 +944,18 @@ def parse_session_candidate(p, stat_result):
                         raw_parent = thread_spawn.get("parent_thread_id") or thread_spawn.get("parentThreadId")
                         if isinstance(raw_parent, str) and raw_parent.strip():
                             parent_thread_id = raw_parent.strip()
-                    agent_role = payload.get("agent_role")
-                    agent_nickname = payload.get("agent_nickname")
+                    agent_role = payload.get("agent_role") or payload.get("agentRole")
+                    agent_nickname = payload.get("agent_nickname") or payload.get("agentNickname")
                     has_agent_role = isinstance(agent_role, str) and bool(agent_role.strip())
                     has_agent_nickname = isinstance(agent_nickname, str) and bool(agent_nickname.strip())
-                    is_subagent = bool(source_subagent) or has_agent_role or has_agent_nickname
+                    thread_source = payload.get("thread_source") or payload.get("threadSource")
+                    has_thread_source = isinstance(thread_source, str) and (
+                        "subagent" in thread_source.lower() or "review" in thread_source.lower()
+                    )
+                    has_source_string = isinstance(source, str) and (
+                        "subagent" in source.lower() or "review" in source.lower()
+                    )
+                    is_subagent = bool(source_subagent) or has_agent_role or has_agent_nickname or has_thread_source or has_source_string
                     try:
                         created_at = int(created_raw or 0)
                     except Exception:
@@ -2209,6 +2151,26 @@ mod tests {
             !thread_item_should_be_visible(&item),
             "subagent sessions should be excluded from visible thread list items"
         );
+    }
+
+    #[test]
+    fn scan_session_file_uses_shared_session_meta_identity_aliases() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let session_path = temp.path().join("rollout-subagent-camel.jsonl");
+        std::fs::write(
+            &session_path,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"sessionId\":\"agent-thread\",\"cwd\":\"C:\\\\Users\\\\yiyou\\\\API-Router\",\"source\":{\"subAgent\":{\"threadSpawn\":{\"parentThreadId\":\"main-thread\",\"depth\":1}}},\"agentNickname\":\"Curie\",\"agentRole\":\"explorer\"}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"inspect camel aliases\"}]}}\n"
+            ),
+        )
+        .expect("write session");
+
+        let scan = scan_session_file(&session_path).expect("scan session");
+        assert_eq!(scan.id, "agent-thread");
+        assert!(scan.is_subagent, "camelCase subAgent should mark subagent");
+        assert_eq!(scan.agent_parent_session_id.as_deref(), Some("main-thread"));
+        assert_eq!(scan.agent_role.as_deref(), Some("explorer"));
     }
 
     #[test]

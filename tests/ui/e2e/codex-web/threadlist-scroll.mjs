@@ -74,7 +74,8 @@ async function main() {
   try {
     const msedgedriverPath = ensureMsEdgeDriver()
     const options = new edge.Options()
-    options.addArguments('--window-size=1366,900')
+    options.addArguments('--window-size=390,720')
+    options.addArguments('--force-device-scale-factor=1')
     // Make scrollbar sizing deterministic on Windows by disabling overlay scrollbars.
     // Otherwise, Chromium may report 0px gutter and hide differences between styled/un-styled scrollbars.
     options.addArguments('--disable-features=OverlayScrollbar,OverlayScrollbars,OverlayScrollbarFlashAfterAnyScrollUpdate')
@@ -122,44 +123,153 @@ async function main() {
     }
 
     // Seed deterministic threads in-page (no gateway dependency).
-    const seeded = await driver.executeScript(`
+    // Keep them in one directory so expanding one group creates a tall drawer list.
+    const seeded = await driver.executeAsyncScript(`
+      const done = arguments[arguments.length - 1];
       const h = window.__webCodexE2E;
-      if (!h) return { ok: false, error: '__webCodexE2E missing' };
-      return h.seedThreads(260);
+      const debug = window.__webCodexDebug;
+      if (!h) {
+        done({ ok: false, error: '__webCodexE2E missing' });
+        return;
+      }
+      let refreshPaused = false;
+      if (typeof h.pauseThreadRefreshForE2E === 'function') {
+        try {
+          h.pauseThreadRefreshForE2E(true);
+          refreshPaused = true;
+        } catch {}
+      }
+      const snapshot = debug && typeof debug.getThreadListSnapshot === 'function'
+        ? debug.getThreadListSnapshot()
+        : null;
+      const workspace = snapshot && snapshot.workspaceTarget ? snapshot.workspaceTarget : 'windows';
+      const pathFor = (name) => workspace === 'wsl2' ? '/home/yiyou/' + name : 'C:\\\\Users\\\\yiyou\\\\' + name;
+      const items = [
+        ...Array.from({ length: 6 }, (_, i) => ({
+          id: 'e2e_api_router_' + i,
+          title: 'API Router ' + i,
+          updatedAt: Date.now() - i * 1000,
+          workspace,
+          cwd: pathFor('API-Router'),
+        })),
+        ...Array.from({ length: 180 }, (_, i) => ({
+          id: 'e2e_scroll_' + i,
+          title: 'Thread ' + i,
+          updatedAt: Date.now() - (i + 6) * 1000,
+          workspace,
+          cwd: pathFor('XAUUSD-Calendar-Agent'),
+        })),
+        ...Array.from({ length: 4 }, (_, i) => ({
+          id: 'e2e_automation_' + i,
+          title: 'Automation ' + i,
+          updatedAt: Date.now() - (i + 220) * 1000,
+          workspace,
+          cwd: pathFor('xauusd-calendar-automation'),
+        })),
+        ...Array.from({ length: 4 }, (_, i) => ({
+          id: 'e2e_yiyou_' + i,
+          title: 'Yiyou ' + i,
+          updatedAt: Date.now() - (i + 260) * 1000,
+          workspace,
+          cwd: pathFor('yiyou'),
+        })),
+      ];
+      const finish = (result) => {
+        if (h && typeof h.setMobileTabForE2E === 'function') {
+          try { h.setMobileTabForE2E('threads'); } catch {}
+        }
+        if (!refreshPaused && result && result.ok && typeof h.seedThreads === 'function' && typeof h.rerenderThreads === 'function') {
+          try {
+            if (window.__webCodexE2EThreadSeedTimer) clearInterval(window.__webCodexE2EThreadSeedTimer);
+            window.__webCodexE2EThreadSeedTimer = setInterval(() => {
+              try {
+                h.seedThreads(items);
+                h.rerenderThreads();
+              } catch {}
+            }, 120);
+          } catch {}
+        }
+        done({ ...(result || {}), workspace, count: items.length });
+      };
+      const result = h.seedThreads ? h.seedThreads(items) : { ok: false, error: 'seedThreads missing' };
+      if (result && result.ok && typeof h.rerenderThreads === 'function') {
+        try { h.rerenderThreads(); } catch {}
+      }
+      finish(result);
     `)
     if (!seeded?.ok) throw new Error(`seed failed: ${seeded?.error || 'unknown'}`)
-
-    // Expand the first workspace group so groupBody becomes scrollable.
-    await driver.executeScript(`
-      const headers = Array.from(document.querySelectorAll('#threadList .groupHeader'));
-      const header = headers.find((node) => node.textContent && !node.textContent.includes('Favorites')) || headers[0];
-      if (header) header.click();
+    const seedSnapshot = await driver.executeScript(`
+      const list = document.getElementById('threadList');
+      if (!list) return { ok: false, error: 'threadList missing' };
+      return {
+        ok: true,
+        text: String(list.textContent || '').slice(0, 240),
+        cards: list.querySelectorAll('.itemCard').length,
+        groups: list.querySelectorAll('.groupCard').length,
+        headers: Array.from(list.querySelectorAll('.groupHeader')).map((node) => String(node.textContent || '').trim()),
+        bodies: list.querySelectorAll('.groupBody').length,
+      };
     `)
+    if (!seedSnapshot?.ok) throw new Error(`seed snapshot failed: ${seedSnapshot?.error || 'unknown'}`)
+
+    await waitFor(async () => {
+      try {
+        return await driver.executeScript(`
+          const list = document.getElementById('threadList');
+          if (!list) return false;
+          const headers = Array.from(list.querySelectorAll('.groupHeader'));
+          const header = headers.find((node) => /XAUUSD-Calendar-Agent/i.test(node.textContent || '')) ||
+            headers.find((node) => node.textContent && !node.textContent.includes('Favorites')) ||
+            headers[0];
+          const group = header ? header.closest('.groupCard') : null;
+          const body = group ? group.querySelector('.groupBody') : null;
+          const count = body ? body.querySelectorAll('.itemCard').length : 0;
+          if (body && body.offsetHeight > 0 && count > 40) return true;
+          if (header && (!body || header.classList.contains('is-collapsed') || count <= 40)) header.click();
+          return false;
+        `)
+      } catch {
+        return false
+      }
+    }, 5000, `expanded thread group after seed ${JSON.stringify(seedSnapshot)}`)
 
     const baseline = await driver.executeScript(`
       const list = document.getElementById('threadList');
       if (!list) return { ok: false, error: 'threadList missing' };
       const body = list.querySelector('.groupBody');
       if (!body) return { ok: false, error: 'groupBody missing' };
-      const cards = body.querySelectorAll('.itemCard').length;
-      const max = Math.max(0, body.scrollHeight - body.clientHeight);
+      const cards = list.querySelectorAll('.itemCard').length;
+      const groups = list.querySelectorAll('.groupCard').length;
+      const bodies = list.querySelectorAll('.groupBody').length;
+      const openBodies = Array.from(list.querySelectorAll('.groupBody')).filter((node) => node.offsetHeight > 0).length;
+      const bodyMax = Math.max(0, body.scrollHeight - body.clientHeight);
+      const bodyOverflowY = getComputedStyle(body).overflowY;
+      const max = Math.max(0, list.scrollHeight - list.clientHeight);
       const next = Math.max(0, Math.min(max, Math.floor(max * 0.6)));
-      body.scrollTop = next;
+      list.scrollTop = next;
       return {
         ok: true,
         max,
-        scrollTop: body.scrollTop,
-        gutter: Math.max(0, body.offsetWidth - body.clientWidth),
-        scrollHeight: body.scrollHeight,
-        clientHeight: body.clientHeight,
+        bodyMax,
+        scrollTop: list.scrollTop,
+        gutter: Math.max(0, list.offsetWidth - list.clientWidth),
+        scrollHeight: list.scrollHeight,
+        clientHeight: list.clientHeight,
         cards,
+        groups,
+        bodies,
+        openBodies,
+        bodyOverflowY,
       };
     `)
     if (!baseline?.ok) throw new Error(`baseline failed: ${baseline?.error || 'unknown'}`)
     if (!(Number(baseline.max || 0) > 40)) {
       throw new Error(
-        `threadList not scrollable; max=${baseline.max} scrollHeight=${baseline.scrollHeight} clientHeight=${baseline.clientHeight} cards=${baseline.cards} groups=${baseline.groups} bodies=${baseline.bodies} openBodies=${baseline.openBodies}`,
+        `threadList not scrollable; max=${baseline.max} bodyMax=${baseline.bodyMax} scrollHeight=${baseline.scrollHeight} clientHeight=${baseline.clientHeight} cards=${baseline.cards} groups=${baseline.groups} bodies=${baseline.bodies} openBodies=${baseline.openBodies}`,
       )
+    }
+    if (/auto|scroll/i.test(String(baseline.bodyOverflowY || ''))) {
+      throw new Error(`groupBody should not own scrolling; bodyMax=${baseline.bodyMax} overflowY=${baseline.bodyOverflowY}`)
     }
 
     // If a classic scrollbar gutter exists, keep it slim (we style it to ~8px).
@@ -168,18 +278,62 @@ async function main() {
     }
 
     // Trigger a re-render and ensure we don't snap back to top.
-    await driver.executeScript(`window.__webCodexE2E.rerenderThreads();`)
+    await driver.executeAsyncScript(`
+      const done = arguments[arguments.length - 1];
+      const h = window.__webCodexE2E;
+      if (!h || typeof h.rerenderThreads !== 'function') {
+        done({ ok: false, error: 'rerenderThreads missing' });
+        return;
+      }
+      Promise.resolve(h.rerenderThreads()).then(done, (error) => {
+        done({ ok: false, error: String(error && error.message ? error.message : error) });
+      });
+    `)
     await sleep(250)
     const afterWait = await driver.executeScript(`
       const list = document.getElementById('threadList');
       if (!list) return { ok: false, error: 'threadList missing' };
-      const body = list.querySelector('.groupBody');
-      if (!body) return { ok: false, error: 'groupBody missing' };
-      return { ok: true, scrollTop: body.scrollTop };
+      return {
+        ok: true,
+        scrollTop: list.scrollTop,
+        max: Math.max(0, list.scrollHeight - list.clientHeight),
+        scrollHeight: list.scrollHeight,
+        clientHeight: list.clientHeight,
+        cards: list.querySelectorAll('.itemCard').length,
+        groups: list.querySelectorAll('.groupCard').length,
+        bodies: list.querySelectorAll('.groupBody').length,
+        openBodies: Array.from(list.querySelectorAll('.groupBody')).filter((node) => node.offsetHeight > 0).length,
+        lastGroupText: String(Array.from(list.querySelectorAll('.groupHeader')).at(-1)?.textContent || '').trim(),
+      };
     `)
     if (!afterWait?.ok) throw new Error(`afterWait failed: ${afterWait?.error || 'unknown'}`)
     if (Math.abs(Number(afterWait.scrollTop || 0) - Number(baseline.scrollTop || 0)) > 24) {
-      throw new Error(`threadList scroll jumped during idle refresh: before=${baseline.scrollTop} after=${afterWait.scrollTop}`)
+      throw new Error(
+        `threadList scroll jumped during idle refresh: before=${baseline.scrollTop} after=${afterWait.scrollTop} max=${afterWait.max} scrollHeight=${afterWait.scrollHeight} clientHeight=${afterWait.clientHeight} cards=${afterWait.cards} groups=${afterWait.groups} bodies=${afterWait.bodies} openBodies=${afterWait.openBodies}`,
+      )
+    }
+    await driver.executeScript(`
+      const list = document.getElementById('threadList');
+      if (list) list.scrollTop = Math.max(0, list.scrollHeight - list.clientHeight);
+    `)
+    const bottom = await driver.executeScript(`
+      const list = document.getElementById('threadList');
+      if (!list) return { ok: false, error: 'threadList missing' };
+      const headers = Array.from(list.querySelectorAll('.groupHeader'));
+      const last = headers.at(-1);
+      const rect = last ? last.getBoundingClientRect() : null;
+      const listRect = list.getBoundingClientRect();
+      return {
+        ok: true,
+        lastGroupText: String(last?.textContent || '').trim(),
+        lastGroupVisible: !!rect && rect.bottom <= listRect.bottom + 2 && rect.top >= listRect.top - 2,
+        scrollTop: list.scrollTop,
+        max: Math.max(0, list.scrollHeight - list.clientHeight),
+      };
+    `)
+    if (!bottom?.ok) throw new Error(`bottom failed: ${bottom?.error || 'unknown'}`)
+    if (!/yiyou/i.test(String(bottom.lastGroupText || '')) || !bottom.lastGroupVisible) {
+      throw new Error(`bottom group not reachable; text=${bottom.lastGroupText} visible=${bottom.lastGroupVisible} scrollTop=${bottom.scrollTop} max=${bottom.max}`)
     }
 
     console.log('[ui:e2e:codex-threadlist-scroll] PASS')
@@ -195,4 +349,3 @@ main().catch((error) => {
   console.error(`[ui:e2e:codex-threadlist-scroll] FAIL: ${error?.stack || error}`)
   process.exitCode = 1
 })
-

@@ -1563,6 +1563,7 @@ fn write_gateway_startup_diag(stage: &str, addr: Option<SocketAddr>, detail: Opt
 }
 
 include!("gateway/request_helpers.rs");
+pub(crate) mod session_meta_identity;
 mod web_codex_actions;
 mod web_codex_assets;
 mod web_codex_auth;
