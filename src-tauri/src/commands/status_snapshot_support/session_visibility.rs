@@ -1,6 +1,15 @@
 use crate::orchestrator::gateway::ClientSessionRuntime;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
+use std::io::BufRead;
+
+#[derive(Debug)]
+struct RolloutRuntimeIdentity {
+    session_id: String,
+    agent_parent_session_id: Option<String>,
+    is_agent: bool,
+    is_review: bool,
+}
 
 pub(crate) fn session_has_rollout(entry: &ClientSessionRuntime) -> bool {
     entry
@@ -8,6 +17,172 @@ pub(crate) fn session_has_rollout(entry: &ClientSessionRuntime) -> bool {
         .as_deref()
         .map(str::trim)
         .is_some_and(|path| !path.is_empty())
+}
+
+fn rollout_string_field(payload: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| payload.get(*key))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn rollout_source_subagent(source: &serde_json::Value) -> Option<&serde_json::Value> {
+    source
+        .as_object()
+        .and_then(|source| source.get("subagent").or_else(|| source.get("subAgent")))
+}
+
+fn rollout_source_is_agent(source: Option<&serde_json::Value>) -> bool {
+    let Some(source) = source else {
+        return false;
+    };
+    match source {
+        serde_json::Value::Object(_) => rollout_source_subagent(source).is_some(),
+        serde_json::Value::String(source) => {
+            let source = source.to_ascii_lowercase();
+            source.contains("subagent") || source.contains("review")
+        }
+        _ => false,
+    }
+}
+
+fn rollout_source_is_review(source: Option<&serde_json::Value>) -> bool {
+    let Some(source) = source else {
+        return false;
+    };
+    match source {
+        serde_json::Value::Object(_) => rollout_source_subagent(source)
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| value.eq_ignore_ascii_case("review")),
+        serde_json::Value::String(source) => source.to_ascii_lowercase().contains("review"),
+        _ => false,
+    }
+}
+
+fn rollout_source_parent_session_id(source: Option<&serde_json::Value>) -> Option<String> {
+    let subagent = rollout_source_subagent(source?)?;
+    let parent = subagent
+        .as_object()
+        .and_then(|subagent| {
+            subagent
+                .get("thread_spawn")
+                .or_else(|| subagent.get("threadSpawn"))
+        })
+        .and_then(serde_json::Value::as_object)
+        .and_then(|spawn| {
+            spawn
+                .get("parent_thread_id")
+                .or_else(|| spawn.get("parentThreadId"))
+        })
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    Some(parent.to_string())
+}
+
+fn rollout_thread_source_is_agent(payload: &serde_json::Value) -> bool {
+    rollout_string_field(payload, &["thread_source", "threadSource"])
+        .map(|source| {
+            let source = source.to_ascii_lowercase();
+            source.contains("subagent") || source.contains("review")
+        })
+        .unwrap_or(false)
+}
+
+fn read_rollout_runtime_identity(path: &str) -> Option<RolloutRuntimeIdentity> {
+    let file = std::fs::File::open(std::path::Path::new(path)).ok()?;
+    let reader = std::io::BufReader::new(file);
+    for line in reader.lines().take(8).map_while(Result::ok) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let value: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+        if value.get("type").and_then(serde_json::Value::as_str) != Some("session_meta") {
+            continue;
+        }
+        let payload = value.get("payload")?;
+        let session_id = rollout_string_field(payload, &["id", "session_id", "sessionId"])?;
+        let source = payload.get("source");
+        let agent_role = rollout_string_field(payload, &["agent_role", "agentRole"]);
+        let agent_nickname = rollout_string_field(payload, &["agent_nickname", "agentNickname"]);
+        let is_review = rollout_source_is_review(source)
+            || rollout_string_field(payload, &["thread_source", "threadSource"])
+                .is_some_and(|source| source.to_ascii_lowercase().contains("review"))
+            || agent_role
+                .as_deref()
+                .is_some_and(|role| role.eq_ignore_ascii_case("review"));
+        let is_agent = rollout_source_is_agent(source)
+            || rollout_thread_source_is_agent(payload)
+            || agent_role.as_deref().is_some_and(|role| !role.is_empty())
+            || agent_nickname
+                .as_deref()
+                .is_some_and(|nickname| !nickname.is_empty());
+        return Some(RolloutRuntimeIdentity {
+            session_id,
+            agent_parent_session_id: rollout_source_parent_session_id(source).or_else(|| {
+                rollout_string_field(
+                    payload,
+                    &[
+                        "parentThreadId",
+                        "parent_thread_id",
+                        "agentParentSessionId",
+                        "agent_parent_session_id",
+                    ],
+                )
+            }),
+            is_agent: is_agent || is_review,
+            is_review,
+        });
+    }
+    None
+}
+
+pub(crate) fn normalize_client_session_identity_from_rollout_path(
+    entry: &mut ClientSessionRuntime,
+) {
+    let Some(rollout_path) = entry
+        .rollout_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+    else {
+        return;
+    };
+    let Some(identity) = read_rollout_runtime_identity(rollout_path) else {
+        return;
+    };
+    if !identity
+        .session_id
+        .eq_ignore_ascii_case(entry.codex_session_id.trim())
+    {
+        return;
+    }
+    if let Some(parent_sid) = identity
+        .agent_parent_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|sid| !sid.is_empty())
+    {
+        entry.agent_parent_session_id = Some(parent_sid.to_string());
+    }
+    if identity.is_agent {
+        entry.is_agent = true;
+    }
+    if identity.is_review {
+        entry.is_review = true;
+        entry.is_agent = true;
+    }
+}
+
+pub(crate) fn normalize_client_session_identities_from_rollouts(
+    map: &mut HashMap<String, ClientSessionRuntime>,
+) {
+    for entry in map.values_mut() {
+        normalize_client_session_identity_from_rollout_path(entry);
+    }
 }
 
 pub(crate) fn recent_client_sessions_with_main_parent_context(

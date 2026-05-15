@@ -613,6 +613,7 @@ fn refresh_client_sessions_runtime(
         thread_index_snapshot.fresh,
     );
     confirm_router_from_live_thread_base_url(map, thread_index_snapshot.items.as_ref(), router_port);
+    normalize_client_session_identities_from_rollouts(map);
     backfill_main_confirmation_from_verified_agent(map, now);
     let removed_main_session_ids = retain_live_app_server_sessions(
         map,
@@ -2297,6 +2298,69 @@ mod tests {
                 .iter()
                 .any(|(sid, _)| sid == "main"),
             "agent visibility expansion should still include the parent main session"
+        );
+    }
+
+    #[test]
+    fn refresh_client_sessions_runtime_reclassifies_rollout_subagents_before_visibility() {
+        let tmp = tempdir().expect("tempdir");
+        let rollout_path = tmp.path().join("rollout-agent-child.jsonl");
+        std::fs::write(
+            &rollout_path,
+            r#"{"type":"session_meta","payload":{"id":"agent-child","cwd":"C:/repo","source":{"subagent":{"thread_spawn":{"parent_thread_id":"main-parent","depth":1}}},"agent_role":"explorer","agent_nickname":"Darwin"}}"#,
+        )
+        .expect("write rollout");
+        let now = 2_000_000_u64;
+        let mut map = HashMap::from([(
+            "agent-child".to_string(),
+            ClientSessionRuntime {
+                codex_session_id: "agent-child".to_string(),
+                pid: 0,
+                wt_session: None,
+                last_request_unix_ms: 0,
+                last_discovered_unix_ms: now,
+                last_reported_model_provider: None,
+                last_reported_model: None,
+                last_reported_base_url: None,
+                rollout_path: Some(rollout_path.to_string_lossy().into_owned()),
+                agent_parent_session_id: None,
+                is_agent: false,
+                is_review: false,
+                confirmed_router: false,
+            },
+        )]);
+        let terminal_discovery = crate::platform::windows_terminal::SessionDiscoverySnapshot {
+            items: Vec::new(),
+            fresh: true,
+        };
+        let thread_index_snapshot =
+            crate::orchestrator::gateway::web_codex_threads::CachedThreadIndexSnapshot {
+                items: Arc::new(Vec::new()),
+                fresh: true,
+            };
+
+        let refreshed = refresh_client_sessions_runtime(
+            &mut map,
+            now,
+            &terminal_discovery,
+            &thread_index_snapshot,
+            4000,
+        );
+
+        assert!(
+            !refreshed.snapshot.contains_key("agent-child"),
+            "rollout metadata should reclassify stale subagent rows before retention"
+        );
+        assert!(
+            refreshed
+                .visible_items
+                .iter()
+                .all(|(sid, _runtime)| sid != "agent-child"),
+            "subagent rows from copied rollout files must not be selected as visible main threads"
+        );
+        assert!(
+            refreshed.removed_main_session_ids.is_empty(),
+            "dropping an inactive subagent must not be reported as a removed main session"
         );
     }
 

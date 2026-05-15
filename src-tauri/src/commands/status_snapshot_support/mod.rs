@@ -8,6 +8,7 @@ pub(crate) use self::session_retention::{
     should_keep_runtime_session,
 };
 pub(crate) use self::session_visibility::{
+    normalize_client_session_identities_from_rollouts,
     recent_client_sessions_with_main_parent_context, session_has_rollout,
     visible_client_session_items,
 };

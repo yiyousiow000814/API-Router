@@ -169,6 +169,13 @@ export function createThreadListRefreshModule(deps) {
 
   async function refreshThreads(workspaceTarget = getWorkspaceTarget(), options = {}) {
     const target = normalizeWorkspaceTarget(workspaceTarget);
+    if (state.threadRefreshPausedForE2E === true) {
+      pushThreadAnimDebug("refreshThreads:e2ePaused", {
+        target,
+        silent: options.silent === true,
+      });
+      return false;
+    }
     const force = options.force === true;
     if (!state.threadRefreshPromiseByWorkspace || typeof state.threadRefreshPromiseByWorkspace !== "object") {
       state.threadRefreshPromiseByWorkspace = {};
@@ -247,6 +254,7 @@ export function createThreadListRefreshModule(deps) {
         !threadListNode?.querySelector?.(".groupCard, .itemCard");
       const previousIdSet = new Set(previousItems.map((item) => item?.id || item?.threadId || "").filter(Boolean));
       const data = await api(`/codex/threads?${query}`, { signal: controller.signal });
+      if (state.threadRefreshPausedForE2E === true) return false;
       const apiTrace = data && typeof data === "object" ? data.__apiTrace || null : null;
       recordLocalTask({
         command: "thread refresh fetch",
@@ -448,7 +456,7 @@ export function createThreadListRefreshModule(deps) {
             return;
           }
         }
-        if (needsFinalRender) renderThreads(state.threadItems);
+        if (state.threadRefreshPausedForE2E !== true && needsFinalRender) renderThreads(state.threadItems);
       }
     }
   }

@@ -1426,23 +1426,45 @@ export function createDebugToolsModule(deps) {
           return { ok: true, remainingMs: Math.round(remaining) };
         },
         seedThreads(count = 260) {
-          const items = [];
-          for (let i = 0; i < count; i += 1) {
-            const workspace = i % 2 === 0 ? "wsl2" : "windows";
-            items.push({
-              id: `e2e_${i}`,
-              title: `Thread ${i}`,
-              updatedAt: Date.now() - i * 1000,
-              workspace,
-              cwd:
-                workspace === "wsl2"
-                  ? `/home/yiyou/e2e-${i}`
-                  : `C:\\Users\\yiyou\\e2e-${i}`,
-            });
+          const items = Array.isArray(count)
+            ? count.filter((item) => item && typeof item === "object").map((item) => ({ ...item }))
+            : [];
+          if (!items.length && !Array.isArray(count)) {
+            const total = Math.max(0, Number(count || 0) | 0);
+            for (let i = 0; i < total; i += 1) {
+              const workspace = i % 2 === 0 ? "wsl2" : "windows";
+              items.push({
+                id: `e2e_${i}`,
+                title: `Thread ${i}`,
+                updatedAt: Date.now() - i * 1000,
+                workspace,
+                cwd:
+                  workspace === "wsl2"
+                    ? `/home/yiyou/e2e-${i}`
+                    : `C:\\Users\\yiyou\\e2e-${i}`,
+              });
+            }
           }
           state.threadItemsAll = items;
           state.threadItems = items;
           return { ok: true, count: items.length };
+        },
+        rerenderThreads() {
+          const items = ensureArrayItemsRef(state.threadItems);
+          renderThreads(items);
+          return { ok: true, count: items.length };
+        },
+        pauseThreadRefreshForE2E(paused = true) {
+          const nextPaused = paused !== false;
+          state.threadRefreshPausedForE2E = nextPaused;
+          if (nextPaused && state.threadRefreshAbortByWorkspace && typeof state.threadRefreshAbortByWorkspace === "object") {
+            for (const controller of Object.values(state.threadRefreshAbortByWorkspace)) {
+              try {
+                controller?.abort?.();
+              } catch {}
+            }
+          }
+          return { ok: true, paused: nextPaused };
         },
         seedHistory(threadId, turnsN = 20, itemsPerTurn = 2, textSize = 20) {
           const id = String(threadId || "").trim() || "e2e";

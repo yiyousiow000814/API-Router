@@ -1083,6 +1083,7 @@ describe("debugTools", () => {
     const refreshCalls = [];
     const loadCalls = [];
     const apiCalls = [];
+    const renderedThreadIds = [];
     const state = {
       activeThreadId: "",
       activeThreadWorkspace: "windows",
@@ -1158,6 +1159,9 @@ describe("debugTools", () => {
         refreshCalls.push({ target, options });
         return windowRef.fetch(`/codex/threads?workspace=${target}`, { method: "GET" });
       },
+      renderThreads(items) {
+        renderedThreadIds.push((Array.isArray(items) ? items : []).map((item) => item.id));
+      },
       handleWsPayload() {},
       scrollChatToBottom() {},
       scrollToBottomReliable() {},
@@ -1197,11 +1201,24 @@ describe("debugTools", () => {
     expect(typeof hooks.startOpenThreadSlow).toBe("function");
     expect(typeof hooks.awaitSlowOpenDone).toBe("function");
     expect(typeof hooks.showTransientToolMessage).toBe("function");
+    expect(typeof hooks.rerenderThreads).toBe("function");
+    expect(typeof hooks.pauseThreadRefreshForE2E).toBe("function");
 
     expect(hooks.seedThreads(2)).toEqual({ ok: true, count: 2 });
     expect(state.activeThreadWorkspace).toBe("windows");
     expect(state.threadItemsAll.map((item) => item.id)).toEqual(["e2e_0", "e2e_1"]);
     expect(state.threadItemsAll.map((item) => item.workspace)).toEqual(["wsl2", "windows"]);
+    expect(hooks.rerenderThreads()).toEqual({ ok: true, count: 2 });
+    expect(renderedThreadIds).toEqual([["e2e_0", "e2e_1"]]);
+    expect(hooks.seedThreads([{ id: "custom-thread", workspace: "windows", cwd: "C:\\repo" }])).toEqual({
+      ok: true,
+      count: 1,
+    });
+    expect(state.threadItemsAll.map((item) => item.id)).toEqual(["custom-thread"]);
+    expect(hooks.pauseThreadRefreshForE2E(true)).toEqual({ ok: true, paused: true });
+    expect(state.threadRefreshPausedForE2E).toBe(true);
+    expect(hooks.pauseThreadRefreshForE2E(false)).toEqual({ ok: true, paused: false });
+    expect(state.threadRefreshPausedForE2E).toBe(false);
 
     expect(hooks.installFetchRecorder()).toEqual({ ok: true });
     const refreshResult = await hooks.refreshThreadsWithMock("windows", [{ id: "t-1" }]);

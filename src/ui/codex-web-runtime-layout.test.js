@@ -311,6 +311,22 @@ describe("codex-web runtime layout", () => {
     expect(source).toMatch(/@media \(max-width: 1080px\)\s*\{[\s\S]*?\.leftPanel \.panelFooter\s*\{[\s\S]*?padding-bottom:\s*max\(24px,\s*calc\(env\(safe-area-inset-bottom, 0px\) \+ 18px\)\)/i);
   });
 
+  it("uses the thread list as the mobile drawer scroller so the last chat stays reachable", () => {
+    expect(source).toMatch(/@media \(max-width: 1080px\)\s*\{[\s\S]*?\.leftPanel,\s*[\s\S]*?\.rightPanel\s*\{[\s\S]*?height:\s*var\(--visual-viewport-height,\s*var\(--app-height,\s*100vh\)\)/i);
+    const groupBodyMatch = source.match(/\.groupBody\s*\{([^}]+)\}/s);
+    expect(groupBodyMatch).toBeTruthy();
+    expect(groupBodyMatch?.[1] || "").not.toMatch(/max-height:\s*46vh/i);
+    expect(groupBodyMatch?.[1] || "").not.toMatch(/overflow-y:\s*auto/i);
+    const threadListMatch = source.match(/\.drawerBody \.itemList\s*\{([^}]+)\}/s);
+    expect(threadListMatch).toBeTruthy();
+    expect(threadListMatch?.[1] || "").toMatch(/overflow-y:\s*auto/i);
+    expect(threadListMatch?.[1] || "").not.toMatch(/overflow:\s*hidden/i);
+    const leftGroupBodyMatch = source.match(/\.leftPanel \.groupBody\s*\{([^}]+)\}/s);
+    expect(leftGroupBodyMatch).toBeTruthy();
+    expect(leftGroupBodyMatch?.[1] || "").toMatch(/max-height:\s*none/i);
+    expect(leftGroupBodyMatch?.[1] || "").toMatch(/overflow:\s*visible/i);
+  });
+
   it("defines shared motion tokens and slows them for phone-like layouts", () => {
     expect(source).toContain("--motion-fast: 160ms;");
     expect(source).toContain("--motion-base: 220ms;");

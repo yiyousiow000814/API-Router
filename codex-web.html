@@ -832,16 +832,6 @@
       display: grid;
       gap: 6px;
       padding: 8px;
-      /* Keep scroll inside the expanded group (matches original Web Codex behavior). */
-      max-height: 46vh;
-      overflow-y: auto;
-      overflow-x: hidden;
-      -webkit-overflow-scrolling: touch;
-      touch-action: pan-y;
-      /* Avoid 1-2px jiggle when scrollbars appear/disappear as content loads/filters. */
-      scrollbar-gutter: stable;
-      scrollbar-width: thin;
-      scrollbar-color: rgba(13, 18, 32, 0.35) transparent;
     }
     .groupBody.is-expanding,
     .groupBody.is-collapsing {
@@ -5649,8 +5639,8 @@
       min-height: 0;
       flex: 1 1 auto;
       position: relative;
-      /* Avoid double scrollbars: groupBody owns scroll. */
-      overflow: hidden;
+      overflow-y: auto;
+      overflow-x: hidden;
       padding-right: 2px;
       -webkit-overflow-scrolling: touch;
       touch-action: pan-y;
@@ -6278,6 +6268,8 @@
     .leftPanel .groupBody {
       gap: 0;
       padding: 0 8px 0 0;
+      max-height: none;
+      overflow: visible;
       scrollbar-gutter: stable;
     }
     .leftPanel .groupCard {
@@ -6532,6 +6524,8 @@
         position: fixed;
         top: 0;
         bottom: 0;
+        height: var(--visual-viewport-height, var(--app-height, 100vh));
+        max-height: var(--visual-viewport-height, var(--app-height, 100vh));
         width: clamp(260px, 70vw, 320px);
         z-index: var(--z-drawer-panel);
         box-shadow: none;
