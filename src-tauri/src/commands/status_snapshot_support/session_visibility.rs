@@ -1,14 +1,38 @@
+use crate::orchestrator::gateway::session_meta_identity::SessionMetaIdentity;
 use crate::orchestrator::gateway::ClientSessionRuntime;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::io::BufRead;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct RolloutRuntimeIdentity {
     session_id: String,
     agent_parent_session_id: Option<String>,
     is_agent: bool,
     is_review: bool,
+}
+
+#[derive(Default)]
+struct RolloutRuntimeIdentityCache {
+    identities: HashMap<String, Option<RolloutRuntimeIdentity>>,
+}
+
+impl RolloutRuntimeIdentityCache {
+    fn read<F>(&mut self, path: &str, loader: F) -> Option<&RolloutRuntimeIdentity>
+    where
+        F: FnOnce(&str) -> Option<RolloutRuntimeIdentity>,
+    {
+        use std::collections::hash_map::Entry;
+
+        let key = path.trim().to_string();
+        if key.is_empty() {
+            return None;
+        }
+        match self.identities.entry(key) {
+            Entry::Occupied(entry) => entry.into_mut().as_ref(),
+            Entry::Vacant(entry) => entry.insert(loader(path)).as_ref(),
+        }
+    }
 }
 
 pub(crate) fn session_has_rollout(entry: &ClientSessionRuntime) -> bool {
@@ -17,78 +41,6 @@ pub(crate) fn session_has_rollout(entry: &ClientSessionRuntime) -> bool {
         .as_deref()
         .map(str::trim)
         .is_some_and(|path| !path.is_empty())
-}
-
-fn rollout_string_field(payload: &serde_json::Value, keys: &[&str]) -> Option<String> {
-    keys.iter()
-        .find_map(|key| payload.get(*key))
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
-fn rollout_source_subagent(source: &serde_json::Value) -> Option<&serde_json::Value> {
-    source
-        .as_object()
-        .and_then(|source| source.get("subagent").or_else(|| source.get("subAgent")))
-}
-
-fn rollout_source_is_agent(source: Option<&serde_json::Value>) -> bool {
-    let Some(source) = source else {
-        return false;
-    };
-    match source {
-        serde_json::Value::Object(_) => rollout_source_subagent(source).is_some(),
-        serde_json::Value::String(source) => {
-            let source = source.to_ascii_lowercase();
-            source.contains("subagent") || source.contains("review")
-        }
-        _ => false,
-    }
-}
-
-fn rollout_source_is_review(source: Option<&serde_json::Value>) -> bool {
-    let Some(source) = source else {
-        return false;
-    };
-    match source {
-        serde_json::Value::Object(_) => rollout_source_subagent(source)
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|value| value.eq_ignore_ascii_case("review")),
-        serde_json::Value::String(source) => source.to_ascii_lowercase().contains("review"),
-        _ => false,
-    }
-}
-
-fn rollout_source_parent_session_id(source: Option<&serde_json::Value>) -> Option<String> {
-    let subagent = rollout_source_subagent(source?)?;
-    let parent = subagent
-        .as_object()
-        .and_then(|subagent| {
-            subagent
-                .get("thread_spawn")
-                .or_else(|| subagent.get("threadSpawn"))
-        })
-        .and_then(serde_json::Value::as_object)
-        .and_then(|spawn| {
-            spawn
-                .get("parent_thread_id")
-                .or_else(|| spawn.get("parentThreadId"))
-        })
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())?;
-    Some(parent.to_string())
-}
-
-fn rollout_thread_source_is_agent(payload: &serde_json::Value) -> bool {
-    rollout_string_field(payload, &["thread_source", "threadSource"])
-        .map(|source| {
-            let source = source.to_ascii_lowercase();
-            source.contains("subagent") || source.contains("review")
-        })
-        .unwrap_or(false)
 }
 
 fn read_rollout_runtime_identity(path: &str) -> Option<RolloutRuntimeIdentity> {
@@ -100,48 +52,22 @@ fn read_rollout_runtime_identity(path: &str) -> Option<RolloutRuntimeIdentity> {
             continue;
         }
         let value: serde_json::Value = serde_json::from_str(trimmed).ok()?;
-        if value.get("type").and_then(serde_json::Value::as_str) != Some("session_meta") {
+        let Some(identity) = SessionMetaIdentity::from_session_meta_event(&value) else {
             continue;
-        }
-        let payload = value.get("payload")?;
-        let session_id = rollout_string_field(payload, &["id", "session_id", "sessionId"])?;
-        let source = payload.get("source");
-        let agent_role = rollout_string_field(payload, &["agent_role", "agentRole"]);
-        let agent_nickname = rollout_string_field(payload, &["agent_nickname", "agentNickname"]);
-        let is_review = rollout_source_is_review(source)
-            || rollout_string_field(payload, &["thread_source", "threadSource"])
-                .is_some_and(|source| source.to_ascii_lowercase().contains("review"))
-            || agent_role
-                .as_deref()
-                .is_some_and(|role| role.eq_ignore_ascii_case("review"));
-        let is_agent = rollout_source_is_agent(source)
-            || rollout_thread_source_is_agent(payload)
-            || agent_role.as_deref().is_some_and(|role| !role.is_empty())
-            || agent_nickname
-                .as_deref()
-                .is_some_and(|nickname| !nickname.is_empty());
+        };
         return Some(RolloutRuntimeIdentity {
-            session_id,
-            agent_parent_session_id: rollout_source_parent_session_id(source).or_else(|| {
-                rollout_string_field(
-                    payload,
-                    &[
-                        "parentThreadId",
-                        "parent_thread_id",
-                        "agentParentSessionId",
-                        "agent_parent_session_id",
-                    ],
-                )
-            }),
-            is_agent: is_agent || is_review,
-            is_review,
+            session_id: identity.session_id,
+            agent_parent_session_id: identity.agent_parent_session_id,
+            is_agent: identity.is_agent,
+            is_review: identity.is_review,
         });
     }
     None
 }
 
-pub(crate) fn normalize_client_session_identity_from_rollout_path(
+fn normalize_client_session_identity_from_rollout_path_with_cache(
     entry: &mut ClientSessionRuntime,
+    cache: &mut RolloutRuntimeIdentityCache,
 ) {
     let Some(rollout_path) = entry
         .rollout_path
@@ -151,7 +77,7 @@ pub(crate) fn normalize_client_session_identity_from_rollout_path(
     else {
         return;
     };
-    let Some(identity) = read_rollout_runtime_identity(rollout_path) else {
+    let Some(identity) = cache.read(rollout_path, read_rollout_runtime_identity) else {
         return;
     };
     if !identity
@@ -180,8 +106,9 @@ pub(crate) fn normalize_client_session_identity_from_rollout_path(
 pub(crate) fn normalize_client_session_identities_from_rollouts(
     map: &mut HashMap<String, ClientSessionRuntime>,
 ) {
+    let mut cache = RolloutRuntimeIdentityCache::default();
     for entry in map.values_mut() {
-        normalize_client_session_identity_from_rollout_path(entry);
+        normalize_client_session_identity_from_rollout_path_with_cache(entry, &mut cache);
     }
 }
 
@@ -336,4 +263,43 @@ pub(crate) fn visible_client_session_items(
         recent_client_sessions_with_main_parent_context(&visible_sessions, map, primary_limit);
     trace_visible_client_session_selection(&visible_sessions, map, primary_limit, &selected);
     selected
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rollout_identity_cache_reads_shared_path_once_per_refresh() {
+        let mut reads = 0usize;
+        let mut cache = RolloutRuntimeIdentityCache::default();
+
+        let first = cache
+            .read("C:/rollouts/shared.jsonl", |_| {
+                reads += 1;
+                Some(RolloutRuntimeIdentity {
+                    session_id: "agent-child".to_string(),
+                    agent_parent_session_id: Some("parent-thread".to_string()),
+                    is_agent: true,
+                    is_review: false,
+                })
+            })
+            .cloned();
+        let second = cache
+            .read("C:/rollouts/shared.jsonl", |_| {
+                reads += 1;
+                None
+            })
+            .cloned();
+
+        assert_eq!(reads, 1, "shared rollout path should be read once");
+        assert_eq!(
+            first.and_then(|identity| identity.agent_parent_session_id),
+            Some("parent-thread".to_string())
+        );
+        assert_eq!(
+            second.map(|identity| identity.session_id),
+            Some("agent-child".to_string())
+        );
+    }
 }
