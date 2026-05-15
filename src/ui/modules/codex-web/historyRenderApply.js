@@ -400,7 +400,7 @@ export async function applyFullHistoryRender(params = {}) {
         preservePendingTurn: true,
       });
       state.activeThreadInlineCommentaryArchiveCount = inlineCommentaryArchiveCount;
-      appendMessages(messages, 0, addChat);
+      appendMessages(messages, 0, addChat, replayContext);
       if (preservedScrollTop !== null && box) {
         const maxTop = Math.max(0, Number(box.scrollHeight || 0) - Number(box.clientHeight || 0));
         box.scrollTop = Math.min(preservedScrollTop, maxTop);

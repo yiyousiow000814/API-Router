@@ -101,6 +101,18 @@ describe("historyRenderStrategy", () => {
     ).toBe("full_append");
   });
 
+  it("does not treat an empty previous list as an appendable prefix", () => {
+    expect(
+      decideHistoryRenderStrategy({
+        previousMessages: [],
+        nextMessages: [
+          { role: "user", kind: "", text: "hello" },
+          { role: "assistant", kind: "", text: "world" },
+        ],
+      })
+    ).toBe("full_rerender");
+  });
+
   it("falls back to full rerender when history shape diverges", () => {
     expect(
       decideHistoryRenderStrategy({

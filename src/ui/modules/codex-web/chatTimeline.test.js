@@ -241,9 +241,12 @@ function createFakeDom() {
   welcomeCard.id = "welcomeCard";
   const overlay = documentRef.createElement("div");
   overlay.id = "chatOpeningOverlay";
+  const spinner = documentRef.createElement("div");
+  spinner.className = "chatOpeningSpinner";
+  overlay.appendChild(spinner);
   chatBox.appendChild(welcomeCard);
   chatBox.appendChild(overlay);
-  return { documentRef, chatBox, welcomeCard, overlay };
+  return { documentRef, chatBox, welcomeCard, overlay, spinner };
 }
 
 describe("chatTimeline", () => {
@@ -1260,6 +1263,67 @@ describe("chatTimeline", () => {
     expect(dom.chatBox.classList.contains("chat-opening")).toBe(true);
     expect(state.chatShouldStickToBottom).toBe(true);
     expect(state.chatUserScrolledAwayAt).toBe(0);
+  });
+
+  it("restarts the opening spinner animation every time the overlay is shown", () => {
+    const layoutReads = [];
+    Object.defineProperty(dom.spinner, "offsetWidth", {
+      configurable: true,
+      get() {
+        layoutReads.push("spinner");
+        return 20;
+      },
+    });
+
+    module.setChatOpening(true);
+    module.setChatOpening(false);
+    module.setChatOpening(true);
+
+    expect(layoutReads).toEqual(["spinner", "spinner"]);
+    expect(dom.spinner.style.animation).toBe("none");
+    expect(dom.spinner.style.webkitAnimation).toBe("none");
+  });
+
+  it("drives the opening spinner with a frame fallback while the overlay is shown", () => {
+    const rafQueue = [];
+    const canceled = [];
+    let nextFrameId = 1;
+    const frameModule = createChatTimelineModule({
+      byId: (id) => dom.documentRef.getElementById(id),
+      state,
+      escapeHtml: (value) => String(value || ""),
+      renderMessageAttachments: () => "",
+      renderMessageBody: (_role, text) => `<span>${String(text || "")}</span>`,
+      wireMessageLinks: vi.fn(),
+      wireMessageAttachments: vi.fn(),
+      ...refs,
+      requestAnimationFrameRef(callback) {
+        rafQueue.push({ id: nextFrameId, callback });
+        return nextFrameId++;
+      },
+      cancelAnimationFrameRef(id) {
+        canceled.push(id);
+      },
+      documentRef: dom.documentRef,
+    });
+
+    frameModule.setChatOpening(true);
+
+    expect(dom.spinner.style.animation).toBe("none");
+    expect(dom.spinner.style.webkitAnimation).toBe("none");
+    expect(rafQueue).toHaveLength(1);
+
+    rafQueue.shift()?.callback?.(80);
+
+    expect(dom.spinner.style.transform).toBe("translateZ(0) rotate(36deg)");
+    expect(rafQueue).toHaveLength(1);
+
+    frameModule.setChatOpening(false);
+
+    expect(canceled).toEqual([2]);
+    expect(dom.spinner.style.transform).toBe("");
+    expect(dom.spinner.style.animation).toBe("");
+    expect(dom.spinner.style.webkitAnimation).toBe("");
   });
 
   it("reveals the prepared chat content in one batch after opening finishes", () => {

@@ -223,6 +223,74 @@ describe("historyRenderApply", () => {
     ]);
   });
 
+  it("renders a large newly opened history through the async full-render path", async () => {
+    const rendered = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRolloutPath: "C:\\repo\\.codex\\sessions\\rollout.jsonl",
+      activeThreadStarted: true,
+      activeThreadMessages: [],
+      chatShouldStickToBottom: true,
+    };
+    const messages = Array.from({ length: 90 }, (_, index) => ({
+      role: index % 2 === 0 ? "user" : "assistant",
+      text: `message ${index}`,
+      kind: "",
+      id: `message:${index}`,
+    }));
+
+    await applyFullHistoryRender({
+      state,
+      threadId: "thread-1",
+      messages,
+      prevMessages: [],
+      box: null,
+      preservedScrollTop: null,
+      inlineCommentaryArchiveCount: 0,
+      renderSig: "thread-1::large",
+      toolCount: 0,
+      forceFullRender: false,
+      options: {},
+      historyCommentary: null,
+      liveCommentarySnapshot: null,
+      deps: {
+        renderMessageBody() {
+          return "";
+        },
+        addChat() {
+          throw new Error("expected async renderChatFull instead of synchronous append");
+        },
+        buildMsgNode() {
+          return {};
+        },
+        clearChatMessages() {},
+        async renderChatFull(nextMessages, options = {}) {
+          rendered.push({ messages: nextMessages.length, options });
+        },
+        pushLiveDebugEvent() {},
+        scrollChatToBottom() {},
+        canStartChatLiveFollow() {
+          return false;
+        },
+        maybeScheduleChatFollow() {},
+        replayAssistantHistoryMessage() {
+          return false;
+        },
+        scrollToBottomReliable() {},
+        scheduleChatLiveFollow() {},
+        finalizeThreadRenderEffects() {},
+      },
+    });
+
+    expect(rendered).toEqual([
+      expect.objectContaining({
+        messages: 90,
+        options: expect.objectContaining({ preserveScroll: true }),
+      }),
+    ]);
+    expect(state.activeThreadMessages).toHaveLength(90);
+  });
+
   it("restores the previous assistant text before replaying a last-message update", async () => {
     const userNode = {
       classList: { contains(token) { return token === "user"; } },

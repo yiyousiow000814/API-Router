@@ -402,6 +402,140 @@ describe("threadListView", () => {
     );
   });
 
+  it("waits for the opening overlay to paint before loading history", async () => {
+    const list = createFakeElement("div");
+    const body = createFakeElement("body");
+    const events = [];
+    const rafQueue = [];
+    const state = {
+      threadItems: [],
+      threadItemsAll: [],
+      threadSearchQuery: "",
+      threadListLoading: false,
+      threadListLoadingTarget: "",
+      workspaceAvailability: { windowsInstalled: true, wsl2Installed: true },
+      threadListPendingVisibleAnimationByWorkspace: {},
+      threadListAnimationHoldUntilByWorkspace: {},
+      threadListVisibleOpenAnimationUntil: 0,
+      threadListAnimateNextRender: false,
+      threadListAnimateThreadIds: new Set(),
+      threadListExpandAnimateGroupKeys: new Set(),
+      threadListCollapseAnimateGroupKeys: new Set(),
+      threadListChevronOpenAnimateKeys: new Set(),
+      threadListChevronCloseAnimateKeys: new Set(),
+      threadListSkipScrollRestoreOnce: false,
+      collapsedWorkspaceKeys: new Set(),
+      threadGroupCollapseInitializedByWorkspace: { windows: true, wsl2: true },
+      favoriteThreadIds: new Set(),
+      activeThreadHistoryThreadId: "",
+      activeThreadHistoryIncomplete: false,
+      activeThreadHistoryStatusType: "",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingTurnThreadId: "",
+      activeThreadWorkspace: "windows",
+      activeThreadRolloutPath: "",
+      openingThreadReqId: 0,
+      openingThreadAbort: null,
+      pendingThreadResumes: new Map(),
+      threadAttachTransportById: new Map(),
+      activeThreadId: "",
+      chatShouldStickToBottom: false,
+    };
+    const module = createThreadListViewModule({
+      state,
+      byId(id) {
+        return id === "threadList" ? list : null;
+      },
+      escapeHtml(value) {
+        return String(value || "");
+      },
+      normalizeWorkspaceTarget(value) {
+        return String(value || "").toLowerCase() === "wsl2" ? "wsl2" : "windows";
+      },
+      getWorkspaceTarget() {
+        return "windows";
+      },
+      hasDualWorkspaceTargets() {
+        return true;
+      },
+      pushThreadAnimDebug() {},
+      isThreadListActuallyVisible() {
+        return true;
+      },
+      workspaceKeyOfThread(thread) {
+        return thread.workspace;
+      },
+      truncateLabel(value) {
+        return String(value || "");
+      },
+      relativeTimeLabel() {
+        return "";
+      },
+      pickThreadTimestamp() {
+        return Date.now();
+      },
+      setMainTab() {},
+      setMobileTab() {},
+      setActiveThread(threadId) {
+        state.activeThreadId = threadId;
+      },
+      setChatOpening(open) {
+        events.push(open ? "chat-opening:on" : "chat-opening:off");
+      },
+      detectThreadWorkspaceTarget(thread) {
+        return thread.workspace;
+      },
+      loadThreadMessages: async (threadId) => {
+        events.push(`history:${threadId}`);
+        state.activeThreadHistoryThreadId = threadId;
+      },
+      api: async () => ({ ok: true }),
+      setStatus(message) {
+        events.push(`status:${message}`);
+      },
+      scheduleThreadRefresh() {
+        events.push("threads:refresh");
+      },
+      scrollToBottomReliable() {
+        events.push("chat:scroll-bottom");
+      },
+      windowRef: { getComputedStyle() { return { paddingTop: "0px", paddingBottom: "0px" }; } },
+      documentRef: {
+        body,
+        createElement(tagName) {
+          return createFakeElement(tagName);
+        },
+      },
+      requestAnimationFrameRef(callback) {
+        rafQueue.push(callback);
+        return rafQueue.length;
+      },
+      performanceRef: { now() { return 0; } },
+      localStorageRef: { setItem() {} },
+      FAVORITE_THREADS_KEY: "favorites",
+    });
+
+    const thread = { id: "thread-1", workspace: "windows", title: "Alpha", status: { type: "idle" } };
+    module.renderThreads([thread]);
+    const card = list.children[0]?.children[1]?.children[0];
+
+    card.onclick();
+    await flushAsyncWork();
+
+    expect(events).toEqual(["chat-opening:on"]);
+
+    const firstFrame = rafQueue.shift();
+    firstFrame?.();
+    await flushAsyncWork();
+    expect(events).toEqual(["chat-opening:on"]);
+
+    const secondFrame = rafQueue.shift();
+    secondFrame?.();
+    await flushAsyncWork();
+
+    expect(events).toContain("history:thread-1");
+  });
+
   it("subscribes live state before slow history finishes when opening a running chat", async () => {
     const list = createFakeElement("div");
     const body = createFakeElement("body");

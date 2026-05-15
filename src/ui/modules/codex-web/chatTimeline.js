@@ -74,11 +74,15 @@ export function createChatTimelineModule(deps) {
     scrollChatToBottom,
     renderRuntimePanels = () => {},
     requestAnimationFrameRef = requestAnimationFrame,
+    cancelAnimationFrameRef =
+      typeof cancelAnimationFrame === "undefined" ? () => {} : cancelAnimationFrame,
     documentRef = document,
   } = deps;
   let archiveViewportAdjustToken = 0;
   let lastCommentaryArchiveRenderSig = "";
   let lastPendingInlineRenderSig = "";
+  let openingSpinnerActive = false;
+  let openingSpinnerFrameId = 0;
 
   function pushLiveDebugEvent(kind, payload = {}) {
     if (!Array.isArray(state.liveDebugEvents)) state.liveDebugEvents = [];
@@ -118,6 +122,71 @@ export function createChatTimelineModule(deps) {
       node.classList.remove("msg-enter");
       node.style.removeProperty("--msg-enter-delay");
     }, { once: true });
+  }
+
+  function restartOpeningSpinnerAnimation(overlay) {
+    const spinner = overlay?.querySelector?.(".chatOpeningSpinner");
+    if (!spinner?.style) return;
+    spinner.style.animation = "none";
+    spinner.style.webkitAnimation = "none";
+    try {
+      void spinner.offsetWidth;
+    } catch {}
+    spinner.style.animation = "";
+    spinner.style.webkitAnimation = "";
+  }
+
+  function stopOpeningSpinnerFallback(overlay) {
+    openingSpinnerActive = false;
+    if (openingSpinnerFrameId) {
+      try {
+        cancelAnimationFrameRef(openingSpinnerFrameId);
+      } catch {}
+      openingSpinnerFrameId = 0;
+    }
+    const spinner = overlay?.querySelector?.(".chatOpeningSpinner");
+    if (!spinner?.style) return;
+    spinner.style.transform = "";
+    spinner.style.animation = "";
+    spinner.style.webkitAnimation = "";
+  }
+
+  function startOpeningSpinnerFallback(overlay) {
+    const spinner = overlay?.querySelector?.(".chatOpeningSpinner");
+    if (!spinner?.style || typeof requestAnimationFrameRef !== "function") return;
+    stopOpeningSpinnerFallback(overlay);
+    openingSpinnerActive = true;
+    spinner.style.animation = "none";
+    spinner.style.webkitAnimation = "none";
+    const step = (timestamp) => {
+      if (!openingSpinnerActive) return;
+      openingSpinnerFrameId = 0;
+      const rawTime = Number.isFinite(Number(timestamp)) ? Number(timestamp) : Date.now();
+      const degrees = Math.round(((rawTime % 800) / 800) * 360);
+      spinner.style.transform = `translateZ(0) rotate(${degrees}deg)`;
+      if (!openingSpinnerActive) return;
+      scheduleFrame();
+    };
+    function scheduleFrame() {
+      if (!openingSpinnerActive || openingSpinnerFrameId) return;
+      let scheduling = true;
+      let invokedSync = false;
+      const frameId = requestAnimationFrameRef((timestamp) => {
+        const ranSynchronously = scheduling;
+        if (ranSynchronously) invokedSync = true;
+        if (ranSynchronously) {
+          openingSpinnerFrameId = 0;
+          const rawTime = Number.isFinite(Number(timestamp)) ? Number(timestamp) : Date.now();
+          const degrees = Math.round(((rawTime % 800) / 800) * 360);
+          spinner.style.transform = `translateZ(0) rotate(${degrees}deg)`;
+          return;
+        }
+        step(timestamp);
+      });
+      scheduling = false;
+      if (!invokedSync) openingSpinnerFrameId = frameId;
+    }
+    scheduleFrame();
   }
 
   function findMessageNodesByKey(box, messageKey) {
@@ -1028,6 +1097,8 @@ export function createChatTimelineModule(deps) {
     state.chatOpening = isOpening === true;
     if (isOpening) {
       clearChatMessages();
+      restartOpeningSpinnerAnimation(overlay);
+      startOpeningSpinnerFallback(overlay);
       const welcome = byId("welcomeCard");
       if (welcome) welcome.style.display = "none";
       state.chatShouldStickToBottom = true;
@@ -1039,6 +1110,7 @@ export function createChatTimelineModule(deps) {
         box.classList.remove("chat-opening-reveal");
       }
     } else if (box) {
+      stopOpeningSpinnerFallback(overlay);
       const hadOpeningClass = box.classList.contains("chat-opening");
       box.classList.remove("chat-opening");
       if (hadOpeningClass) {

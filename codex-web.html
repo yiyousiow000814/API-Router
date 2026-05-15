@@ -4066,9 +4066,6 @@
     body.floating-composer-layout .messages {
       padding-bottom: calc(var(--composer-float-height, 148px) + 20px + var(--mobile-bottom-clearance, env(safe-area-inset-bottom, 0px)));
     }
-    body.floating-composer-layout .chatOpeningOverlay {
-      bottom: calc(var(--composer-float-height, 148px) + 20px + var(--mobile-bottom-clearance, env(safe-area-inset-bottom, 0px)));
-    }
     body.floating-composer-layout .composer {
       position: absolute;
       left: 8px;
@@ -4118,17 +4115,41 @@
     .chatOpeningOverlay.show {
       display: flex;
     }
+    body.floating-composer-layout .chatOpeningOverlay {
+      bottom: calc(var(--composer-float-height, 148px) + 20px + var(--mobile-bottom-clearance, env(safe-area-inset-bottom, 0px)));
+    }
     .chatOpeningSpinner {
       width: 20px;
       height: 20px;
       border-radius: 999px;
       border: 2px solid rgba(99, 113, 136, 0.28);
       border-top-color: #637188;
+      transform-origin: 50% 50%;
+      will-change: transform;
+      -webkit-backface-visibility: hidden;
+      backface-visibility: hidden;
+      -webkit-animation: chat-opening-spin 0.8s linear infinite;
       animation: chat-opening-spin 0.8s linear infinite;
     }
+    @-webkit-keyframes chat-opening-spin {
+      from {
+        -webkit-transform: translateZ(0) rotate(0deg);
+        transform: translateZ(0) rotate(0deg);
+      }
+      to {
+        -webkit-transform: translateZ(0) rotate(360deg);
+        transform: translateZ(0) rotate(360deg);
+      }
+    }
     @keyframes chat-opening-spin {
-      from { transform: rotate(0deg); }
-      to { transform: rotate(360deg); }
+      from {
+        -webkit-transform: translateZ(0) rotate(0deg);
+        transform: translateZ(0) rotate(0deg);
+      }
+      to {
+        -webkit-transform: translateZ(0) rotate(360deg);
+        transform: translateZ(0) rotate(360deg);
+      }
     }
     .mobileComposerRow { display: flex; align-items: flex-end; gap: 8px; }
     .mobileComposerMetaRow {
@@ -5872,7 +5893,6 @@
       pointer-events: auto;
       transition: none;
     }
-    body.drawer-left-opening #threadList,
     body.drawer-left-previewing #threadPullHint,
     body.drawer-left-previewing #threadList {
       opacity: 0;

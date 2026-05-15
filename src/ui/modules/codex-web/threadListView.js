@@ -258,6 +258,18 @@ function explicitOpenThreadWorkspace(workspaceHint = "") {
   return hint === "windows" || hint === "wsl2" ? hint : "";
 }
 
+function waitForOpeningOverlayPaint(requestAnimationFrameRef) {
+  return new Promise((resolve) => {
+    if (typeof requestAnimationFrameRef !== "function") {
+      resolve();
+      return;
+    }
+    requestAnimationFrameRef(() => {
+      requestAnimationFrameRef(() => resolve());
+    });
+  });
+}
+
 export function createThreadListViewModule(deps) {
   const {
     state,
@@ -642,6 +654,8 @@ export function createThreadListViewModule(deps) {
         const workspaceHint = selection.workspace;
         const rolloutPath = selection.rolloutPath;
         setChatOpening(true);
+        await waitForOpeningOverlayPaint(requestAnimationFrameRef);
+        if (state.openingThreadReqId !== reqId || controller.signal.aborted) return;
         const explicitWorkspace = explicitOpenThreadWorkspace(workspaceHint);
         const liveFirst = shouldSubscribeLiveBeforeHistory(selection.threadStatusType);
         if (liveFirst) {
