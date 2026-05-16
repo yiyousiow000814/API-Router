@@ -144,6 +144,11 @@ function stopMenuEvent(event) {
   event?.stopPropagation?.();
 }
 
+function isPointerActivationEvent(event) {
+  const type = String(event?.type || "");
+  return type === "pointerdown" || type === "pointerup";
+}
+
 function filterReviewOptions(items, query) {
   const needle = String(query || "").trim().toLowerCase();
   const list = Array.isArray(items) ? items : [];
@@ -732,7 +737,6 @@ export function createSlashCommandsModule(deps) {
       }
       if (!shouldHandlePrimaryActivation(event)) return;
       markMenuInteraction();
-      armSyntheticClickSuppression(420);
       stopMenuEvent(event);
       navigateBackSlashMenu();
     });
@@ -763,7 +767,9 @@ export function createSlashCommandsModule(deps) {
       const applyFromNode = (event) => {
         if (!shouldHandlePrimaryActivation(event)) return;
         markMenuInteraction();
-        armSyntheticClickSuppression(420);
+        if (isPointerActivationEvent(event)) {
+          armSyntheticClickSuppression(420);
+        }
         stopMenuEvent(event);
         const index = Number(node.getAttribute("data-slash-index"));
         if (!Number.isInteger(index)) return;
