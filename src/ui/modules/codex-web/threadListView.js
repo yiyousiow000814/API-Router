@@ -917,7 +917,7 @@ export function createThreadListViewModule(deps) {
           state.threadListAnimateNextRender = false;
           state.threadListAnimateThreadIds = new Set();
           state.threadListSkipScrollRestoreOnce = true;
-          renderThreads(state.threadItems);
+          bodyForCollapseAnim.remove?.();
         });
       }
     }

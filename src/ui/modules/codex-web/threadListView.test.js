@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   activateExistingThreadView,
@@ -52,8 +52,17 @@ describe("threadListView", () => {
       clientHeight: 0,
       appendChild(child) {
         child.offsetTop = this.children.length * 38;
+        child.parentNode = this;
         this.children.push(child);
         return child;
+      },
+      removeChild(child) {
+        this.children = this.children.filter((item) => item !== child);
+        if (child) child.parentNode = null;
+        return child;
+      },
+      remove() {
+        this.parentNode?.removeChild?.(this);
       },
       setAttribute(name, value) {
         this.attributes.set(String(name), String(value));
@@ -61,8 +70,12 @@ describe("threadListView", () => {
       getAttribute(name) {
         return this.attributes.get(String(name)) || "";
       },
-      querySelector() {
-        return null;
+      querySelector(selector) {
+        const className = String(selector || "").startsWith(".")
+          ? String(selector).slice(1)
+          : "";
+        if (!className) return null;
+        return this.children.find((child) => child?.className === className || child?.classList?.contains?.(className)) || null;
       },
       querySelectorAll() {
         return [];
@@ -276,6 +289,116 @@ describe("threadListView", () => {
     expect(groupBody.style.height).toBe("32px");
     const source = fs.readFileSync(new URL("./threadListView.js", import.meta.url), "utf8");
     expect(source).not.toContain(".slice(0, 12)");
+  });
+
+  it("does not rerender the expanding group after the previous group finishes collapsing", () => {
+    vi.useFakeTimers();
+    try {
+      const list = createFakeElement("div");
+      const body = createFakeElement("body");
+      const state = {
+        threadItems: [],
+        threadItemsAll: [],
+        threadSearchQuery: "",
+        threadListLoading: false,
+        threadListLoadingTarget: "",
+        workspaceAvailability: { windowsInstalled: true, wsl2Installed: true },
+        threadListPendingVisibleAnimationByWorkspace: {},
+        threadListAnimationHoldUntilByWorkspace: {},
+        threadListVisibleOpenAnimationUntil: 0,
+        threadListAnimateNextRender: false,
+        threadListAnimateThreadIds: new Set(),
+        threadListExpandAnimateGroupKeys: new Set(),
+        threadListCollapseAnimateGroupKeys: new Set(),
+        threadListChevronOpenAnimateKeys: new Set(),
+        threadListChevronCloseAnimateKeys: new Set(),
+        threadListSkipScrollRestoreOnce: false,
+        collapsedWorkspaceKeys: new Set(["beta"]),
+        threadGroupCollapseInitializedByWorkspace: { windows: true, wsl2: true },
+        favoriteThreadIds: new Set(),
+      };
+      const module = createThreadListViewModule({
+        state,
+        byId(id) {
+          return id === "threadList" ? list : null;
+        },
+        escapeHtml(value) {
+          return String(value || "");
+        },
+        normalizeWorkspaceTarget(value) {
+          return String(value || "").toLowerCase() === "wsl2" ? "wsl2" : "windows";
+        },
+        getWorkspaceTarget() {
+          return "windows";
+        },
+        hasDualWorkspaceTargets() {
+          return true;
+        },
+        pushThreadAnimDebug() {},
+        isThreadListActuallyVisible() {
+          return true;
+        },
+        workspaceKeyOfThread(thread) {
+          return thread.workspace;
+        },
+        truncateLabel(value) {
+          return String(value || "");
+        },
+        relativeTimeLabel() {
+          return "";
+        },
+        pickThreadTimestamp() {
+          return Date.now();
+        },
+        setMainTab() {},
+        setMobileTab() {},
+        setActiveThread() {},
+        setChatOpening() {},
+        detectThreadWorkspaceTarget(thread) {
+          return thread.workspace;
+        },
+        loadThreadMessages: async () => {},
+        api: async () => ({}),
+        setStatus() {},
+        scheduleThreadRefresh() {},
+        scrollToBottomReliable() {},
+        windowRef: { getComputedStyle() { return { paddingTop: "0px", paddingBottom: "0px" }; } },
+        documentRef: {
+          body,
+          createElement(tagName) {
+            return createFakeElement(tagName);
+          },
+        },
+        requestAnimationFrameRef(callback) {
+          callback();
+          return 1;
+        },
+        performanceRef: { now() { return 0; } },
+        localStorageRef: { setItem() {} },
+        FAVORITE_THREADS_KEY: "favorites",
+      });
+      state.threadItems = [
+        { id: "alpha-1", workspace: "alpha", title: "Alpha 1" },
+        { id: "alpha-2", workspace: "alpha", title: "Alpha 2" },
+        { id: "beta-1", workspace: "beta", title: "Beta 1" },
+        { id: "beta-2", workspace: "beta", title: "Beta 2" },
+      ];
+
+      module.renderThreads(state.threadItems);
+      expect(list.children).toHaveLength(2);
+      list.children[1].children[0].onclick();
+      const betaGroup = list.children[1];
+      const betaBody = betaGroup.children[1];
+      expect(betaBody.classList.contains("is-stepped-expanding")).toBe(true);
+
+      vi.advanceTimersByTime(260);
+
+      expect(list.children[1]).toBe(betaGroup);
+      expect(betaGroup.children[1]).toBe(betaBody);
+      expect(betaBody.classList.contains("is-stepped-expanding")).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("renders grouped threads without touching entries before initialization", () => {
