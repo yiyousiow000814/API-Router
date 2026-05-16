@@ -242,6 +242,7 @@ export function createSlashCommandsModule(deps) {
   let lastPointerMenuActivationAt = 0;
   let lastMenuInteractionAt = 0;
   let manualCommandPickerOpen = false;
+  let manualCommandPickerParent = null;
   const scheduleFrame = typeof windowRef?.requestAnimationFrame === "function"
     ? windowRef.requestAnimationFrame.bind(windowRef)
     : ((cb) => cb());
@@ -298,6 +299,9 @@ export function createSlashCommandsModule(deps) {
   function currentMenuContext() {
     const prompt = currentPromptValue();
     if (manualCommandPickerOpen && !String(prompt || "").trim()) {
+      if (manualCommandPickerParent && Array.isArray(manualCommandPickerParent.children)) {
+        return { items: manualCommandPickerParent.children.slice(), parent: manualCommandPickerParent };
+      }
       return { items: Array.isArray(state.slashCommands) ? state.slashCommands.slice() : [], parent: null };
     }
     return resolveSlashMenuContext(state.slashCommands, currentPromptValue());
@@ -812,6 +816,7 @@ export function createSlashCommandsModule(deps) {
 
   function hideSlashCommandMenu() {
     manualCommandPickerOpen = false;
+    manualCommandPickerParent = null;
     state.slashMenuOpen = false;
     state.slashMenuItems = [];
     state.slashMenuSelectedIndex = 0;
@@ -867,6 +872,7 @@ export function createSlashCommandsModule(deps) {
 
   function openSlashCommandPicker() {
     manualCommandPickerOpen = true;
+    manualCommandPickerParent = null;
     resetSpecialMenu();
     state.slashMenuOpen = true;
     state.slashMenuItems = Array.isArray(state.slashCommands) ? state.slashCommands.slice() : [];
@@ -945,6 +951,7 @@ export function createSlashCommandsModule(deps) {
     const workspace = currentWorkspaceTarget();
     if (trimmedPrompt) {
       manualCommandPickerOpen = false;
+      manualCommandPickerParent = null;
     }
     if (
       state.slashCommandsLoaded === true &&
@@ -971,7 +978,7 @@ export function createSlashCommandsModule(deps) {
       return;
     }
     const context = manualCommandPickerOpen && !trimmedPrompt
-      ? { items: Array.isArray(state.slashCommands) ? state.slashCommands.slice() : [], parent: null }
+      ? currentMenuContext()
       : resolveSlashMenuContext(state.slashCommands, promptValue);
     const shouldOpen = manualCommandPickerOpen && !trimmedPrompt
       ? true
@@ -1047,6 +1054,11 @@ export function createSlashCommandsModule(deps) {
       hideSlashCommandMenu();
       return true;
     }
+    if (manualCommandPickerOpen && !String(input.value || "").trim()) {
+      manualCommandPickerParent = null;
+      syncSlashCommandMenu();
+      return true;
+    }
     input.value = "/";
     updateMobileComposerState();
     try {
@@ -1116,10 +1128,32 @@ export function createSlashCommandsModule(deps) {
     const item = selectedCommand();
     if (!input || !item) return false;
     const context = currentMenuContext();
+    const isManualPicker = manualCommandPickerOpen && !String(input.value || "").trim();
     if (context.parent && isSelectionCommandParent(context.parent) && !(Array.isArray(item.children) && item.children.length > 0)) {
       executeSlashCommand(item.command).catch((error) => {
         setStatus(error?.message || `Failed to execute ${item.command}`, true);
       });
+      return true;
+    }
+    if (isManualPicker && Array.isArray(item.children) && item.children.length > 0) {
+      manualCommandPickerParent = item;
+      state.slashMenuOpen = true;
+      state.slashMenuItems = item.children.slice();
+      state.slashMenuSelectedIndex = 0;
+      state.slashMenuSelectionVisible = false;
+      state.slashMenuContextKey = slashMenuContextKey("", { items: state.slashMenuItems, parent: item });
+      renderSlashMenu();
+      return true;
+    }
+    if (isManualPicker && item.command === "/review") {
+      setSpecialMenuMode("review-presets");
+      warmReviewOptions();
+      state.slashMenuOpen = true;
+      state.slashMenuItems = [];
+      state.slashMenuSelectedIndex = 0;
+      state.slashMenuSelectionVisible = false;
+      state.slashMenuContextKey = "special:review";
+      renderSlashMenu({ focusSpecialInput: false });
       return true;
     }
     input.value = item.insertText;
