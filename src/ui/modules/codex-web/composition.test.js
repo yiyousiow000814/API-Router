@@ -85,6 +85,7 @@ describe("composition", () => {
       maybeNotifyTurnDone: () => {},
       updateNotificationState: () => {},
       refreshActiveThreadGitMeta: async () => {},
+      openSlashCommandPicker: () => {},
       armSyntheticClickSuppression: () => {},
       wireBlurBackdropShield: () => {},
       bindClick: () => {},
@@ -150,6 +151,7 @@ describe("composition", () => {
     expect(createActionBindingsModule).toHaveBeenCalledWith(
       expect.objectContaining({
         refreshActiveThreadGitMeta: expect.any(Function),
+        openSlashCommandPicker: expect.any(Function),
         removeChatMessageByKey: expect.any(Function),
         wireThreadPullToRefresh: liveWireThreadPullToRefresh,
       })

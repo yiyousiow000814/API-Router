@@ -405,6 +405,7 @@ export function createCodexWebComposition(deps) {
     removePendingAttachment: turnActions.removePendingAttachment,
     previewPendingAttachment: turnActions.previewPendingAttachment,
     executeSlashCommand: turnActions.executeSlashCommand,
+    openSlashCommandPicker: deps.openSlashCommandPicker,
     cancelQueuedTurnEditing: turnActions.cancelQueuedTurnEditing,
     clearQueuedTurn: turnActions.clearQueuedTurn,
     editQueuedTurn: turnActions.editQueuedTurn,
