@@ -362,8 +362,9 @@ describe("codex-web runtime layout", () => {
     expect(source).toMatch(/animation:\s*thread-group-enter var\(--motion-base,\s*220ms\) cubic-bezier\(\.22, \.61, \.36, 1\) both/i);
     expect(source).toMatch(/animation:\s*thread-list-state-text-swap var\(--motion-fast,\s*160ms\) ease both/i);
     expect(source).toMatch(/\.itemCard\.threadExpandEnter\s*\{[\s\S]*?transform:\s*translate3d\(0,\s*6px,\s*0\)/i);
-    expect(source).toMatch(/\.itemCard\.threadExpandEnter\s*\{[\s\S]*?animation:\s*thread-card-expand-enter 180ms cubic-bezier\(\.22, 1, \.36, 1\) both/i);
+    expect(source).toMatch(/\.itemCard\.threadExpandEnter\s*\{[\s\S]*?animation:\s*thread-card-expand-enter 260ms cubic-bezier\(\.22, 1, \.36, 1\) both/i);
     expect(source).toMatch(/\.itemCard\.threadExpandEnter\s*\{[\s\S]*?animation-delay:\s*var\(--thread-expand-enter-delay,\s*0ms\)/i);
+    expect(source).toMatch(/\.groupBody\.is-expanding\s*\{[\s\S]*?height 360ms cubic-bezier\(\.22, 1, \.36, 1\)/i);
     expect(source).toMatch(/animation:\s*chevron-open var\(--motion-fast,\s*160ms\) ease/i);
     expect(source).toMatch(/animation:\s*settings-card-in var\(--motion-base,\s*220ms\) cubic-bezier\(\.22, 1, \.36, 1\) both/i);
     expect(source).toMatch(/animation:\s*settings-section-in var\(--motion-base,\s*220ms\) cubic-bezier\(\.22, 1, \.36, 1\) both/i);

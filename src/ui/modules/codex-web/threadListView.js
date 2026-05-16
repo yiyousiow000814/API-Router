@@ -535,7 +535,7 @@ export function createThreadListViewModule(deps) {
     let threadExpandEnterIndex = 0;
     let groupEnterIndex = 0;
     const nextThreadEnterDelayMs = () => Math.min(420, threadEnterIndex++ * 28);
-    const nextThreadExpandEnterDelayMs = () => Math.min(144, threadExpandEnterIndex++ * 18);
+    const nextThreadExpandEnterDelayMs = () => Math.min(288, threadExpandEnterIndex++ * 36);
     const nextGroupEnterDelayMs = () =>
       (staggerGroupEnter ? Math.min(640, groupEnterIndex++ * 120) : 0);
     if (!entries.length) {
