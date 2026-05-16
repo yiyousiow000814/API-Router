@@ -375,7 +375,6 @@ export function createThreadListViewModule(deps) {
         child?.classList?.contains?.("threadExpandEnter")
       );
       const steppedHeights = revealCards
-        .slice(0, 12)
         .map((card) => {
           const cardHeight = Math.max(0, card.getBoundingClientRect?.().height || 0);
           const cardTop = Math.max(0, Number(card.offsetTop || 0));
@@ -407,7 +406,7 @@ export function createThreadListViewModule(deps) {
         const applyStep = () => {
           body.style.height = `${steppedHeights[stepIndex]}px`;
           stepIndex += 1;
-          if (stepIndex < steppedHeights.length) setTimeout(applyStep, 64);
+          if (stepIndex < steppedHeights.length) setTimeout(applyStep, 18);
         };
         applyStep();
       });
@@ -423,7 +422,7 @@ export function createThreadListViewModule(deps) {
         body.style.paddingBottom = "";
         body.style.overflow = "";
       };
-      const cleanupDelayMs = Math.max(260, steppedHeights.length * 64 + 220);
+      const cleanupDelayMs = Math.max(260, steppedHeights.length * 18 + 220);
       setTimeout(cleanup, cleanupDelayMs);
     };
 
@@ -559,7 +558,7 @@ export function createThreadListViewModule(deps) {
     let threadExpandEnterIndex = 0;
     let groupEnterIndex = 0;
     const nextThreadEnterDelayMs = () => Math.min(420, threadEnterIndex++ * 28);
-    const nextThreadExpandEnterDelayMs = () => Math.min(768, threadExpandEnterIndex++ * 64);
+    const nextThreadExpandEnterDelayMs = () => Math.min(420, threadExpandEnterIndex++ * 18);
     const nextGroupEnterDelayMs = () =>
       (staggerGroupEnter ? Math.min(640, groupEnterIndex++ * 120) : 0);
     if (!entries.length) {

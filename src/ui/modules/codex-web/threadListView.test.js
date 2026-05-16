@@ -255,21 +255,27 @@ describe("threadListView", () => {
       FAVORITE_THREADS_KEY: "favorites",
     });
 
-    module.renderThreads([
-      { id: "thread-1", workspace: "windows", title: "Alpha" },
-      { id: "thread-2", workspace: "windows", title: "Beta" },
-    ]);
+    module.renderThreads(
+      Array.from({ length: 14 }, (_, index) => ({
+        id: `thread-${index + 1}`,
+        workspace: "windows",
+        title: `Thread ${index + 1}`,
+      }))
+    );
 
     const cards = list.children[0].children[1].children;
-    expect(cards).toHaveLength(2);
+    expect(cards).toHaveLength(14);
     expect(cards[0].classList.contains("threadExpandEnter")).toBe(true);
     expect(cards[1].classList.contains("threadExpandEnter")).toBe(true);
     expect(cards[0].classList.contains("threadEnter")).toBe(false);
     expect(cards[0].style["--thread-expand-enter-delay"]).toBe("0ms");
-    expect(cards[1].style["--thread-expand-enter-delay"]).toBe("64ms");
+    expect(cards[1].style["--thread-expand-enter-delay"]).toBe("18ms");
+    expect(cards[13].style["--thread-expand-enter-delay"]).toBe("234ms");
     const groupBody = list.children[0].children[1];
     expect(groupBody.classList.contains("is-stepped-expanding")).toBe(true);
     expect(groupBody.style.height).toBe("32px");
+    const source = fs.readFileSync(new URL("./threadListView.js", import.meta.url), "utf8");
+    expect(source).not.toContain(".slice(0, 12)");
   });
 
   it("renders grouped threads without touching entries before initialization", () => {
