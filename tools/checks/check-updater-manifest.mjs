@@ -1,7 +1,8 @@
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { resolveWindowsSdkTool } from '../windows/win-sdk-env.mjs';
 
 const root = process.cwd();
 
@@ -14,23 +15,18 @@ function argValue(name) {
   return '';
 }
 
-function candidateMtPaths() {
-  const paths = [];
-  if (process.env.MT) paths.push(process.env.MT);
-  const programFilesX86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
-  const kitsBin = path.join(programFilesX86, 'Windows Kits', '10', 'bin');
-  try {
-    for (const version of readdirSync(kitsBin).sort().reverse()) {
-      paths.push(path.join(kitsBin, version, 'x64', 'mt.exe'));
-    }
-  } catch {
-    // Windows SDK is not installed.
+async function resolveMtPath() {
+  if (process.env.MT && existsSync(process.env.MT)) {
+    return process.env.MT;
   }
-  return paths;
-}
-
-function findMt() {
-  return candidateMtPaths().find((candidate) => candidate && existsSync(candidate));
+  const result = await resolveWindowsSdkTool('mt.exe');
+  if (!result.path) {
+    const checked = Array.isArray(result.checkedPaths) && result.checkedPaths.length
+      ? ` Checked: ${result.checkedPaths.join(', ')}`
+      : '';
+    throw new Error(`mt.exe not found in Windows SDK.${checked}`);
+  }
+  return result.path;
 }
 
 const exePath = path.resolve(
@@ -43,9 +39,11 @@ if (!existsSync(exePath)) {
   process.exit(1);
 }
 
-const mtPath = findMt();
-if (!mtPath) {
-  console.error('[check-updater-manifest] mt.exe not found in Windows SDK');
+let mtPath;
+try {
+  mtPath = await resolveMtPath();
+} catch (error) {
+  console.error(`[check-updater-manifest] ${error?.message || error}`);
   process.exit(1);
 }
 
