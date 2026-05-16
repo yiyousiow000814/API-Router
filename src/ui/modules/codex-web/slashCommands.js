@@ -243,6 +243,7 @@ export function createSlashCommandsModule(deps) {
   let lastMenuInteractionAt = 0;
   let manualCommandPickerOpen = false;
   let manualCommandPickerParent = null;
+  let suppressNextMenuClick = false;
   const scheduleFrame = typeof windowRef?.requestAnimationFrame === "function"
     ? windowRef.requestAnimationFrame.bind(windowRef)
     : ((cb) => cb());
@@ -790,6 +791,7 @@ export function createSlashCommandsModule(deps) {
       node.addEventListener("pointerdown", (event) => {
         markMenuInteraction();
         pointerStartedOnNode = shouldHandlePrimaryActivation(event);
+        suppressNextMenuClick = false;
         stopMenuEvent(event);
       });
       node.addEventListener("pointerup", (event) => {
@@ -805,6 +807,11 @@ export function createSlashCommandsModule(deps) {
         pointerStartedOnNode = false;
       });
       node.addEventListener("click", (event) => {
+        if (suppressNextMenuClick) {
+          suppressNextMenuClick = false;
+          stopMenuEvent(event);
+          return;
+        }
         if (Date.now() - lastPointerMenuActivationAt <= 500) {
           stopMenuEvent(event);
           return;
@@ -870,9 +877,10 @@ export function createSlashCommandsModule(deps) {
     return loadPromise;
   }
 
-  function openSlashCommandPicker() {
+  function openSlashCommandPicker(sourceEvent) {
     manualCommandPickerOpen = true;
     manualCommandPickerParent = null;
+    suppressNextMenuClick = isPointerActivationEvent(sourceEvent);
     resetSpecialMenu();
     state.slashMenuOpen = true;
     state.slashMenuItems = Array.isArray(state.slashCommands) ? state.slashCommands.slice() : [];

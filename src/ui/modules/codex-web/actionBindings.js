@@ -805,7 +805,7 @@ export function createActionBindingsModule(deps) {
       event?.stopPropagation?.();
       state.composerAttachmentMenuOpen = false;
       updateMobileComposerState();
-      openSlashCommandPicker();
+      openSlashCommandPicker(event);
     });
     bindResponsiveClick("mobileSendBtn", () => {
       const promptValue = String(byId("mobilePromptInput")?.value || "").trim();
