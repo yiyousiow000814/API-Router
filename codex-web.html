@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=overlays-content" />
   <meta name="theme-color" content="#ffffff" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="mobile-web-app-capable" content="yes" />
@@ -48,11 +48,13 @@
       --visual-viewport-height: 100vh;
       --keyboard-offset: 0px;
       --composer-float-height: 148px;
+      --mobile-keyboard-composer-gap: 0px;
       --mobile-bottom-clearance: max(26px, calc(env(safe-area-inset-bottom, 0px) + 14px));
       --motion-fast: 160ms;
       --motion-base: 220ms;
       --motion-slow: 260ms;
       --motion-enter: 360ms;
+      --motion-keyboard: 260ms;
       --motion-drawer: var(--motion-slow);
 
       /* z-index scale (sequential, no gaps). */
@@ -678,6 +680,17 @@
       from { opacity: 0; transform: translate3d(0, 18px, 0); }
       to { opacity: 1; transform: translate3d(0, 0, 0); }
     }
+    .itemCard.threadExpandEnter {
+      opacity: 0;
+      transform: translate3d(0, 6px, 0);
+      animation: thread-card-expand-enter 220ms cubic-bezier(.22, 1, .36, 1) both;
+      animation-delay: var(--thread-expand-enter-delay, 0ms);
+      will-change: opacity, transform;
+    }
+    @keyframes thread-card-expand-enter {
+      from { opacity: 0; transform: translate3d(0, 6px, 0); }
+      to { opacity: 1; transform: translate3d(0, 0, 0); }
+    }
     @keyframes thread-header-enter {
       from { opacity: 0; transform: translate3d(0, 18px, 0); }
       to { opacity: 1; transform: translate3d(0, 0, 0); }
@@ -843,6 +856,13 @@
         padding-top 0.2s ease,
         padding-bottom 0.2s ease;
       will-change: height, opacity, padding-top, padding-bottom;
+    }
+    .groupBody.is-continuous-expanding {
+      transition:
+        height var(--thread-expand-duration, 260ms) cubic-bezier(.22, 1, .36, 1),
+        opacity 180ms ease,
+        padding-top var(--thread-expand-duration, 260ms) cubic-bezier(.22, 1, .36, 1),
+        padding-bottom var(--thread-expand-duration, 260ms) cubic-bezier(.22, 1, .36, 1);
     }
     .itemCard .row { min-width: 0; width: 100%; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; column-gap: 4px; align-items: center; }
     .itemCard .row .itemTitle { min-width: 0; max-width: 100%; display: block; }
@@ -4044,23 +4064,23 @@
       right: 8px;
       bottom: auto;
       left: 8px;
-      height: calc(var(--visual-viewport-height, var(--app-height, 100vh)) - 16px);
-      max-height: calc(var(--visual-viewport-height, var(--app-height, 100vh)) - 16px);
+      height: calc(var(--app-height, 100vh) - 16px);
+      max-height: calc(var(--app-height, 100vh) - 16px);
       min-height: 0;
       overflow: visible;
     }
     body.floating-composer-layout #mainLayout {
-      min-height: var(--visual-viewport-height, var(--app-height, 100vh));
-      height: var(--visual-viewport-height, var(--app-height, 100dvh));
+      min-height: var(--app-height, 100vh);
+      height: var(--app-height, 100dvh);
     }
     body.floating-composer-layout .messages {
-      padding-bottom: calc(var(--composer-float-height, 148px) + 20px + var(--mobile-bottom-clearance, env(safe-area-inset-bottom, 0px)));
+      padding-bottom: calc(var(--composer-float-height, 148px) + 20px + var(--keyboard-offset, 0px) + var(--mobile-bottom-clearance, env(safe-area-inset-bottom, 0px)));
     }
     body.floating-composer-layout .composer {
       position: absolute;
       left: 8px;
       right: 8px;
-      bottom: var(--mobile-bottom-clearance, calc(10px + env(safe-area-inset-bottom, 0px)));
+      bottom: calc(var(--keyboard-offset, 0px) + var(--mobile-bottom-clearance, calc(10px + env(safe-area-inset-bottom, 0px))));
       z-index: var(--z-chat-header);
       padding: 0;
       gap: 8px;
@@ -4070,6 +4090,8 @@
       box-shadow: none;
       backdrop-filter: none;
       -webkit-backdrop-filter: none;
+      transition: bottom var(--motion-keyboard, var(--motion-base, 220ms)) cubic-bezier(.22, 1, .36, 1);
+      will-change: bottom;
     }
     body.floating-composer-layout .composerInputSurface {
       border: 1px solid rgba(13, 18, 32, 0.1);
@@ -4106,7 +4128,7 @@
       display: flex;
     }
     body.floating-composer-layout .chatOpeningOverlay {
-      bottom: calc(var(--composer-float-height, 148px) + 20px + var(--mobile-bottom-clearance, env(safe-area-inset-bottom, 0px)));
+      bottom: calc(var(--composer-float-height, 148px) + 20px + var(--keyboard-offset, 0px) + var(--mobile-bottom-clearance, env(safe-area-inset-bottom, 0px)));
     }
     .chatOpeningSpinner {
       width: 20px;
@@ -6684,8 +6706,8 @@
         top: 0;
         right: 0;
         left: 0;
-        height: var(--visual-viewport-height, var(--app-height, 100vh));
-        max-height: var(--visual-viewport-height, var(--app-height, 100vh));
+        height: var(--app-height, 100vh);
+        max-height: var(--app-height, 100vh);
         border-radius: 0;
       }
       body.floating-composer-layout .messages {
@@ -6696,6 +6718,15 @@
         left: 0;
         right: 0;
         padding-inline: 10px;
+      }
+      body.mobile-keyboard-open.floating-composer-layout {
+        --composer-float-height: 98px;
+      }
+      body.mobile-keyboard-open.floating-composer-layout .composer {
+        bottom: calc(var(--keyboard-offset, 0px) + var(--mobile-keyboard-composer-gap, 0px));
+      }
+      body.mobile-keyboard-open.floating-composer-layout .composerPickerBar {
+        display: none;
       }
       body.floating-composer-layout .composerInputSurface {
         border-radius: 20px;

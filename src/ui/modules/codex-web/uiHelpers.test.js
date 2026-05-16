@@ -219,4 +219,49 @@ describe("uiHelpers", () => {
       vi.useRealTimers();
     }
   });
+
+  it("supports click-only responsive actions for native file picker activation", () => {
+    const listeners = new Map();
+    const button = {
+      addEventListener(name, handler) {
+        listeners.set(name, handler);
+      },
+    };
+    const module = createUiHelpersModule({
+      state: { suppressSyntheticClickUntil: 0 },
+      threadAnimDebug: { enabled: false, seq: 0, events: [] },
+      normalizeWorkspaceTarget(value) {
+        return value;
+      },
+      setStatus() {},
+      documentRef: {
+        body: { classList: { contains() { return false; } } },
+        getElementById(id) {
+          return id === "file" ? button : null;
+        },
+      },
+      performanceRef: { now() { return 0; } },
+      windowRef: {},
+    });
+    const handler = vi.fn();
+    const pointerEvent = {
+      type: "pointerdown",
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    };
+    const clickEvent = {
+      type: "click",
+      preventDefault() {},
+      stopPropagation() {},
+    };
+
+    module.bindResponsiveClick("file", handler, { activationEvent: "click" });
+    listeners.get("pointerdown")?.(pointerEvent);
+    listeners.get("click")?.(clickEvent);
+
+    expect(pointerEvent.preventDefault).not.toHaveBeenCalled();
+    expect(pointerEvent.stopPropagation).not.toHaveBeenCalled();
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler).toHaveBeenCalledWith(clickEvent);
+  });
 });

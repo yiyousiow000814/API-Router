@@ -261,17 +261,37 @@ describe("codex-web runtime layout", () => {
     expect(shellMatch?.[1] || "").toMatch(/min-height:\s*var\(--app-height,\s*100vh\)/i);
   });
 
-  it("floats the mobile composer above the bottom edge and keyboard offset", () => {
+  it("floats the mobile composer above the keyboard without shrinking the page", () => {
     expect(source).toContain("--composer-float-height: 148px;");
     expect(source).toContain("--mobile-bottom-clearance: max(26px, calc(env(safe-area-inset-bottom, 0px) + 14px));");
     expect(source).toContain("body.floating-composer-layout .chatPanel");
     expect(source).toContain("body.floating-composer-layout .composer");
     expect(source).toContain("body.floating-composer-layout .messages");
     expect(source).toMatch(/body\.floating-composer-layout \.chatPanel\s*\{[\s\S]*?bottom:\s*auto/);
-    expect(source).toMatch(/body\.floating-composer-layout \.chatPanel\s*\{[\s\S]*?height:\s*calc\(var\(--visual-viewport-height,\s*var\(--app-height,\s*100vh\)\)\s*-\s*16px\)/);
-    expect(source).toMatch(/body\.floating-composer-layout \.composer\s*\{[\s\S]*?bottom:\s*var\(--mobile-bottom-clearance,\s*calc\(10px \+ env\(safe-area-inset-bottom, 0px\)\)\)/);
-    expect(source).toMatch(/body\.floating-composer-layout \.messages\s*\{[\s\S]*?padding-bottom:\s*calc\(var\(--composer-float-height, 148px\) \+ 20px \+ var\(--mobile-bottom-clearance,\s*env\(safe-area-inset-bottom, 0px\)\)\)/);
-    expect(source).toMatch(/body\.floating-composer-layout \.chatOpeningOverlay\s*\{[\s\S]*?bottom:\s*calc\(var\(--composer-float-height, 148px\) \+ 20px \+ var\(--mobile-bottom-clearance,\s*env\(safe-area-inset-bottom, 0px\)\)\)/);
+    expect(source).toMatch(/body\.floating-composer-layout \.chatPanel\s*\{[\s\S]*?height:\s*calc\(var\(--app-height,\s*100vh\)\s*-\s*16px\)/);
+    expect(source).toMatch(/body\.floating-composer-layout \.composer\s*\{[\s\S]*?bottom:\s*calc\(var\(--keyboard-offset,\s*0px\) \+ var\(--mobile-bottom-clearance,\s*calc\(10px \+ env\(safe-area-inset-bottom,\s*0px\)\)\)\)/);
+    expect(source).toMatch(/body\.floating-composer-layout \.messages\s*\{[\s\S]*?padding-bottom:\s*calc\(var\(--composer-float-height, 148px\) \+ 20px \+ var\(--keyboard-offset,\s*0px\) \+ var\(--mobile-bottom-clearance,\s*env\(safe-area-inset-bottom,\s*0px\)\)\)/);
+    expect(source).toMatch(/body\.floating-composer-layout \.chatOpeningOverlay\s*\{[\s\S]*?bottom:\s*calc\(var\(--composer-float-height, 148px\) \+ 20px \+ var\(--keyboard-offset,\s*0px\) \+ var\(--mobile-bottom-clearance,\s*env\(safe-area-inset-bottom,\s*0px\)\)\)/);
+  });
+
+  it("removes phone-only keyboard chrome that creates a gap above the keyboard", () => {
+    expect(source).toContain("--mobile-keyboard-composer-gap: 0px;");
+    expect(source).toMatch(/@media \(max-width: 720px\)\s*\{[\s\S]*?body\.mobile-keyboard-open\.floating-composer-layout \.composer\s*\{[\s\S]*?bottom:\s*calc\(var\(--keyboard-offset,\s*0px\) \+ var\(--mobile-keyboard-composer-gap,\s*0px\)\)/i);
+    expect(source).toMatch(/@media \(max-width: 720px\)\s*\{[\s\S]*?body\.mobile-keyboard-open\.floating-composer-layout \.composerPickerBar\s*\{[\s\S]*?display:\s*none/i);
+    const tabletMediaStart = source.indexOf("@media (max-width: 1080px) {");
+    const phoneMediaStart = source.indexOf("@media (max-width: 720px) {");
+    expect(tabletMediaStart).toBeGreaterThan(-1);
+    expect(phoneMediaStart).toBeGreaterThan(tabletMediaStart);
+    const tabletMediaOnly = source.slice(tabletMediaStart, phoneMediaStart);
+    expect(tabletMediaOnly).not.toContain("body.mobile-keyboard-open.floating-composer-layout .composerPickerBar");
+  });
+
+  it("animates the floating composer when the keyboard offset changes", () => {
+    const composerMatch = source.match(/body\.floating-composer-layout \.composer\s*\{([^}]+)\}/s);
+    expect(composerMatch).toBeTruthy();
+    const composerBlock = composerMatch?.[1] || "";
+    expect(composerBlock).toMatch(/transition:\s*bottom var\(--motion-keyboard,\s*var\(--motion-base,\s*220ms\)\) cubic-bezier\(\.22,\s*1,\s*\.36,\s*1\)/i);
+    expect(composerBlock).toMatch(/will-change:\s*bottom/i);
   });
 
   it("keeps the chat opening spinner restartable on iOS WebKit", () => {
@@ -341,6 +361,10 @@ describe("codex-web runtime layout", () => {
     expect(source).toMatch(/animation:\s*thread-card-enter var\(--motion-enter,\s*360ms\) cubic-bezier\(\.22, \.61, \.36, 1\) both/i);
     expect(source).toMatch(/animation:\s*thread-group-enter var\(--motion-base,\s*220ms\) cubic-bezier\(\.22, \.61, \.36, 1\) both/i);
     expect(source).toMatch(/animation:\s*thread-list-state-text-swap var\(--motion-fast,\s*160ms\) ease both/i);
+    expect(source).toMatch(/\.itemCard\.threadExpandEnter\s*\{[\s\S]*?transform:\s*translate3d\(0,\s*6px,\s*0\)/i);
+    expect(source).toMatch(/\.itemCard\.threadExpandEnter\s*\{[\s\S]*?animation:\s*thread-card-expand-enter 220ms cubic-bezier\(\.22, 1, \.36, 1\) both/i);
+    expect(source).toMatch(/\.itemCard\.threadExpandEnter\s*\{[\s\S]*?animation-delay:\s*var\(--thread-expand-enter-delay,\s*0ms\)/i);
+    expect(source).toMatch(/\.groupBody\.is-continuous-expanding\s*\{[\s\S]*?height var\(--thread-expand-duration,\s*260ms\) cubic-bezier\(\.22, 1, \.36, 1\)/i);
     expect(source).toMatch(/animation:\s*chevron-open var\(--motion-fast,\s*160ms\) ease/i);
     expect(source).toMatch(/animation:\s*settings-card-in var\(--motion-base,\s*220ms\) cubic-bezier\(\.22, 1, \.36, 1\) both/i);
     expect(source).toMatch(/animation:\s*settings-section-in var\(--motion-base,\s*220ms\) cubic-bezier\(\.22, 1, \.36, 1\) both/i);

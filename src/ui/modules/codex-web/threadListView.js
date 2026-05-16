@@ -369,38 +369,39 @@ export function createThreadListViewModule(deps) {
       const targetPaddingBottom = computed.paddingBottom || "0px";
       const expandedHeight = Math.max(0, body.getBoundingClientRect().height);
       if (expandedHeight <= 0) return;
+      const revealCardCount = Array.from(body.children || []).filter((child) =>
+        child?.classList?.contains?.("threadExpandEnter")
+      ).length;
+      const expandDurationMs = Math.min(640, Math.max(260, revealCardCount * 32 + 180));
       body.classList.add("is-expanding");
+      body.classList.add("is-continuous-expanding");
+      body.style.setProperty("--thread-expand-duration", `${expandDurationMs}ms`);
       body.style.height = "0px";
       body.style.opacity = "0";
       body.style.paddingTop = "0px";
       body.style.paddingBottom = "0px";
       body.style.overflow = "hidden";
       requestAnimationFrameRef(() => {
-        body.style.height = `${expandedHeight}px`;
         body.style.opacity = "1";
         body.style.paddingTop = targetPaddingTop;
         body.style.paddingBottom = targetPaddingBottom;
+        body.style.height = `${expandedHeight}px`;
       });
       let done = false;
       const cleanup = () => {
         if (done) return;
         done = true;
         body.classList.remove("is-expanding");
+        body.classList.remove("is-continuous-expanding");
         body.style.height = "";
         body.style.opacity = "";
         body.style.paddingTop = "";
         body.style.paddingBottom = "";
         body.style.overflow = "";
+        body.style.removeProperty("--thread-expand-duration");
       };
-      body.addEventListener(
-        "transitionend",
-        (event) => {
-          if (event?.propertyName !== "height") return;
-          cleanup();
-        },
-        { once: true }
-      );
-      setTimeout(cleanup, 260);
+      const cleanupDelayMs = expandDurationMs + 80;
+      setTimeout(cleanup, cleanupDelayMs);
     };
 
     const animateCollapseBody = (body, onDone) => {
@@ -532,8 +533,10 @@ export function createThreadListViewModule(deps) {
     groupCount = entries.length;
     const staggerGroupEnter = shouldStaggerThreadGroupEnter(entries, state.collapsedWorkspaceKeys);
     let threadEnterIndex = 0;
+    let threadExpandEnterIndex = 0;
     let groupEnterIndex = 0;
     const nextThreadEnterDelayMs = () => Math.min(420, threadEnterIndex++ * 28);
+    const nextThreadExpandEnterDelayMs = () => Math.min(420, threadExpandEnterIndex++ * 32);
     const nextGroupEnterDelayMs = () =>
       (staggerGroupEnter ? Math.min(640, groupEnterIndex++ * 120) : 0);
     if (!entries.length) {
@@ -590,7 +593,7 @@ export function createThreadListViewModule(deps) {
       return id && favoriteSet.has(id);
     });
 
-    const renderThreadCard = (thread) => {
+    const renderThreadCard = (thread, options = {}) => {
       const id = thread.id || thread.threadId || "";
       const preview = String(thread.preview || "").replace(/\s+/g, " ").trim();
       const title =
@@ -603,7 +606,10 @@ export function createThreadListViewModule(deps) {
       const isFavorite = !!(id && favoriteSet.has(id));
       const card = documentRef.createElement("div");
       card.className = `itemCard${id && id === state.activeThreadId ? " active" : ""}`;
-      if (animateEnter || (id && animateThreadIds.has(id))) {
+      if (!!options.expandEnter) {
+        card.classList.add("threadExpandEnter");
+        card.style.setProperty("--thread-expand-enter-delay", `${nextThreadExpandEnterDelayMs()}ms`);
+      } else if (animateEnter || !!options.animateEnter || (id && animateThreadIds.has(id))) {
         card.classList.add("threadEnter");
         card.style.setProperty("--thread-enter-delay", `${nextThreadEnterDelayMs()}ms`);
       }
@@ -787,7 +793,10 @@ export function createThreadListViewModule(deps) {
       if (!collapsed) {
         const body = documentRef.createElement("div");
         body.className = "groupBody";
-        for (const thread of sectionItems) body.appendChild(renderThreadCard(thread));
+        const animateExpandedGroupCards = expandAnimateGroupKeys.has(String(sectionKey));
+        for (const thread of sectionItems) {
+          body.appendChild(renderThreadCard(thread, { expandEnter: animateExpandedGroupCards }));
+        }
         group.appendChild(body);
         if (expandAnimateGroupKeys.has(String(sectionKey))) bodyForExpandAnim = body;
         const prevTop = prevGroupScroll.get(String(sectionKey));
@@ -859,7 +868,11 @@ export function createThreadListViewModule(deps) {
       if (!collapsed || renderCollapsedBody) {
         const body = documentRef.createElement("div");
         body.className = "groupBody";
-        for (const thread of filtered) body.appendChild(renderThreadCard(thread));
+        const animateExpandedGroupCards =
+          !renderCollapsedBody && expandAnimateGroupKeys.has(String(workspaceKey));
+        for (const thread of filtered) {
+          body.appendChild(renderThreadCard(thread, { expandEnter: animateExpandedGroupCards }));
+        }
         group.appendChild(body);
         if (renderCollapsedBody) bodyForCollapseAnim = body;
         else if (expandAnimateGroupKeys.has(String(workspaceKey))) bodyForExpandAnim = body;
@@ -882,7 +895,7 @@ export function createThreadListViewModule(deps) {
           state.threadListAnimateNextRender = false;
           state.threadListAnimateThreadIds = new Set();
           state.threadListSkipScrollRestoreOnce = true;
-          renderThreads(state.threadItems);
+          bodyForCollapseAnim.remove?.();
         });
       }
     }

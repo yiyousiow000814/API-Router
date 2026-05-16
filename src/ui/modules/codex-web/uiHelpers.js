@@ -127,10 +127,12 @@ export function createUiHelpersModule(deps) {
       suppressNextClick: false,
       suppressUntil: 0,
       suppressNextClickUntil: 0,
+      activationEvent: "pointerdown",
       wired: false,
     };
     binding.handler = typeof handler === "function" ? handler : () => {};
     binding.suppressMs = Math.max(0, Number(options.suppressMs || 320));
+    binding.activationEvent = String(options.activationEvent || "pointerdown") === "click" ? "click" : "pointerdown";
     el[stateKey] = binding;
     const run = (event) => {
       try {
@@ -144,6 +146,7 @@ export function createUiHelpersModule(deps) {
     el.addEventListener(
       "pointerdown",
       (event) => {
+        if (el[stateKey]?.activationEvent === "click") return;
         try {
           event?.preventDefault?.();
           event?.stopPropagation?.();
@@ -160,6 +163,10 @@ export function createUiHelpersModule(deps) {
     );
     el.addEventListener("click", (event) => {
       const current = el[stateKey];
+      if (current?.activationEvent === "click") {
+        run(event);
+        return;
+      }
       const now = Date.now();
       const shouldSuppressClick = !!current && (
         now <= Number(current.suppressUntil || 0) ||
