@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=overlays-content" />
   <meta name="theme-color" content="#ffffff" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="mobile-web-app-capable" content="yes" />
@@ -4044,23 +4044,23 @@
       right: 8px;
       bottom: auto;
       left: 8px;
-      height: calc(var(--visual-viewport-height, var(--app-height, 100vh)) - 16px);
-      max-height: calc(var(--visual-viewport-height, var(--app-height, 100vh)) - 16px);
+      height: calc(var(--app-height, 100vh) - 16px);
+      max-height: calc(var(--app-height, 100vh) - 16px);
       min-height: 0;
       overflow: visible;
     }
     body.floating-composer-layout #mainLayout {
-      min-height: var(--visual-viewport-height, var(--app-height, 100vh));
-      height: var(--visual-viewport-height, var(--app-height, 100dvh));
+      min-height: var(--app-height, 100vh);
+      height: var(--app-height, 100dvh);
     }
     body.floating-composer-layout .messages {
-      padding-bottom: calc(var(--composer-float-height, 148px) + 20px + var(--mobile-bottom-clearance, env(safe-area-inset-bottom, 0px)));
+      padding-bottom: calc(var(--composer-float-height, 148px) + 20px + var(--keyboard-offset, 0px) + var(--mobile-bottom-clearance, env(safe-area-inset-bottom, 0px)));
     }
     body.floating-composer-layout .composer {
       position: absolute;
       left: 8px;
       right: 8px;
-      bottom: var(--mobile-bottom-clearance, calc(10px + env(safe-area-inset-bottom, 0px)));
+      bottom: calc(var(--keyboard-offset, 0px) + var(--mobile-bottom-clearance, calc(10px + env(safe-area-inset-bottom, 0px))));
       z-index: var(--z-chat-header);
       padding: 0;
       gap: 8px;
@@ -4106,7 +4106,7 @@
       display: flex;
     }
     body.floating-composer-layout .chatOpeningOverlay {
-      bottom: calc(var(--composer-float-height, 148px) + 20px + var(--mobile-bottom-clearance, env(safe-area-inset-bottom, 0px)));
+      bottom: calc(var(--composer-float-height, 148px) + 20px + var(--keyboard-offset, 0px) + var(--mobile-bottom-clearance, env(safe-area-inset-bottom, 0px)));
     }
     .chatOpeningSpinner {
       width: 20px;
@@ -6684,8 +6684,8 @@
         top: 0;
         right: 0;
         left: 0;
-        height: var(--visual-viewport-height, var(--app-height, 100vh));
-        max-height: var(--visual-viewport-height, var(--app-height, 100vh));
+        height: var(--app-height, 100vh);
+        max-height: var(--app-height, 100vh);
         border-radius: 0;
       }
       body.floating-composer-layout .messages {

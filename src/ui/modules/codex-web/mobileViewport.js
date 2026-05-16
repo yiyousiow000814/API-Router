@@ -71,6 +71,7 @@ export function installMobileViewportSync({
   let scheduled = false;
   let disposed = false;
   let lastSignature = "";
+  let stableLayoutHeight = 0;
 
   const applyMetrics = () => {
     scheduled = false;
@@ -88,16 +89,21 @@ export function installMobileViewportSync({
       visualViewportOffsetTop: visualViewport?.offsetTop,
       isTextEntryActive: isEditableElement(documentRef.activeElement),
     });
+    if (metrics.keyboardOffset <= 0 || metrics.layoutHeight > stableLayoutHeight) {
+      stableLayoutHeight = metrics.layoutHeight;
+    }
+    const appHeight = stableLayoutHeight || metrics.layoutHeight || metrics.viewportHeight;
     const signature = [
       floatingComposerLayout ? "floating" : "inline",
       Math.round(viewportWidth),
+      Math.round(appHeight),
       Math.round(metrics.viewportHeight),
       Math.round(metrics.keyboardOffset),
       Math.round(metrics.viewportOffsetTop),
     ].join(":");
     if (signature === lastSignature) return;
     lastSignature = signature;
-    root.style.setProperty("--app-height", `${Math.round(metrics.viewportHeight)}px`);
+    root.style.setProperty("--app-height", `${Math.round(appHeight)}px`);
     root.style.setProperty("--visual-viewport-height", `${Math.round(metrics.viewportHeight)}px`);
     root.style.setProperty("--keyboard-offset", `${Math.round(metrics.keyboardOffset)}px`);
     documentRef.body?.classList?.toggle?.("mobile-keyboard-open", metrics.keyboardOffset > 0);

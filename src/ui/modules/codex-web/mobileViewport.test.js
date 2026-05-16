@@ -117,7 +117,7 @@ describe("mobileViewport", () => {
 
     installMobileViewportSync({ windowRef, documentRef, updateMobileComposerState });
 
-    expect(rootStyle.setProperty).toHaveBeenCalledWith("--app-height", "520px");
+    expect(rootStyle.setProperty).toHaveBeenCalledWith("--app-height", "820px");
     expect(rootStyle.setProperty).toHaveBeenCalledWith("--visual-viewport-height", "520px");
     expect(rootStyle.setProperty).toHaveBeenCalledWith("--keyboard-offset", "300px");
     expect(bodyClassList.toggle).toHaveBeenCalledWith("mobile-keyboard-open", true);

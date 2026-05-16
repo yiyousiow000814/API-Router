@@ -261,17 +261,17 @@ describe("codex-web runtime layout", () => {
     expect(shellMatch?.[1] || "").toMatch(/min-height:\s*var\(--app-height,\s*100vh\)/i);
   });
 
-  it("floats the mobile composer above the bottom edge and keyboard offset", () => {
+  it("floats the mobile composer above the keyboard without shrinking the page", () => {
     expect(source).toContain("--composer-float-height: 148px;");
     expect(source).toContain("--mobile-bottom-clearance: max(26px, calc(env(safe-area-inset-bottom, 0px) + 14px));");
     expect(source).toContain("body.floating-composer-layout .chatPanel");
     expect(source).toContain("body.floating-composer-layout .composer");
     expect(source).toContain("body.floating-composer-layout .messages");
     expect(source).toMatch(/body\.floating-composer-layout \.chatPanel\s*\{[\s\S]*?bottom:\s*auto/);
-    expect(source).toMatch(/body\.floating-composer-layout \.chatPanel\s*\{[\s\S]*?height:\s*calc\(var\(--visual-viewport-height,\s*var\(--app-height,\s*100vh\)\)\s*-\s*16px\)/);
-    expect(source).toMatch(/body\.floating-composer-layout \.composer\s*\{[\s\S]*?bottom:\s*var\(--mobile-bottom-clearance,\s*calc\(10px \+ env\(safe-area-inset-bottom, 0px\)\)\)/);
-    expect(source).toMatch(/body\.floating-composer-layout \.messages\s*\{[\s\S]*?padding-bottom:\s*calc\(var\(--composer-float-height, 148px\) \+ 20px \+ var\(--mobile-bottom-clearance,\s*env\(safe-area-inset-bottom, 0px\)\)\)/);
-    expect(source).toMatch(/body\.floating-composer-layout \.chatOpeningOverlay\s*\{[\s\S]*?bottom:\s*calc\(var\(--composer-float-height, 148px\) \+ 20px \+ var\(--mobile-bottom-clearance,\s*env\(safe-area-inset-bottom, 0px\)\)\)/);
+    expect(source).toMatch(/body\.floating-composer-layout \.chatPanel\s*\{[\s\S]*?height:\s*calc\(var\(--app-height,\s*100vh\)\s*-\s*16px\)/);
+    expect(source).toMatch(/body\.floating-composer-layout \.composer\s*\{[\s\S]*?bottom:\s*calc\(var\(--keyboard-offset,\s*0px\) \+ var\(--mobile-bottom-clearance,\s*calc\(10px \+ env\(safe-area-inset-bottom,\s*0px\)\)\)\)/);
+    expect(source).toMatch(/body\.floating-composer-layout \.messages\s*\{[\s\S]*?padding-bottom:\s*calc\(var\(--composer-float-height, 148px\) \+ 20px \+ var\(--keyboard-offset,\s*0px\) \+ var\(--mobile-bottom-clearance,\s*env\(safe-area-inset-bottom,\s*0px\)\)\)/);
+    expect(source).toMatch(/body\.floating-composer-layout \.chatOpeningOverlay\s*\{[\s\S]*?bottom:\s*calc\(var\(--composer-float-height, 148px\) \+ 20px \+ var\(--keyboard-offset,\s*0px\) \+ var\(--mobile-bottom-clearance,\s*env\(safe-area-inset-bottom,\s*0px\)\)\)/);
   });
 
   it("keeps the chat opening spinner restartable on iOS WebKit", () => {
