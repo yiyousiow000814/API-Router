@@ -2101,8 +2101,8 @@ describe("actionBindings", () => {
       bindClick(id, handler) {
         clickHandlers.set(id, handler);
       },
-      bindResponsiveClick(id, handler) {
-        responsiveHandlers.set(id, handler);
+      bindResponsiveClick(id, handler, options = {}) {
+        responsiveHandlers.set(id, { handler, options });
       },
       bindInput() {},
       setStatus() {},
@@ -2147,17 +2147,18 @@ describe("actionBindings", () => {
 
     createActionBindingsModule(deps).wireActions();
 
-    responsiveHandlers.get("mobileAttachBtn")?.(event);
+    responsiveHandlers.get("mobileAttachBtn")?.handler?.(event);
     expect(deps.state.composerAttachmentMenuOpen).toBe(true);
     expect(deps.state.composerBranchMenuOpen).toBe(false);
     expect(deps.state.composerPermissionMenuOpen).toBe(false);
 
-    responsiveHandlers.get("mobileAttachFileBtn")?.(event);
+    expect(responsiveHandlers.get("mobileAttachFileBtn")?.options).toMatchObject({ activationEvent: "click" });
+    responsiveHandlers.get("mobileAttachFileBtn")?.handler?.(event);
     expect(deps.state.composerAttachmentMenuOpen).toBe(false);
     expect(deps.__attachClicked).toBe(true);
 
-    responsiveHandlers.get("mobileAttachBtn")?.(event);
-    responsiveHandlers.get("mobileCommandsBtn")?.(event);
+    responsiveHandlers.get("mobileAttachBtn")?.handler?.(event);
+    responsiveHandlers.get("mobileCommandsBtn")?.handler?.(event);
     expect(deps.state.composerAttachmentMenuOpen).toBe(false);
     expect(deps.__commandsOpened).toBe(true);
   });

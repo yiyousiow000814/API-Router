@@ -796,10 +796,10 @@ export function createActionBindingsModule(deps) {
     bindResponsiveClick("mobileAttachFileBtn", (event) => {
       event?.preventDefault?.();
       event?.stopPropagation?.();
+      byId("attachInput")?.click();
       state.composerAttachmentMenuOpen = false;
       updateMobileComposerState();
-      byId("attachInput")?.click();
-    });
+    }, { activationEvent: "click" });
     bindResponsiveClick("mobileCommandsBtn", (event) => {
       event?.preventDefault?.();
       event?.stopPropagation?.();
