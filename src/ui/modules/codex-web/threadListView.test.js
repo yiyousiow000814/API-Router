@@ -183,7 +183,7 @@ describe("threadListView", () => {
     expect(shouldStaggerThreadGroupEnter(entries, new Set(["yiyou"]))).toBe(false);
   });
 
-  it("steps the expanded group height with the chat card reveal", () => {
+  it("uses one continuous group height transition while staggering expanded chat cards", () => {
     const list = createFakeElement("div");
     const body = createFakeElement("body");
     const state = {
@@ -282,13 +282,14 @@ describe("threadListView", () => {
     expect(cards[1].classList.contains("threadExpandEnter")).toBe(true);
     expect(cards[0].classList.contains("threadEnter")).toBe(false);
     expect(cards[0].style["--thread-expand-enter-delay"]).toBe("0ms");
-    expect(cards[1].style["--thread-expand-enter-delay"]).toBe("18ms");
-    expect(cards[13].style["--thread-expand-enter-delay"]).toBe("234ms");
+    expect(cards[1].style["--thread-expand-enter-delay"]).toBe("32ms");
+    expect(cards[13].style["--thread-expand-enter-delay"]).toBe("416ms");
     const groupBody = list.children[0].children[1];
-    expect(groupBody.classList.contains("is-stepped-expanding")).toBe(true);
-    expect(groupBody.style.height).toBe("32px");
+    expect(groupBody.classList.contains("is-continuous-expanding")).toBe(true);
+    expect(groupBody.style.height).toBe("542px");
     const source = fs.readFileSync(new URL("./threadListView.js", import.meta.url), "utf8");
     expect(source).not.toContain(".slice(0, 12)");
+    expect(source).not.toContain("setTimeout(applyStep");
   });
 
   it("does not rerender the expanding group after the previous group finishes collapsing", () => {
@@ -389,13 +390,13 @@ describe("threadListView", () => {
       list.children[1].children[0].onclick();
       const betaGroup = list.children[1];
       const betaBody = betaGroup.children[1];
-      expect(betaBody.classList.contains("is-stepped-expanding")).toBe(true);
+      expect(betaBody.classList.contains("is-continuous-expanding")).toBe(true);
 
       vi.advanceTimersByTime(260);
 
       expect(list.children[1]).toBe(betaGroup);
       expect(betaGroup.children[1]).toBe(betaBody);
-      expect(betaBody.classList.contains("is-stepped-expanding")).toBe(true);
+      expect(betaBody.classList.contains("is-continuous-expanding")).toBe(true);
     } finally {
       vi.useRealTimers();
     }
