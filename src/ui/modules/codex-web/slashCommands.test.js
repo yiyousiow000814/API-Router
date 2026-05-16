@@ -1014,6 +1014,92 @@ describe("slashCommands", () => {
     expect(suppressedMs).toBe(420);
   });
 
+  it("does not arm global click suppression for click-only submenu activation", () => {
+    const listeners = {};
+    const executed = [];
+    let suppressedMs = 0;
+    const state = {
+      workspaceTarget: "windows",
+      activeThreadWorkspace: "windows",
+      fastModeEnabled: false,
+      slashCommands: [
+        {
+          command: "/fast",
+          usage: "/fast",
+          insertText: "/fast",
+          description: "Fast mode",
+          active: false,
+          children: [
+            { command: "/fast on", usage: "/fast on", insertText: "/fast on", description: "Enable", active: false, children: [] },
+            { command: "/fast off", usage: "/fast off", insertText: "/fast off", description: "Disable", active: true, children: [] },
+          ],
+        },
+      ],
+      slashCommandsLoaded: true,
+      slashCommandsLoading: false,
+      slashCommandsError: "",
+      slashMenuItems: [],
+      slashMenuOpen: false,
+      slashMenuSelectedIndex: 0,
+      slashMenuSelectionVisible: false,
+      slashMenuContextKey: "",
+    };
+    const menu = {
+      style: {},
+      innerHTML: "",
+      querySelector() { return null; },
+      querySelectorAll() {
+        return [
+          {
+            getAttribute(name) {
+              return name === "data-slash-index" ? "0" : "";
+            },
+            addEventListener(name, handler) {
+              listeners[name] = handler;
+            },
+          },
+        ];
+      },
+    };
+    const input = {
+      value: "/fast",
+      focus() {},
+      setSelectionRange() {},
+      getBoundingClientRect() {
+        return { left: 24, top: 420, width: 320 };
+      },
+    };
+    const module = createSlashCommandsModule({
+      state,
+      byId(id) {
+        if (id === "slashCommandMenu") return menu;
+        if (id === "mobilePromptInput") return input;
+        return null;
+      },
+      api: async () => ({ commands: [] }),
+      armSyntheticClickSuppression(ms) {
+        suppressedMs = ms;
+      },
+      executeSlashCommand(command) {
+        executed.push(command);
+        return Promise.resolve();
+      },
+      updateMobileComposerState() {},
+      setStatus() {},
+      documentRef: { activeElement: input },
+      windowRef: {
+        innerWidth: 390,
+        addEventListener() {},
+      },
+    });
+
+    module.syncSlashCommandMenu();
+    listeners.click?.({ type: "click", button: 0, preventDefault() {}, stopPropagation() {} });
+
+    expect(executed).toEqual(["/fast on"]);
+    expect(suppressedMs).toBe(0);
+  });
+
   it("prevents pointerdown focus-steal on slash menu items", () => {
     const listeners = {};
     const state = {
