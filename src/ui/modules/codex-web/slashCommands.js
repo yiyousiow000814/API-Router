@@ -241,6 +241,7 @@ export function createSlashCommandsModule(deps) {
   let menuViewTransitionTimer = 0;
   let lastPointerMenuActivationAt = 0;
   let lastMenuInteractionAt = 0;
+  let manualCommandPickerOpen = false;
   const scheduleFrame = typeof windowRef?.requestAnimationFrame === "function"
     ? windowRef.requestAnimationFrame.bind(windowRef)
     : ((cb) => cb());
@@ -295,6 +296,10 @@ export function createSlashCommandsModule(deps) {
   }
 
   function currentMenuContext() {
+    const prompt = currentPromptValue();
+    if (manualCommandPickerOpen && !String(prompt || "").trim()) {
+      return { items: Array.isArray(state.slashCommands) ? state.slashCommands.slice() : [], parent: null };
+    }
     return resolveSlashMenuContext(state.slashCommands, currentPromptValue());
   }
 
@@ -796,6 +801,7 @@ export function createSlashCommandsModule(deps) {
   }
 
   function hideSlashCommandMenu() {
+    manualCommandPickerOpen = false;
     state.slashMenuOpen = false;
     state.slashMenuItems = [];
     state.slashMenuSelectedIndex = 0;
@@ -847,6 +853,20 @@ export function createSlashCommandsModule(deps) {
         syncSlashCommandMenu();
       });
     return loadPromise;
+  }
+
+  function openSlashCommandPicker() {
+    manualCommandPickerOpen = true;
+    resetSpecialMenu();
+    state.slashMenuOpen = true;
+    state.slashMenuItems = Array.isArray(state.slashCommands) ? state.slashCommands.slice() : [];
+    state.slashMenuSelectedIndex = 0;
+    state.slashMenuSelectionVisible = false;
+    state.slashMenuContextKey = "manual:commands";
+    renderSlashMenu();
+    if (state.slashCommandsLoaded !== true && state.slashCommandsLoading !== true) {
+      refreshSlashCommands().catch(() => {});
+    }
   }
 
   async function fetchReviewOptions(kind) {
@@ -913,6 +933,9 @@ export function createSlashCommandsModule(deps) {
     const promptValue = currentPromptValue();
     const trimmedPrompt = String(promptValue || "").trim();
     const workspace = currentWorkspaceTarget();
+    if (trimmedPrompt) {
+      manualCommandPickerOpen = false;
+    }
     if (
       state.slashCommandsLoaded === true &&
       String(state.slashCommandsWorkspace || "") &&
@@ -924,7 +947,7 @@ export function createSlashCommandsModule(deps) {
     if (trimmedPrompt !== "/review" && specialMenuOpen()) {
       resetSpecialMenu();
     }
-    if (!promptHasFocus()) {
+    if (!manualCommandPickerOpen && !promptHasFocus()) {
       hideSlashCommandMenu();
       return;
     }
@@ -937,8 +960,12 @@ export function createSlashCommandsModule(deps) {
       renderSlashMenu({ focusSpecialInput: specialMenu.mode !== "review-presets" });
       return;
     }
-    const context = resolveSlashMenuContext(state.slashCommands, promptValue);
-    const shouldOpen = shouldOpenSlashMenu(promptValue, state.slashCommands);
+    const context = manualCommandPickerOpen && !trimmedPrompt
+      ? { items: Array.isArray(state.slashCommands) ? state.slashCommands.slice() : [], parent: null }
+      : resolveSlashMenuContext(state.slashCommands, promptValue);
+    const shouldOpen = manualCommandPickerOpen && !trimmedPrompt
+      ? true
+      : shouldOpenSlashMenu(promptValue, state.slashCommands);
     const items = shouldOpen ? context.items : [];
     const nextContextKey = shouldOpen ? slashMenuContextKey(promptValue, context) : "";
     const contextChanged = nextContextKey !== String(state.slashMenuContextKey || "");
@@ -1087,6 +1114,7 @@ export function createSlashCommandsModule(deps) {
     }
     input.value = item.insertText;
     updateMobileComposerState();
+    manualCommandPickerOpen = false;
     if (item.command === "/review") {
       setSpecialMenuMode("review-presets");
       syncSlashCommandMenu();
@@ -1129,6 +1157,7 @@ export function createSlashCommandsModule(deps) {
     applySelectedSlashCommand,
     handleSlashCommandKeyDown,
     hideSlashCommandMenu,
+    openSlashCommandPicker,
     refreshSlashCommands,
     renderSlashMenu,
     syncSlashCommandMenu,

@@ -1,5 +1,18 @@
 function messageMatches(a, b) {
-  return !!a && !!b && a.role === b.role && a.kind === b.kind && a.text === b.text;
+  return (
+    !!a &&
+    !!b &&
+    a.role === b.role &&
+    a.kind === b.kind &&
+    a.text === b.text &&
+    messageImagesKey(a) === messageImagesKey(b)
+  );
+}
+
+function messageImagesKey(message) {
+  return (Array.isArray(message?.images) ? message.images : [])
+    .map((image) => String(image?.url || image?.path || image?.label || image?.fileName || image || "").trim())
+    .join("|");
 }
 
 function isMessagePrefix(previousMessages = [], nextMessages = []) {
@@ -17,7 +30,7 @@ function isPatchableMessageSequence(previousMessages = [], nextMessages = []) {
     const previousMessage = previous[previousIndex] || null;
     if (!previousMessage) continue;
     if (previousMessage.role !== message.role || previousMessage.kind !== message.kind) return false;
-    if (previousMessage.text !== message.text && previousIndex !== previous.length - 1) return false;
+    if (!messageMatches(previousMessage, message) && previousIndex !== previous.length - 1) return false;
     previousIndex += 1;
   }
   return previousIndex === previous.length;
@@ -73,6 +86,7 @@ function messageFromTimelineNode(node) {
     role,
     kind,
     text: textFromNode(node),
+    images: node.__webCodexImages || [],
   };
 }
 
@@ -102,7 +116,7 @@ export function findCommentaryArchivePatch(previousMessages = [], nextMessages =
     const previousMessage = previous[previousIndex];
     if (!previousMessage) return null;
     if (previousMessage.role !== nextMessage.role || previousMessage.kind !== nextMessage.kind) return null;
-    if (previousMessage.text !== nextMessage.text && previousIndex !== previous.length - 1) return null;
+    if (!messageMatches(previousMessage, nextMessage) && previousIndex !== previous.length - 1) return null;
     previousIndex += 1;
   }
   if (previousIndex !== previous.length || !insertions.length) return null;
@@ -119,17 +133,20 @@ function getTimelineDomMessages(domNodes = []) {
   return domNodes.map(messageFromTimelineNode).filter(Boolean);
 }
 
-function updateTimelineMessageNode(node, message, renderMessageBody) {
+function updateTimelineMessageNode(node, message, renderMessageBody, renderMessageAttachments = () => "") {
   if (!node || typeof renderMessageBody !== "function") return false;
   const body = node?.querySelector?.(".msgBody") || null;
   if (!body) return false;
-  body.innerHTML = renderMessageBody(message?.role || "", message?.text || "", {
+  const attachments = Array.isArray(message?.images) ? message.images : [];
+  const bodyHtml = renderMessageBody(message?.role || "", message?.text || "", {
     kind: message?.kind || "",
   });
+  body.innerHTML = `${renderMessageAttachments(attachments)}${bodyHtml}`;
   try {
     node.__webCodexRole = String(message?.role || "").trim();
     node.__webCodexKind = String(message?.kind || "").trim();
     node.__webCodexRawText = String(message?.text || "");
+    node.__webCodexImages = attachments.slice();
     const messageKey = String(message?.id || message?.messageKey || "").trim();
     if (messageKey) {
       node.setAttribute?.("data-msg-key", messageKey);
@@ -145,6 +162,7 @@ function syncTimelineMessageNodeMeta(node, message) {
     node.__webCodexRole = String(message?.role || "").trim();
     node.__webCodexKind = String(message?.kind || "").trim();
     node.__webCodexRawText = String(message?.text || "");
+    node.__webCodexImages = Array.isArray(message?.images) ? message.images.slice() : [];
     const messageKey = String(message?.id || message?.messageKey || "").trim();
     if (messageKey) {
       node.setAttribute?.("data-msg-key", messageKey);
@@ -157,12 +175,15 @@ function syncTimelineMessageNodeMeta(node, message) {
 function resolvePatchSource(previousMessages, nextMessages, domNodes) {
   const previous = Array.isArray(previousMessages) ? previousMessages : [];
   const domMessages = getTimelineDomMessages(domNodes);
-  if (domMessages.length && domMessages.length !== previous.length) {
+  if (domMessages.length > previous.length) {
     if (isMessagePrefix(domMessages, nextMessages) || isPatchableMessageSequence(domMessages, nextMessages)) {
       return { patch: [], previous: domMessages, source: "dom" };
     }
     const domPatch = findCommentaryArchivePatch(domMessages, nextMessages);
     if (domPatch) return { patch: domPatch, previous: domMessages, source: "dom" };
+  }
+  if (previous.length === nextMessages.length && isPatchableMessageSequence(previous, nextMessages)) {
+    return { patch: [], previous, source: "state" };
   }
   const statePatch = findCommentaryArchivePatch(previous, nextMessages);
   if (statePatch) return { patch: statePatch, previous, source: "state" };
@@ -196,7 +217,7 @@ function planTimelinePatch({ previousMessages, nextMessages, domNodes }) {
         return null;
       }
       if (previousMessage && !nodeMatchesMessage(node, previousMessage)) return null;
-      if (previousMessage && previousMessage.text !== message.text) {
+      if (previousMessage && !messageMatches(previousMessage, message)) {
         if (previousIndex !== previous.length - 1) return null;
         operations.push({
           type: "update",
@@ -244,6 +265,7 @@ export function reconcileTimelineMessages(params = {}) {
     nextMessages,
     buildMsgNode,
     renderMessageBody,
+    renderMessageAttachments = () => "",
     replayMessage = () => false,
   } = params;
   if (!box || typeof buildMsgNode !== "function") return null;
@@ -265,7 +287,12 @@ export function reconcileTimelineMessages(params = {}) {
   let updated = 0;
   for (const operation of operations) {
     if (operation.type === "update") {
-      const updatedNode = updateTimelineMessageNode(operation.node, operation.message, renderMessageBody);
+        const updatedNode = updateTimelineMessageNode(
+          operation.node,
+          operation.message,
+          renderMessageBody,
+          renderMessageAttachments
+        );
       if (!updatedNode) return null;
       replayMessage(updatedNode, operation.message, { fromText: operation.fromText });
       updated += 1;

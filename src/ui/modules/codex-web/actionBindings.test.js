@@ -2076,6 +2076,92 @@ describe("actionBindings", () => {
     expect(deps.__synced).toBe(1);
   });
 
+  it("routes the plus menu to attachments or command picker", () => {
+    const clickHandlers = new Map();
+    const responsiveHandlers = new Map();
+    const deps = {
+      state: {
+        composerAttachmentMenuOpen: false,
+        composerBranchMenuOpen: true,
+        composerPermissionMenuOpen: true,
+        folderPickerOpen: false,
+        modelOptionsLoading: false,
+        threadItems: [],
+      },
+      byId(id) {
+        if (id === "attachInput") {
+          return {
+            click() {
+              deps.__attachClicked = true;
+            },
+          };
+        }
+        return null;
+      },
+      bindClick(id, handler) {
+        clickHandlers.set(id, handler);
+      },
+      bindResponsiveClick(id, handler) {
+        responsiveHandlers.set(id, handler);
+      },
+      bindInput() {},
+      setStatus() {},
+      updateMobileComposerState() {
+        deps.__updated = (deps.__updated || 0) + 1;
+      },
+      updateNotificationState() {},
+      armSyntheticClickSuppression() {},
+      wireBlurBackdropShield() {},
+      closeFolderPicker() {},
+      refreshFolderPicker: async () => {},
+      renderFolderPicker() {},
+      confirmFolderPickerCurrentPath() {},
+      resetFolderPickerPath() {},
+      switchFolderPickerWorkspace: async () => {},
+      openFolderPicker: async () => {},
+      newThread: async () => {},
+      setMainTab() {},
+      setMobileTab() {},
+      refreshCodexVersions: async () => {},
+      setWorkspaceTarget: async () => {},
+      setHeaderModelMenuOpen() {},
+      closeInlineEffortOverlay() {},
+      shouldSuppressSyntheticClick() { return false; },
+      renderThreads() {},
+      wireThreadPullToRefresh() {},
+      addHost: async () => {},
+      resolveApproval: async () => {},
+      resolveUserInput: async () => {},
+      refreshPending: async () => {},
+      uploadAttachment: async () => {},
+      sendTurn: async () => {},
+      openSlashCommandPicker() {
+        deps.__commandsOpened = true;
+      },
+      syncSettingsControlsFromMain() {},
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      windowRef: { addEventListener() {} },
+      documentRef: { addEventListener() {} },
+    };
+    const event = { preventDefault() {}, stopPropagation() {} };
+
+    createActionBindingsModule(deps).wireActions();
+
+    responsiveHandlers.get("mobileAttachBtn")?.(event);
+    expect(deps.state.composerAttachmentMenuOpen).toBe(true);
+    expect(deps.state.composerBranchMenuOpen).toBe(false);
+    expect(deps.state.composerPermissionMenuOpen).toBe(false);
+
+    clickHandlers.get("mobileAttachFileBtn")?.(event);
+    expect(deps.state.composerAttachmentMenuOpen).toBe(false);
+    expect(deps.__attachClicked).toBe(true);
+
+    responsiveHandlers.get("mobileAttachBtn")?.(event);
+    clickHandlers.get("mobileCommandsBtn")?.(event);
+    expect(deps.state.composerAttachmentMenuOpen).toBe(false);
+    expect(deps.__commandsOpened).toBe(true);
+  });
+
   it("reconciles chat scroll when the prompt input regains focus", () => {
     const handlers = new Map();
     const promptNode = {
@@ -2964,6 +3050,79 @@ describe("actionBindings", () => {
 
       expect(deps.state.composerBranchMenuOpen).toBe(false);
       expect(deps.state.composerPermissionMenuOpen).toBe(false);
+    } finally {
+      globalThis.Node = OriginalNode;
+    }
+  });
+
+  it("keeps the plus menu open on internal document clicks", () => {
+    const handlers = new Map();
+    const OriginalNode = globalThis.Node;
+    class FakeNode {}
+    globalThis.Node = FakeNode;
+    try {
+      const attachTarget = new FakeNode();
+      attachTarget.closest = (selector) => (selector === "#mobileAttachmentMenu" ? attachTarget : null);
+      const deps = {
+        state: {
+          folderPickerOpen: false,
+          modelOptionsLoading: false,
+          threadItems: [],
+          composerAttachmentMenuOpen: true,
+          composerBranchMenuOpen: false,
+          composerPermissionMenuOpen: false,
+        },
+        byId() { return null; },
+        bindClick() {},
+        bindResponsiveClick() {},
+        bindInput() {},
+        setStatus() {},
+        updateMobileComposerState() {
+          deps.__updates = (deps.__updates || 0) + 1;
+        },
+        updateNotificationState() {},
+        armSyntheticClickSuppression() {},
+        wireBlurBackdropShield() {},
+        closeFolderPicker() {},
+        refreshFolderPicker: async () => {},
+        renderFolderPicker() {},
+        confirmFolderPickerCurrentPath() {},
+        resetFolderPickerPath() {},
+        switchFolderPickerWorkspace: async () => {},
+        openFolderPicker: async () => {},
+        newThread: async () => {},
+        setMainTab() {},
+        setMobileTab() {},
+        refreshCodexVersions: async () => {},
+        setWorkspaceTarget: async () => {},
+        setHeaderModelMenuOpen() {},
+        closeInlineEffortOverlay() {},
+        shouldSuppressSyntheticClick() { return false; },
+        renderThreads() {},
+        wireThreadPullToRefresh() {},
+        addHost: async () => {},
+        resolveApproval: async () => {},
+        resolveUserInput: async () => {},
+        refreshPending: async () => {},
+        uploadAttachment: async () => {},
+        sendTurn: async () => {},
+        syncSlashCommandMenu() {},
+        syncSettingsControlsFromMain() {},
+        localStorageRef: { getItem() { return ""; }, setItem() {} },
+        windowRef: { addEventListener() {} },
+        documentRef: {
+          addEventListener(eventName, handler) {
+            handlers.set(`document:${eventName}`, handler);
+          },
+        },
+        NotificationRef: { requestPermission: async () => "default" },
+      };
+
+      createActionBindingsModule(deps).wireActions();
+      handlers.get("document:click")?.({ target: attachTarget });
+
+      expect(deps.state.composerAttachmentMenuOpen).toBe(true);
+      expect(deps.__updates || 0).toBe(0);
     } finally {
       globalThis.Node = OriginalNode;
     }

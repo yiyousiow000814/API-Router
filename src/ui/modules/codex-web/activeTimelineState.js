@@ -1,5 +1,25 @@
 function cloneMessage(message) {
-  return message && typeof message === "object" ? { ...message } : message;
+  return message && typeof message === "object"
+    ? {
+        ...message,
+        images: Array.isArray(message.images) ? message.images.slice() : message.images,
+      }
+    : message;
+}
+
+function hasImages(message) {
+  return Array.isArray(message?.images) && message.images.length > 0;
+}
+
+function mergeMessage(previous, next) {
+  const merged = {
+    ...previous,
+    ...next,
+  };
+  if (hasImages(previous) && !hasImages(next)) {
+    merged.images = previous.images.slice();
+  }
+  return merged;
 }
 
 function normalizeIdentity(value) {
@@ -37,19 +57,13 @@ function canonicalizeMessages(messages = []) {
     if (identity) {
       const existingIndex = canonical.findIndex((item) => messageIdentity(item) === identity);
       if (existingIndex >= 0) {
-        canonical[existingIndex] = {
-          ...canonical[existingIndex],
-          ...next,
-        };
+        canonical[existingIndex] = mergeMessage(canonical[existingIndex], next);
         continue;
       }
     }
     if (sameAdjacentMessage(canonical[canonical.length - 1], next)) {
       const index = canonical.length - 1;
-      canonical[index] = {
-        ...canonical[index],
-        ...next,
-      };
+      canonical[index] = mergeMessage(canonical[index], next);
       continue;
     }
     canonical.push(next);
@@ -76,19 +90,13 @@ export function appendActiveTimelineMessage(state = {}, message = {}, options = 
   if (identity) {
     const existingIndex = messages.findIndex((item) => messageIdentity(item) === identity);
     if (existingIndex >= 0) {
-      messages[existingIndex] = {
-        ...messages[existingIndex],
-        ...next,
-      };
+      messages[existingIndex] = mergeMessage(messages[existingIndex], next);
       return { index: existingIndex, message: messages[existingIndex], appended: false };
     }
   }
   if (options.dedupeAdjacent !== false && sameAdjacentMessage(messages[messages.length - 1], next)) {
     const index = messages.length - 1;
-    messages[index] = {
-      ...messages[index],
-      ...next,
-    };
+    messages[index] = mergeMessage(messages[index], next);
     return { index, message: messages[index], appended: false };
   }
   messages.push(next);

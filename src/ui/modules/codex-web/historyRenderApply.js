@@ -53,7 +53,7 @@ function appendMessages(messages, startIndex, addChat, replayContext = {}) {
   }
 }
 
-function updateLastNode(box, message, renderMessageBody, initialText = null) {
+function updateLastNode(box, message, renderMessageBody, renderMessageAttachments = () => "", initialText = null) {
   if (!box) return false;
   const role = String(message?.role || "").trim();
   const text = String(message?.text || "");
@@ -65,7 +65,9 @@ function updateLastNode(box, message, renderMessageBody, initialText = null) {
   const body = last.querySelector(".msgBody");
   if (!body) return false;
   const renderText = initialText === null ? text : String(initialText || "");
-  body.innerHTML = renderMessageBody(role, renderText, { kind });
+  const attachments = Array.isArray(message?.images) ? message.images : [];
+  body.innerHTML = `${renderMessageAttachments(attachments)}${renderMessageBody(role, renderText, { kind })}`;
+  last.__webCodexImages = attachments.slice();
   const messageKey = String(message?.id || message?.messageKey || "").trim();
   if (messageKey) {
     last.setAttribute?.("data-msg-key", messageKey);
@@ -105,6 +107,7 @@ export function applyWindowedHistoryRender(params = {}) {
     ensureLoadOlderControl,
     updateLoadOlderControl,
     renderMessageBody,
+    renderMessageAttachments = () => "",
     addChat,
     pushLiveDebugEvent,
     scrollToBottomReliable,
@@ -193,6 +196,7 @@ export function applyWindowedHistoryRender(params = {}) {
         nextMessages: visibleMessages,
         buildMsgNode,
         renderMessageBody,
+        renderMessageAttachments,
         replayMessage: (node, message, options = {}) =>
           maybeReplayAssistantHistoryMessage(node, message, replayContext, options),
       })
@@ -227,7 +231,7 @@ export function applyWindowedHistoryRender(params = {}) {
     const nextLast = messages[messages.length - 1];
     const previousLast = prevAll[prevAll.length - 1];
     const replayStartText = getAssistantHistoryReplayStartText(nextLast, replayContext, previousLast?.text);
-    const updated = updateLastNode(box, nextLast, renderMessageBody, replayStartText);
+    const updated = updateLastNode(box, nextLast, renderMessageBody, renderMessageAttachments, replayStartText);
     if (updated) {
       maybeReplayAssistantHistoryMessage(updated, nextLast, replayContext, {
         fromText: replayStartText,
@@ -292,6 +296,7 @@ export async function applyFullHistoryRender(params = {}) {
   } = params;
   const {
     renderMessageBody,
+    renderMessageAttachments = () => "",
     addChat,
     buildMsgNode,
     clearChatMessages,
@@ -327,6 +332,7 @@ export async function applyFullHistoryRender(params = {}) {
         nextMessages: messages,
         buildMsgNode,
         renderMessageBody,
+        renderMessageAttachments,
         replayMessage: (node, message, options = {}) =>
           maybeReplayAssistantHistoryMessage(node, message, replayContext, options),
       })
@@ -360,7 +366,7 @@ export async function applyFullHistoryRender(params = {}) {
     const nextLast = messages[messages.length - 1];
     const previousLast = prevMessages[prevMessages.length - 1];
     const replayStartText = getAssistantHistoryReplayStartText(nextLast, replayContext, previousLast?.text);
-    const updated = updateLastNode(box, nextLast, renderMessageBody, replayStartText);
+    const updated = updateLastNode(box, nextLast, renderMessageBody, renderMessageAttachments, replayStartText);
     maybeReplayAssistantHistoryMessage(updated, nextLast, replayContext, {
       fromText: replayStartText,
     });

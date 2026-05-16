@@ -1727,6 +1727,8 @@ export function createComposerUiModule(deps) {
     const wrap = byId("mobilePromptWrap");
     const input = byId("mobilePromptInput");
     const sendBtn = byId("mobileSendBtn");
+    const attachBtn = byId("mobileAttachBtn");
+    const attachMenu = byId("mobileAttachmentMenu");
     const menuBtn = byId("composerActionMenuBtn");
       const menu = byId("composerActionMenu");
       const queuedCard = byId("queuedTurnCard");
@@ -1750,7 +1752,13 @@ export function createComposerUiModule(deps) {
       const queuedTurn = queuedTurns.length ? queuedTurns[0] : null;
       const queuedPrompt = String(queuedTurn?.prompt || "").trim();
       const hasQueuedTurn = !!queuedPrompt;
-    const canOpenMenu = running && hasText && !/^\/\S+/.test(promptText);
+      const canOpenMenu = running && hasText && !/^\/\S+/.test(promptText);
+    if (attachBtn) {
+      attachBtn.setAttribute("aria-expanded", state.composerAttachmentMenuOpen === true ? "true" : "false");
+    }
+    if (attachMenu) {
+      attachMenu.classList.toggle("open", state.composerAttachmentMenuOpen === true);
+    }
     input.style.height = "auto";
     const layout = resolveMobilePromptLayout(
       input.scrollHeight,

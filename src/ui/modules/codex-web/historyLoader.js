@@ -237,9 +237,46 @@ function isPartialCurrentTurnAssistantMessage(message, latestTurnId, postBaselin
   return !latestTurnId && isPostBaselineAssistantMessage(message, postBaselineTurnIds);
 }
 
+function messageImages(message) {
+  return Array.isArray(message?.images) ? message.images : [];
+}
+
+function findPendingUserImages(state = {}, text = "") {
+  const pendingClientMessageId = String(state.activeThreadPendingClientMessageId || "").trim();
+  const pendingText = String(text || "");
+  const messages = Array.isArray(state.activeThreadMessages) ? state.activeThreadMessages : [];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (String(message?.role || "").trim() !== "user") continue;
+    if (pendingClientMessageId) {
+      const id = String(message?.id || message?.clientMessageId || message?.messageKey || "").trim();
+      if (id !== pendingClientMessageId && readMessageClientMessageId(message) !== pendingClientMessageId) continue;
+    } else if (String(message?.text || "") !== pendingText) {
+      continue;
+    }
+    const images = messageImages(message);
+    if (images.length) return images.slice();
+  }
+  return [];
+}
+
+function preservePendingUserImages(message, state = {}, pendingUser = "") {
+  if (messageImages(message).length) return message;
+  const images = findPendingUserImages(state, pendingUser);
+  return images.length ? { ...message, images } : message;
+}
+
 function buildPendingUserMessage(state = {}, threadId = "", text = "") {
   const clientMessageId = String(state.activeThreadPendingClientMessageId || "").trim();
-  if (!clientMessageId) return { role: "user", text, kind: "" };
+  const images = findPendingUserImages(state, text);
+  if (!clientMessageId) {
+    return {
+      role: "user",
+      text,
+      kind: "",
+      ...(images.length ? { images } : {}),
+    };
+  }
   const timeline = reduceTimelineEvent(
     createThreadTimelineState(threadId),
     {
@@ -257,6 +294,7 @@ function buildPendingUserMessage(state = {}, threadId = "", text = "") {
     text,
     kind: "",
     optimistic: true,
+    ...(images.length ? { images } : {}),
   };
 }
 
@@ -323,6 +361,11 @@ export function mergePendingLiveMessages(messages, state = {}, threadId = "", op
       })
     : -1;
   if (materializedPendingUserIndex >= 0) {
+    out[materializedPendingUserIndex] = preservePendingUserImages(
+      out[materializedPendingUserIndex],
+      state,
+      pendingUser
+    );
     if (!hasPendingAssistant) {
       if (keepPendingUserFallback) restorePendingUserFallback(state, threadId, pendingUser);
       else clearPendingUserFallback(state, threadId);
@@ -431,6 +474,9 @@ export function buildHistoryRenderSig(threadId, turns, messages) {
     pushChunk(message?.role || "");
     pushChunk(message?.kind || "");
     pushChunk(message?.text || "");
+    for (const image of messageImages(message)) {
+      pushChunk(image?.url || image?.path || image?.label || image?.fileName || image || "");
+    }
     pushChunk(message?.archiveKey || "");
   }
   return `${String(threadId || "")}::${hash.toString(16)}`;
@@ -872,6 +918,7 @@ export function createHistoryLoaderModule(deps) {
     canStartChatLiveFollow,
     setStatus = () => {},
     renderMessageBody,
+    renderMessageAttachments = () => "",
     addChat,
     buildMsgNode,
     replayAssistantHistoryMessage,
@@ -1277,6 +1324,7 @@ export function createHistoryLoaderModule(deps) {
           ensureLoadOlderControl,
           updateLoadOlderControl,
           renderMessageBody,
+          renderMessageAttachments,
           addChat,
           pushLiveDebugEvent,
           scrollToBottomReliable,
@@ -1313,6 +1361,7 @@ export function createHistoryLoaderModule(deps) {
       liveCommentarySnapshot,
       deps: {
         renderMessageBody,
+        renderMessageAttachments,
         addChat,
         buildMsgNode,
         clearChatMessages,

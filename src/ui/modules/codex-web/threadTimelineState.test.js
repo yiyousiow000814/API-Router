@@ -40,6 +40,40 @@ describe("threadTimelineState", () => {
     ]);
   });
 
+  it("preserves optimistic user images when the first server echo lacks attachments", () => {
+    let state = createThreadTimelineState("thread-1");
+    state.messages = [
+      {
+        id: "client:thread-1:req-1",
+        clientMessageId: "client:thread-1:req-1",
+        role: "user",
+        text: "Check this screenshot",
+        optimistic: true,
+        images: [{ path: "C:\\tmp\\shot.png", label: "shot.png" }],
+      },
+    ];
+
+    state = reduceTimelineEvent(state, {
+      type: "message-upsert",
+      threadId: "thread-1",
+      message: {
+        id: "server:user:1",
+        clientMessageId: "client:thread-1:req-1",
+        role: "user",
+        text: "Check this screenshot",
+        images: [],
+      },
+    });
+
+    expect(state.messages[0]).toEqual(
+      expect.objectContaining({
+        id: "server:user:1",
+        optimistic: false,
+        images: [{ path: "C:\\tmp\\shot.png", label: "shot.png" }],
+      })
+    );
+  });
+
   it("deduplicates live and history final answers with the same turn identity", () => {
     let state = createThreadTimelineState("thread-1");
 

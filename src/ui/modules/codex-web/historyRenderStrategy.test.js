@@ -89,6 +89,19 @@ describe("historyRenderStrategy", () => {
     ).toBe("full_update_last");
   });
 
+  it("treats last-message attachment changes as an update", () => {
+    expect(
+      decideHistoryRenderStrategy({
+        previousMessages: [
+          { role: "user", kind: "", text: "hello", images: [] },
+        ],
+        nextMessages: [
+          { role: "user", kind: "", text: "hello", images: [{ path: "C:\\tmp\\shot.png" }] },
+        ],
+      })
+    ).toBe("full_update_last");
+  });
+
   it("appends in full-render mode when the old list is a strict prefix", () => {
     expect(
       decideHistoryRenderStrategy({

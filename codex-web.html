@@ -4945,6 +4945,19 @@
     .composerActionMenuItem:hover {
       background: rgba(17, 24, 39, 0.06);
     }
+    .mobileAttachmentMenuWrap {
+      position: relative;
+      flex: 0 0 auto;
+    }
+    .mobileAttachmentMenu {
+      left: 0;
+      right: auto;
+      min-width: 150px;
+      transform-origin: left bottom;
+    }
+    body.floating-composer-layout .mobileAttachmentMenu {
+      bottom: calc(100% + 16px);
+    }
     .queuedTurnCard {
       display: none;
       margin-bottom: 8px;
@@ -7031,7 +7044,13 @@
               </div>
             </div>
           <div id="mobileComposerRow" class="mobileComposerRow">
-            <button id="mobileAttachBtn" class="mobileCircleBtn"><span class="mobileAttachGlyph">+</span></button>
+            <div class="mobileAttachmentMenuWrap">
+              <button id="mobileAttachBtn" class="mobileCircleBtn" type="button" aria-label="Open composer actions" aria-haspopup="menu" aria-expanded="false"><span class="mobileAttachGlyph">+</span></button>
+              <div id="mobileAttachmentMenu" class="composerActionMenu mobileAttachmentMenu" role="menu">
+                <button id="mobileAttachFileBtn" class="composerActionMenuItem" type="button" role="menuitem">Attach file</button>
+                <button id="mobileCommandsBtn" class="composerActionMenuItem" type="button" role="menuitem">Commands</button>
+              </div>
+            </div>
             <div id="mobilePromptWrap" class="mobilePromptWrap">
               <div id="slashCommandMenu" class="slashCommandMenu" aria-live="polite"></div>
               <textarea id="mobilePromptInput" class="mobilePromptInput" rows="1" placeholder="Message Codex..."></textarea>

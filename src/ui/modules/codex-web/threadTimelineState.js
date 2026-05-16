@@ -10,7 +10,23 @@ function cloneMessage(message) {
   return {
     ...message,
     sources: Array.isArray(message?.sources) ? message.sources.slice() : [],
+    images: Array.isArray(message?.images) ? message.images.slice() : message?.images,
   };
+}
+
+function hasImages(message) {
+  return Array.isArray(message?.images) && message.images.length > 0;
+}
+
+function mergeMessagePayload(previous, next) {
+  const merged = {
+    ...previous,
+    ...next,
+  };
+  if (hasImages(previous) && !hasImages(next)) {
+    merged.images = previous.images.slice();
+  }
+  return merged;
 }
 
 function mergeSources(existingSources, incomingSource) {
@@ -192,8 +208,7 @@ function upsertTimelineMessage(messages, incoming) {
     if (optimisticIndex >= 0) {
       const previous = items[optimisticIndex];
       items[optimisticIndex] = {
-        ...previous,
-        ...next,
+        ...mergeMessagePayload(previous, next),
         optimistic: false,
         clientMessageId: previous?.clientMessageId || next.clientMessageId || undefined,
         sources: mergeSources(previous?.sources, next.source),
@@ -219,8 +234,7 @@ function upsertTimelineMessage(messages, incoming) {
   if (existingIndex >= 0) {
     const previous = items[existingIndex];
     items[existingIndex] = {
-      ...previous,
-      ...next,
+      ...mergeMessagePayload(previous, next),
       optimistic: next.optimistic === true ? true : previous?.optimistic === true,
       sources: mergeSources(previous?.sources, next.source),
     };

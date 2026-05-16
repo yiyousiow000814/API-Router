@@ -1493,6 +1493,79 @@ describe("slashCommands", () => {
     expect(menu.style.position).toBe("fixed");
   });
 
+  it("opens the top-level command picker without typing slash", async () => {
+    const state = {
+      slashCommands: [],
+      slashCommandsLoaded: false,
+      slashCommandsLoading: false,
+      slashCommandsError: "",
+      slashMenuItems: [],
+      slashMenuOpen: false,
+      slashMenuSelectedIndex: 0,
+      slashMenuSelectionVisible: false,
+      slashMenuContextKey: "",
+      permissionPresetByWorkspace: {},
+      workspaceTarget: "windows",
+    };
+    const menu = {
+      style: {},
+      innerHTML: "",
+      classList: { add() {}, remove() {} },
+      querySelector() { return null; },
+      querySelectorAll() { return []; },
+    };
+    const input = {
+      value: "",
+      focus() {},
+      setSelectionRange() {},
+      getBoundingClientRect() {
+        return { left: 24, top: 420, width: 320 };
+      },
+    };
+    const wrap = {
+      getBoundingClientRect() {
+        return { left: 16, top: 412, width: 336 };
+      },
+    };
+    const module = createSlashCommandsModule({
+      state,
+      byId(id) {
+        if (id === "slashCommandMenu") return menu;
+        if (id === "mobilePromptInput") return input;
+        if (id === "mobilePromptWrap") return wrap;
+        return null;
+      },
+      api: async () => ({
+        commands: [
+          { command: "/compact", usage: "/compact", insertText: "/compact", description: "Compact context" },
+          {
+            command: "/plan",
+            usage: "/plan",
+            insertText: "/plan",
+            description: "Plan mode",
+            children: [
+              { command: "/plan on", usage: "/plan on", insertText: "/plan on", description: "Enable" },
+            ],
+          },
+        ],
+      }),
+      escapeHtml: (value) => String(value || ""),
+      updateMobileComposerState: () => {},
+      setStatus: () => {},
+      windowRef: { innerWidth: 420, addEventListener() {} },
+    });
+
+    module.openSlashCommandPicker();
+    expect(state.slashMenuOpen).toBe(true);
+    expect(menu.innerHTML).toContain("Loading slash commands");
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(input.value).toBe("");
+    expect(menu.innerHTML).toContain("/compact");
+    expect(menu.innerHTML).toContain("/plan");
+  });
+
   it("keeps slash menu closed when the prompt is not focused", () => {
     const state = {
       slashCommands: [

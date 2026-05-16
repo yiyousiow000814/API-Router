@@ -2,6 +2,12 @@ function messageShapeMatches(a, b) {
   return !!a && !!b && a.role === b.role && a.kind === b.kind;
 }
 
+function messageImagesKey(message) {
+  return (Array.isArray(message?.images) ? message.images : [])
+    .map((image) => String(image?.url || image?.path || image?.label || image?.fileName || image || "").trim())
+    .join("|");
+}
+
 function messageIdentity(message) {
   const id = String(message?.id || "").trim();
   if (id) return id;
@@ -19,7 +25,12 @@ function messageIdentityConflicts(a, b) {
 }
 
 function messageFullyMatches(a, b) {
-  return messageShapeMatches(a, b) && a.text === b.text && !messageIdentityConflicts(a, b);
+  return (
+    messageShapeMatches(a, b) &&
+    a.text === b.text &&
+    messageImagesKey(a) === messageImagesKey(b) &&
+    !messageIdentityConflicts(a, b)
+  );
 }
 
 function allButLastMatch(previous, next) {
@@ -46,7 +57,11 @@ function shouldUpdateLastMessage(previous, next) {
   const nextLast = next[next.length - 1];
   return (
     messageShapeMatches(previousLast, nextLast) &&
-    (previousLast.text !== nextLast.text || messageIdentityConflicts(previousLast, nextLast))
+    (
+      previousLast.text !== nextLast.text ||
+      messageImagesKey(previousLast) !== messageImagesKey(nextLast) ||
+      messageIdentityConflicts(previousLast, nextLast)
+    )
   );
 }
 
