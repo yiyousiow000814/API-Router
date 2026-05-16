@@ -48,6 +48,7 @@
       --visual-viewport-height: 100vh;
       --keyboard-offset: 0px;
       --composer-float-height: 148px;
+      --mobile-keyboard-composer-gap: 0px;
       --mobile-bottom-clearance: max(26px, calc(env(safe-area-inset-bottom, 0px) + 14px));
       --motion-fast: 160ms;
       --motion-base: 220ms;
@@ -6696,6 +6697,15 @@
         left: 0;
         right: 0;
         padding-inline: 10px;
+      }
+      body.mobile-keyboard-open.floating-composer-layout {
+        --composer-float-height: 98px;
+      }
+      body.mobile-keyboard-open.floating-composer-layout .composer {
+        bottom: calc(var(--keyboard-offset, 0px) + var(--mobile-keyboard-composer-gap, 0px));
+      }
+      body.mobile-keyboard-open.floating-composer-layout .composerPickerBar {
+        display: none;
       }
       body.floating-composer-layout .composerInputSurface {
         border-radius: 20px;

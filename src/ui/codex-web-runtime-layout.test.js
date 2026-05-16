@@ -274,6 +274,18 @@ describe("codex-web runtime layout", () => {
     expect(source).toMatch(/body\.floating-composer-layout \.chatOpeningOverlay\s*\{[\s\S]*?bottom:\s*calc\(var\(--composer-float-height, 148px\) \+ 20px \+ var\(--keyboard-offset,\s*0px\) \+ var\(--mobile-bottom-clearance,\s*env\(safe-area-inset-bottom,\s*0px\)\)\)/);
   });
 
+  it("removes phone-only keyboard chrome that creates a gap above the keyboard", () => {
+    expect(source).toContain("--mobile-keyboard-composer-gap: 0px;");
+    expect(source).toMatch(/@media \(max-width: 720px\)\s*\{[\s\S]*?body\.mobile-keyboard-open\.floating-composer-layout \.composer\s*\{[\s\S]*?bottom:\s*calc\(var\(--keyboard-offset,\s*0px\) \+ var\(--mobile-keyboard-composer-gap,\s*0px\)\)/i);
+    expect(source).toMatch(/@media \(max-width: 720px\)\s*\{[\s\S]*?body\.mobile-keyboard-open\.floating-composer-layout \.composerPickerBar\s*\{[\s\S]*?display:\s*none/i);
+    const tabletMediaStart = source.indexOf("@media (max-width: 1080px) {");
+    const phoneMediaStart = source.indexOf("@media (max-width: 720px) {");
+    expect(tabletMediaStart).toBeGreaterThan(-1);
+    expect(phoneMediaStart).toBeGreaterThan(tabletMediaStart);
+    const tabletMediaOnly = source.slice(tabletMediaStart, phoneMediaStart);
+    expect(tabletMediaOnly).not.toContain("body.mobile-keyboard-open.floating-composer-layout .composerPickerBar");
+  });
+
   it("keeps the chat opening spinner restartable on iOS WebKit", () => {
     const spinnerMatch = source.match(/\.chatOpeningSpinner\s*\{([^}]+)\}/s);
     expect(spinnerMatch).toBeTruthy();
