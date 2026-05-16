@@ -503,10 +503,6 @@ export function createSlashCommandsModule(deps) {
     outsideDismissListenersInstalled = true;
     const dismiss = (event) => {
       if (state.slashMenuOpen !== true) return;
-      if (String(event?.type || "") === "click" && suppressNextMenuClick) {
-        suppressNextMenuClick = false;
-        return;
-      }
       if (!isSlashMenuDismissTarget(event?.target)) return;
       hideSlashCommandMenu();
     };
