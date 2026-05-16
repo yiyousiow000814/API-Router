@@ -1318,6 +1318,69 @@ describe("slashCommands", () => {
     expect(menu.style.display).toBe("none");
   });
 
+  it("keeps the manual command picker open through the opener click", () => {
+    const documentListeners = {};
+    const state = {
+      slashCommands: [
+        { command: "/fast", usage: "/fast", insertText: "/fast", description: "Fast mode", children: [] },
+      ],
+      slashCommandsLoaded: true,
+      slashCommandsLoading: false,
+      slashCommandsError: "",
+      slashMenuItems: [],
+      slashMenuOpen: false,
+      slashMenuSelectedIndex: 0,
+      slashMenuSelectionVisible: false,
+      slashMenuContextKey: "",
+    };
+    const menu = {
+      style: {},
+      innerHTML: "",
+      classList: { add() {}, remove() {} },
+      contains() { return false; },
+      querySelector() { return null; },
+      querySelectorAll() { return []; },
+    };
+    const input = {
+      value: "",
+      contains() { return false; },
+      focus() {},
+      setSelectionRange() {},
+      getBoundingClientRect() {
+        return { left: 24, top: 420, width: 320 };
+      },
+    };
+    const module = createSlashCommandsModule({
+      state,
+      byId(id) {
+        if (id === "slashCommandMenu") return menu;
+        if (id === "mobilePromptInput") return input;
+        return null;
+      },
+      api: async () => ({ commands: [] }),
+      updateMobileComposerState() {},
+      setStatus() {},
+      documentRef: {
+        activeElement: input,
+        addEventListener(name, handler) {
+          documentListeners[name] = handler;
+        },
+      },
+      windowRef: {
+        innerWidth: 390,
+        addEventListener() {},
+      },
+    });
+
+    module.openSlashCommandPicker({ type: "pointerdown", button: 0, isPrimary: true });
+    documentListeners.click?.({ type: "click", target: {} });
+
+    expect(state.slashMenuOpen).toBe(true);
+
+    documentListeners.pointerdown?.({ type: "pointerdown", target: {} });
+    expect(state.slashMenuOpen).toBe(false);
+  });
+
   it("prevents pointerdown focus-steal on slash menu items", () => {
     const listeners = {};
     const state = {

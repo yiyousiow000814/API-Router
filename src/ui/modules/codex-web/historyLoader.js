@@ -163,6 +163,14 @@ function shouldClearTransientConnectionStatusOnExplicitHistoryOpen(state = {}, t
   return !hasTrackedRuntimeContext;
 }
 
+function hasRuntimeDockState(state = {}) {
+  return !!(
+    (Array.isArray(state.activeThreadActiveCommands) && state.activeThreadActiveCommands.length > 0) ||
+    state.activeThreadPlan ||
+    state.activeThreadActivity
+  );
+}
+
 function pushHistoryMessage(messages, nextMessage) {
   if (!Array.isArray(messages) || !nextMessage || typeof nextMessage !== "object") return;
   const role = String(nextMessage.role || "").trim();
@@ -1003,11 +1011,7 @@ export function createHistoryLoaderModule(deps) {
     }
     syncPendingTurnStateFromIncompleteHistory(thread, state, parseUserMessageParts);
     syncRuntimeStateFromHistory(thread);
-    if (
-      (Array.isArray(state.activeThreadActiveCommands) && state.activeThreadActiveCommands.length > 0) ||
-      state.activeThreadPlan ||
-      state.activeThreadActivity
-    ) {
+    if (hasRuntimeDockState(state)) {
       clearTransientToolMessages();
       return;
     }
@@ -1270,6 +1274,12 @@ export function createHistoryLoaderModule(deps) {
       renderComposerContextLeft,
       syncEventSubscription,
     });
+    if (
+      thread?.page?.incomplete === true &&
+      !shouldSuppressStalePendingHistoryLiveState(thread, state, parseUserMessageParts)
+    ) {
+      syncRuntimeStateFromHistory(thread);
+    }
     const hasTrackedRuntimeContext =
       (String(state.activeThreadPendingTurnThreadId || "").trim() === threadId) ||
       (String(state.activeThreadLiveAssistantThreadId || "").trim() === threadId) ||
@@ -1288,6 +1298,18 @@ export function createHistoryLoaderModule(deps) {
     if (shouldSkipHistoryRender(state, renderSig, options)) {
       setActiveTimelineMessages(state, messages);
       pushLiveDebugEvent("history.render:unchanged", {
+        threadId,
+        messages: messages.length,
+        toolMessages: toolCount,
+      });
+      finalizeThreadRenderEffects(thread, options, historyCommentary, liveCommentarySnapshot);
+      if (state.historyWindowEnabled && state.historyWindowThreadId === threadId) updateLoadOlderControl();
+      return;
+    }
+    if (thread?.page?.incomplete === true && hasRuntimeDockState(state)) {
+      setActiveTimelineMessages(state, messages);
+      state.activeThreadRenderSig = renderSig;
+      pushLiveDebugEvent("history.render:runtime_dock_skip", {
         threadId,
         messages: messages.length,
         toolMessages: toolCount,
