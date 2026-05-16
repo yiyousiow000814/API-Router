@@ -683,7 +683,7 @@
     .itemCard.threadExpandEnter {
       opacity: 0;
       transform: translate3d(0, 6px, 0);
-      animation: thread-card-expand-enter 260ms cubic-bezier(.22, 1, .36, 1) both;
+      animation: thread-card-expand-enter 180ms cubic-bezier(.22, 1, .36, 1) both;
       animation-delay: var(--thread-expand-enter-delay, 0ms);
       will-change: opacity, transform;
     }
@@ -850,21 +850,12 @@
     .groupBody.is-collapsing {
       pointer-events: none;
       overflow: hidden;
+      transition:
+        height 0.2s ease,
+        opacity 0.2s ease,
+        padding-top 0.2s ease,
+        padding-bottom 0.2s ease;
       will-change: height, opacity, padding-top, padding-bottom;
-    }
-    .groupBody.is-expanding {
-      transition:
-        height 360ms cubic-bezier(.22, 1, .36, 1),
-        opacity 300ms ease,
-        padding-top 360ms cubic-bezier(.22, 1, .36, 1),
-        padding-bottom 360ms cubic-bezier(.22, 1, .36, 1);
-    }
-    .groupBody.is-collapsing {
-      transition:
-        height 220ms ease,
-        opacity 180ms ease,
-        padding-top 220ms ease,
-        padding-bottom 220ms ease;
     }
     .itemCard .row { min-width: 0; width: 100%; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; column-gap: 4px; align-items: center; }
     .itemCard .row .itemTitle { min-width: 0; max-width: 100%; display: block; }
