@@ -54,6 +54,7 @@
       --motion-base: 220ms;
       --motion-slow: 260ms;
       --motion-enter: 360ms;
+      --motion-keyboard: 260ms;
       --motion-drawer: var(--motion-slow);
 
       /* z-index scale (sequential, no gaps). */
@@ -4071,6 +4072,8 @@
       box-shadow: none;
       backdrop-filter: none;
       -webkit-backdrop-filter: none;
+      transition: bottom var(--motion-keyboard, var(--motion-base, 220ms)) cubic-bezier(.22, 1, .36, 1);
+      will-change: bottom;
     }
     body.floating-composer-layout .composerInputSurface {
       border: 1px solid rgba(13, 18, 32, 0.1);

@@ -286,6 +286,14 @@ describe("codex-web runtime layout", () => {
     expect(tabletMediaOnly).not.toContain("body.mobile-keyboard-open.floating-composer-layout .composerPickerBar");
   });
 
+  it("animates the floating composer when the keyboard offset changes", () => {
+    const composerMatch = source.match(/body\.floating-composer-layout \.composer\s*\{([^}]+)\}/s);
+    expect(composerMatch).toBeTruthy();
+    const composerBlock = composerMatch?.[1] || "";
+    expect(composerBlock).toMatch(/transition:\s*bottom var\(--motion-keyboard,\s*var\(--motion-base,\s*220ms\)\) cubic-bezier\(\.22,\s*1,\s*\.36,\s*1\)/i);
+    expect(composerBlock).toMatch(/will-change:\s*bottom/i);
+  });
+
   it("keeps the chat opening spinner restartable on iOS WebKit", () => {
     const spinnerMatch = source.match(/\.chatOpeningSpinner\s*\{([^}]+)\}/s);
     expect(spinnerMatch).toBeTruthy();
