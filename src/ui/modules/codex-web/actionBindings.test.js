@@ -2152,12 +2152,12 @@ describe("actionBindings", () => {
     expect(deps.state.composerBranchMenuOpen).toBe(false);
     expect(deps.state.composerPermissionMenuOpen).toBe(false);
 
-    clickHandlers.get("mobileAttachFileBtn")?.(event);
+    responsiveHandlers.get("mobileAttachFileBtn")?.(event);
     expect(deps.state.composerAttachmentMenuOpen).toBe(false);
     expect(deps.__attachClicked).toBe(true);
 
     responsiveHandlers.get("mobileAttachBtn")?.(event);
-    clickHandlers.get("mobileCommandsBtn")?.(event);
+    responsiveHandlers.get("mobileCommandsBtn")?.(event);
     expect(deps.state.composerAttachmentMenuOpen).toBe(false);
     expect(deps.__commandsOpened).toBe(true);
   });

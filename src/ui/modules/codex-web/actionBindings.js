@@ -793,14 +793,14 @@ export function createActionBindingsModule(deps) {
       state.composerPermissionMenuOpen = false;
       updateMobileComposerState();
     });
-    bindClick("mobileAttachFileBtn", (event) => {
+    bindResponsiveClick("mobileAttachFileBtn", (event) => {
       event?.preventDefault?.();
       event?.stopPropagation?.();
       state.composerAttachmentMenuOpen = false;
       updateMobileComposerState();
       byId("attachInput")?.click();
     });
-    bindClick("mobileCommandsBtn", (event) => {
+    bindResponsiveClick("mobileCommandsBtn", (event) => {
       event?.preventDefault?.();
       event?.stopPropagation?.();
       state.composerAttachmentMenuOpen = false;
