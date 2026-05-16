@@ -87,6 +87,7 @@ export function createActionBindingsModule(deps) {
     removePendingAttachment = () => false,
     previewPendingAttachment = () => false,
     executeSlashCommand = async () => null,
+    openSlashCommandPicker = () => {},
     cancelQueuedTurnEditing = () => {},
     clearQueuedTurn = () => {},
     editQueuedTurn = async () => false,
@@ -615,9 +616,14 @@ export function createActionBindingsModule(deps) {
   }
 
   function closeComposerPickerMenus() {
-    if (state.composerBranchMenuOpen !== true && state.composerPermissionMenuOpen !== true) {
+    if (
+      state.composerAttachmentMenuOpen !== true &&
+      state.composerBranchMenuOpen !== true &&
+      state.composerPermissionMenuOpen !== true
+    ) {
       return false;
     }
+    state.composerAttachmentMenuOpen = false;
     state.composerBranchMenuOpen = false;
     state.composerPermissionMenuOpen = false;
     updateMobileComposerState();
@@ -628,7 +634,9 @@ export function createActionBindingsModule(deps) {
     return !!(
       target?.closest?.("[data-composer-picker-toggle]") ||
       target?.closest?.("[data-composer-branch-option]") ||
-      target?.closest?.("[data-composer-permission-option]")
+      target?.closest?.("[data-composer-permission-option]") ||
+      target?.closest?.("#mobileAttachBtn") ||
+      target?.closest?.("#mobileAttachmentMenu")
     );
   }
 
@@ -777,7 +785,28 @@ export function createActionBindingsModule(deps) {
         });
       }
     }
-    bindClick("mobileAttachBtn", () => byId("attachInput")?.click());
+    bindResponsiveClick("mobileAttachBtn", (event) => {
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+      state.composerAttachmentMenuOpen = state.composerAttachmentMenuOpen !== true;
+      state.composerBranchMenuOpen = false;
+      state.composerPermissionMenuOpen = false;
+      updateMobileComposerState();
+    });
+    bindResponsiveClick("mobileAttachFileBtn", (event) => {
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+      state.composerAttachmentMenuOpen = false;
+      updateMobileComposerState();
+      byId("attachInput")?.click();
+    });
+    bindResponsiveClick("mobileCommandsBtn", (event) => {
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+      state.composerAttachmentMenuOpen = false;
+      updateMobileComposerState();
+      openSlashCommandPicker(event);
+    });
     bindResponsiveClick("mobileSendBtn", () => {
       const promptValue = String(byId("mobilePromptInput")?.value || "").trim();
       const running = state.activeThreadPendingTurnRunning === true && !!resolveCurrentThreadId(state);
@@ -1432,7 +1461,7 @@ export function createActionBindingsModule(deps) {
       const target = event.target;
       const pickerBar = byId("composerPickerBar");
       if (!(target instanceof Node)) return;
-      if (pickerBar?.contains(target) && isComposerPickerInteractiveTarget(target)) return;
+      if (isComposerPickerInteractiveTarget(target)) return;
       closeComposerPickerMenus();
     });
     bindClick("quickPrompt1", () => {

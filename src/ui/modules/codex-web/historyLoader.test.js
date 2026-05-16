@@ -2359,6 +2359,56 @@ Implement this plan?
     ]);
   });
 
+  it("preserves optimistic pending user images when early history lacks attachments", () => {
+    const state = {
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingClientMessageId: "client:thread-1:req-image",
+      activeThreadPendingUserMessage: "look at this",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadMessages: [
+        {
+          id: "client:thread-1:req-image",
+          clientMessageId: "client:thread-1:req-image",
+          role: "user",
+          text: "look at this",
+          kind: "",
+          optimistic: true,
+          images: [{ path: "C:\\tmp\\image.png", label: "image.png" }],
+        },
+      ],
+    };
+
+    expect(
+      mergePendingLiveMessages(
+        [
+          {
+            id: "server:user:image",
+            clientMessageId: "client:thread-1:req-image",
+            role: "user",
+            text: "look at this",
+            kind: "",
+            images: [],
+          },
+          { role: "system", text: "tool trace", kind: "commentaryArchive" },
+        ],
+        state,
+        "thread-1",
+        { historyIncomplete: true, historyTurnCount: 1 }
+      )
+    ).toEqual([
+      {
+        id: "server:user:image",
+        clientMessageId: "client:thread-1:req-image",
+        role: "user",
+        text: "look at this",
+        kind: "",
+        images: [{ path: "C:\\tmp\\image.png", label: "image.png" }],
+      },
+      { role: "system", text: "tool trace", kind: "commentaryArchive" },
+    ]);
+  });
+
   it("keeps the pending user fallback until the assistant reply is also reflected in history", () => {
     const state = {
       activeThreadPendingTurnThreadId: "thread-1",

@@ -285,6 +285,7 @@ export function createInitialState() {
     activeThreadPendingTerminalConnectionErrorThreadId: "",
     activeThreadPendingTerminalConnectionErrorText: "",
     activeThreadStatusCard: null,
+    composerAttachmentMenuOpen: false,
     composerBranchMenuOpen: false,
     composerPermissionMenuOpen: false,
     slashCommands: [],

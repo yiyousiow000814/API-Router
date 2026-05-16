@@ -230,6 +230,7 @@ export function createChatTimelineModule(deps) {
       source: String(options.source || "").trim() || "createMessageNode",
       transient: options.transient === true,
     });
+    node.__webCodexImages = attachments.slice();
     const messageKey = String(options.messageKey || options.id || options.messageId || "").trim();
     if (messageKey) {
       node.setAttribute("data-msg-key", messageKey);

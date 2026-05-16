@@ -180,6 +180,7 @@ let workspaceKeyOfThread = () => "Default folder";
 let setMobileTab = () => {};
 let hideSlashCommandMenu = () => {};
 let handleSlashCommandKeyDown = () => false;
+let openSlashCommandPicker = () => {};
 let syncSlashCommandMenu = () => {};
 let executeSlashCommand = async () => null;
 let refreshSlashCommandsState = async () => [];
@@ -456,6 +457,7 @@ const composition = createCodexWebComposition({
   clearLiveThreadConnectionStatus: (...args) => clearLiveThreadConnectionStatus(...args),
   hideSlashCommandMenu: (...args) => hideSlashCommandMenu(...args),
   handleSlashCommandKeyDown: (...args) => handleSlashCommandKeyDown(...args),
+  openSlashCommandPicker: (...args) => openSlashCommandPicker(...args),
   syncSlashCommandMenu: (...args) => syncSlashCommandMenu(...args),
   normalizeModelOption,
   isThreadAnimDebugEnabled,
@@ -738,6 +740,7 @@ const renderPendingInline = (...args) => renderPendingInlineFromComposition(...a
 ({
   hideSlashCommandMenu,
   handleSlashCommandKeyDown,
+  openSlashCommandPicker,
   refreshSlashCommands: refreshSlashCommandsState,
   syncSlashCommandMenu,
 } = createSlashCommandsModule({

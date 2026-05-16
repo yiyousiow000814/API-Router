@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { reconcileTimelineMessages } from "./historyTimelineReconcile.js";
 
-function createFakeNode({ className = "", id = "", text = "" } = {}) {
+function createFakeNode({ className = "", id = "", text = "", images = [] } = {}) {
   const body = String(className || "").split(/\s+/).includes("msg")
     ? { innerHTML: "", parentElement: null }
     : null;
@@ -24,6 +24,7 @@ function createFakeNode({ className = "", id = "", text = "" } = {}) {
     },
     setAttribute() {},
   };
+  node.__webCodexImages = Array.isArray(images) ? images.slice() : [];
   if (body) body.parentElement = node;
   node.classList = {
     contains(token) {
@@ -124,5 +125,42 @@ describe("historyTimelineReconcile", () => {
     expect(box.children[1]).not.toBe(liveArchiveNode);
     expect(box.children[1].className).toBe("commentaryArchiveMount");
     expect(box.children[2]).toBe(assistantNode);
+  });
+
+  it("updates a patched message body when attachments arrive later", () => {
+    const userNode = createFakeNode({ className: "msg user", text: "see image", images: [] });
+    const box = createFakeBox([userNode]);
+
+    const result = reconcileTimelineMessages({
+      box,
+      previousMessages: [
+        { role: "user", text: "see image", kind: "", images: [] },
+      ],
+      nextMessages: [
+        {
+          role: "user",
+          text: "see image",
+          kind: "",
+          images: [{ path: "C:\\tmp\\shot.png", label: "shot.png" }],
+        },
+      ],
+      buildMsgNode(msg) {
+        return createFakeNode({
+          className: `msg ${msg?.role || ""}`,
+          text: String(msg?.text || ""),
+          images: msg?.images || [],
+        });
+      },
+      renderMessageBody(_role, text) {
+        return `<span>${String(text || "")}</span>`;
+      },
+      renderMessageAttachments(items = []) {
+        return items.length ? `<div class="attachments">${items.length}</div>` : "";
+      },
+    });
+
+    expect(result).toEqual(expect.objectContaining({ inserted: 0, updated: 1 }));
+    expect(userNode.body.innerHTML).toContain('<div class="attachments">1</div>');
+    expect(userNode.body.innerHTML).toContain("<span>see image</span>");
   });
 });

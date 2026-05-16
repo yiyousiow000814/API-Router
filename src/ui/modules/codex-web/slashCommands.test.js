@@ -1100,6 +1100,224 @@ describe("slashCommands", () => {
     expect(suppressedMs).toBe(0);
   });
 
+  it("ignores a pointerup that did not start on a slash menu item", () => {
+    const listeners = {};
+    const executed = [];
+    let suppressedMs = 0;
+    const state = {
+      slashCommands: [
+        { command: "/fast", usage: "/fast", insertText: "/fast", description: "Fast mode", children: [] },
+      ],
+      slashCommandsLoaded: true,
+      slashCommandsLoading: false,
+      slashCommandsError: "",
+      slashMenuItems: [],
+      slashMenuOpen: false,
+      slashMenuSelectedIndex: 0,
+      slashMenuSelectionVisible: false,
+      slashMenuContextKey: "",
+    };
+    const menu = {
+      style: {},
+      innerHTML: "",
+      querySelector() { return null; },
+      querySelectorAll() {
+        return [
+          {
+            getAttribute(name) {
+              return name === "data-slash-index" ? "0" : "";
+            },
+            addEventListener(name, handler) {
+              listeners[name] = handler;
+            },
+          },
+        ];
+      },
+    };
+    const input = {
+      value: "/",
+      focus() {},
+      setSelectionRange() {},
+      getBoundingClientRect() {
+        return { left: 24, top: 420, width: 320 };
+      },
+    };
+    const module = createSlashCommandsModule({
+      state,
+      byId(id) {
+        if (id === "slashCommandMenu") return menu;
+        if (id === "mobilePromptInput") return input;
+        return null;
+      },
+      api: async () => ({ commands: [] }),
+      armSyntheticClickSuppression(ms) {
+        suppressedMs = ms;
+      },
+      executeSlashCommand(command) {
+        executed.push(command);
+        return Promise.resolve();
+      },
+      updateMobileComposerState() {},
+      setStatus() {},
+      documentRef: { activeElement: input },
+      windowRef: {
+        innerWidth: 390,
+        addEventListener() {},
+      },
+    });
+
+    module.syncSlashCommandMenu();
+    listeners.pointerup?.({ type: "pointerup", button: 0, isPrimary: true, preventDefault() {}, stopPropagation() {} });
+    listeners.click?.({ type: "click", button: 0, preventDefault() {}, stopPropagation() {} });
+
+    expect(executed).toEqual([]);
+    expect(suppressedMs).toBe(0);
+    expect(state.slashMenuOpen).toBe(true);
+  });
+
+  it("ignores the retargeted click from opening the manual command picker", () => {
+    const listeners = {};
+    const executed = [];
+    const state = {
+      slashCommands: [
+        { command: "/fast", usage: "/fast", insertText: "/fast", description: "Fast mode", children: [] },
+      ],
+      slashCommandsLoaded: true,
+      slashCommandsLoading: false,
+      slashCommandsError: "",
+      slashMenuItems: [],
+      slashMenuOpen: false,
+      slashMenuSelectedIndex: 0,
+      slashMenuSelectionVisible: false,
+      slashMenuContextKey: "",
+    };
+    const menu = {
+      style: {},
+      innerHTML: "",
+      classList: { add() {}, remove() {} },
+      querySelector() { return null; },
+      querySelectorAll() {
+        return [
+          {
+            getAttribute(name) {
+              return name === "data-slash-index" ? "0" : "";
+            },
+            addEventListener(name, handler) {
+              listeners[name] = handler;
+            },
+          },
+        ];
+      },
+    };
+    const input = {
+      value: "",
+      focus() {},
+      setSelectionRange() {},
+      getBoundingClientRect() {
+        return { left: 24, top: 420, width: 320 };
+      },
+    };
+    const module = createSlashCommandsModule({
+      state,
+      byId(id) {
+        if (id === "slashCommandMenu") return menu;
+        if (id === "mobilePromptInput") return input;
+        return null;
+      },
+      api: async () => ({ commands: [] }),
+      executeSlashCommand(command) {
+        executed.push(command);
+        return Promise.resolve();
+      },
+      updateMobileComposerState() {},
+      setStatus() {},
+      documentRef: { activeElement: input },
+      windowRef: {
+        innerWidth: 390,
+        addEventListener() {},
+      },
+    });
+
+    module.openSlashCommandPicker({ type: "pointerdown", button: 0, isPrimary: true });
+    listeners.click?.({ type: "click", button: 0, preventDefault() {}, stopPropagation() {} });
+
+    expect(executed).toEqual([]);
+    expect(input.value).toBe("");
+    expect(state.slashMenuOpen).toBe(true);
+
+    listeners.pointerdown?.({ type: "pointerdown", button: 0, isPrimary: true, preventDefault() {}, stopPropagation() {} });
+    listeners.pointerup?.({ type: "pointerup", button: 0, isPrimary: true, preventDefault() {}, stopPropagation() {} });
+
+    expect(input.value).toBe("/fast");
+  });
+
+  it("closes the slash menu when clicking outside it", () => {
+    const documentListeners = {};
+    const state = {
+      slashCommands: [
+        { command: "/fast", usage: "/fast", insertText: "/fast", description: "Fast mode", children: [] },
+      ],
+      slashCommandsLoaded: true,
+      slashCommandsLoading: false,
+      slashCommandsError: "",
+      slashMenuItems: [],
+      slashMenuOpen: false,
+      slashMenuSelectedIndex: 0,
+      slashMenuSelectionVisible: false,
+      slashMenuContextKey: "",
+    };
+    const insideTarget = {};
+    const outsideTarget = {};
+    const menu = {
+      style: {},
+      innerHTML: "",
+      classList: { add() {}, remove() {} },
+      contains(target) {
+        return target === insideTarget;
+      },
+      querySelector() { return null; },
+      querySelectorAll() { return []; },
+    };
+    const input = {
+      value: "",
+      contains() { return false; },
+      focus() {},
+      setSelectionRange() {},
+      getBoundingClientRect() {
+        return { left: 24, top: 420, width: 320 };
+      },
+    };
+    const module = createSlashCommandsModule({
+      state,
+      byId(id) {
+        if (id === "slashCommandMenu") return menu;
+        if (id === "mobilePromptInput") return input;
+        return null;
+      },
+      api: async () => ({ commands: [] }),
+      updateMobileComposerState() {},
+      setStatus() {},
+      documentRef: {
+        activeElement: input,
+        addEventListener(name, handler) {
+          documentListeners[name] = handler;
+        },
+      },
+      windowRef: {
+        innerWidth: 390,
+        addEventListener() {},
+      },
+    });
+
+    module.openSlashCommandPicker();
+    documentListeners.pointerdown?.({ type: "pointerdown", target: insideTarget });
+    expect(state.slashMenuOpen).toBe(true);
+
+    documentListeners.pointerdown?.({ type: "pointerdown", target: outsideTarget });
+    expect(state.slashMenuOpen).toBe(false);
+    expect(menu.style.display).toBe("none");
+  });
+
   it("prevents pointerdown focus-steal on slash menu items", () => {
     const listeners = {};
     const state = {
@@ -1491,6 +1709,158 @@ describe("slashCommands", () => {
     expect(menu.innerHTML).toContain("Loading slash commands");
     expect(menu.style.display).toBe("block");
     expect(menu.style.position).toBe("fixed");
+  });
+
+  it("opens the top-level command picker without typing slash", async () => {
+    const state = {
+      slashCommands: [],
+      slashCommandsLoaded: false,
+      slashCommandsLoading: false,
+      slashCommandsError: "",
+      slashMenuItems: [],
+      slashMenuOpen: false,
+      slashMenuSelectedIndex: 0,
+      slashMenuSelectionVisible: false,
+      slashMenuContextKey: "",
+      permissionPresetByWorkspace: {},
+      workspaceTarget: "windows",
+    };
+    const menu = {
+      style: {},
+      innerHTML: "",
+      classList: { add() {}, remove() {} },
+      querySelector() { return null; },
+      querySelectorAll() { return []; },
+    };
+    const input = {
+      value: "",
+      focus() {},
+      setSelectionRange() {},
+      getBoundingClientRect() {
+        return { left: 24, top: 420, width: 320 };
+      },
+    };
+    const wrap = {
+      getBoundingClientRect() {
+        return { left: 16, top: 412, width: 336 };
+      },
+    };
+    const module = createSlashCommandsModule({
+      state,
+      byId(id) {
+        if (id === "slashCommandMenu") return menu;
+        if (id === "mobilePromptInput") return input;
+        if (id === "mobilePromptWrap") return wrap;
+        return null;
+      },
+      api: async () => ({
+        commands: [
+          { command: "/compact", usage: "/compact", insertText: "/compact", description: "Compact context" },
+          {
+            command: "/plan",
+            usage: "/plan",
+            insertText: "/plan",
+            description: "Plan mode",
+            children: [
+              { command: "/plan on", usage: "/plan on", insertText: "/plan on", description: "Enable" },
+            ],
+          },
+        ],
+      }),
+      escapeHtml: (value) => String(value || ""),
+      updateMobileComposerState: () => {},
+      setStatus: () => {},
+      windowRef: { innerWidth: 420, addEventListener() {} },
+    });
+
+    module.openSlashCommandPicker();
+    expect(state.slashMenuOpen).toBe(true);
+    expect(menu.innerHTML).toContain("Loading slash commands");
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(input.value).toBe("");
+    expect(menu.innerHTML).toContain("/compact");
+    expect(menu.innerHTML).toContain("/plan");
+  });
+
+  it("opens manual selection submenus without focusing the prompt", () => {
+    const executed = [];
+    let focusCount = 0;
+    const state = {
+      slashCommands: [
+        { command: "/fast", usage: "/fast", insertText: "/fast", description: "Fast", children: [] },
+        {
+          command: "/permission",
+          usage: "/permission",
+          insertText: "/permission",
+          description: "Permission presets",
+          children: [
+            { command: "/permission auto", usage: "/permission auto", insertText: "/permission auto", description: "Auto", children: [] },
+            { command: "/permission full-access", usage: "/permission full-access", insertText: "/permission full-access", description: "Full access", children: [] },
+          ],
+        },
+      ],
+      slashCommandsLoaded: true,
+      slashCommandsLoading: false,
+      slashCommandsError: "",
+      slashMenuItems: [],
+      slashMenuOpen: false,
+      slashMenuSelectedIndex: 0,
+      slashMenuSelectionVisible: false,
+      slashMenuContextKey: "",
+      permissionPresetByWorkspace: {},
+      workspaceTarget: "windows",
+    };
+    const menu = {
+      style: {},
+      innerHTML: "",
+      classList: { add() {}, remove() {} },
+      querySelector() { return null; },
+      querySelectorAll() { return []; },
+    };
+    const input = {
+      value: "",
+      focus() { focusCount += 1; },
+      setSelectionRange() {},
+      getBoundingClientRect() {
+        return { left: 24, top: 420, width: 320 };
+      },
+    };
+    const module = createSlashCommandsModule({
+      state,
+      byId(id) {
+        if (id === "slashCommandMenu") return menu;
+        if (id === "mobilePromptInput") return input;
+        return null;
+      },
+      api: async () => ({ commands: [] }),
+      executeSlashCommand(command) {
+        executed.push(command);
+        return Promise.resolve();
+      },
+      updateMobileComposerState: () => {},
+      setStatus: () => {},
+      windowRef: { innerWidth: 420, addEventListener() {} },
+    });
+
+    module.openSlashCommandPicker();
+    state.slashMenuSelectedIndex = 1;
+
+    expect(module.applySelectedSlashCommand()).toBe(true);
+
+    expect(input.value).toBe("");
+    expect(focusCount).toBe(0);
+    expect(state.slashMenuOpen).toBe(true);
+    expect(menu.innerHTML).toContain("/permission auto");
+    expect(menu.innerHTML).toContain("/permission full-access");
+
+    state.slashMenuSelectedIndex = 1;
+    expect(module.applySelectedSlashCommand()).toBe(true);
+
+    expect(executed).toEqual(["/permission full-access"]);
+    expect(input.value).toBe("");
+    expect(focusCount).toBe(0);
   });
 
   it("keeps slash menu closed when the prompt is not focused", () => {
