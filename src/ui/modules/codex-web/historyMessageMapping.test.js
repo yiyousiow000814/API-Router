@@ -75,4 +75,54 @@ describe("historyMessageMapping", () => {
     ]);
     expect(messages.filter((message) => message.role === "assistant")).toHaveLength(1);
   });
+
+  it("flushes a final assistant before a later user item in the same history turn", async () => {
+    const messages = await mapThreadReadMessages(
+      {
+        id: "thread-1",
+        turns: [
+          {
+            id: "turn-1",
+            items: [
+              { id: "user-1", type: "userMessage", content: [{ type: "input_text", text: "first" }] },
+              { id: "assistant-1", type: "assistantMessage", phase: "final_answer", text: "reply one" },
+              { id: "user-2", type: "userMessage", content: [{ type: "input_text", text: "second" }] },
+              { id: "assistant-2", type: "assistantMessage", phase: "final_answer", text: "reply two" },
+            ],
+          },
+        ],
+      },
+      {
+        nextFrame: async () => {},
+        performanceRef: { now: (() => { let n = 0; return () => (n += 1); })() },
+        parseUserMessageParts(item) {
+          return {
+            text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+            images: [],
+          };
+        },
+        isBootstrapAgentsPrompt() {
+          return false;
+        },
+        normalizeThreadItemText(item) {
+          return String(item?.text || "");
+        },
+        pushHistoryMessage(messagesRef, message) {
+          messagesRef.push(message);
+        },
+        isVisibleAssistantHistoryPhase(phase) {
+          const value = String(phase || "").trim().toLowerCase();
+          return !value || value === "final_answer";
+        },
+        includeCanonicalIds: true,
+      }
+    );
+
+    expect(messages.map((message) => [message.role, message.text])).toEqual([
+      ["user", "first"],
+      ["assistant", "reply one"],
+      ["user", "second"],
+      ["assistant", "reply two"],
+    ]);
+  });
 });

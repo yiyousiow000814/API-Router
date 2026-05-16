@@ -60,9 +60,68 @@ export async function mapThreadReadMessages(thread, deps = {}) {
     let pendingPlan = null;
     let pendingTools = [];
     let pendingFinalAssistant = null;
+    const flushPendingFinalAssistant = () => {
+      if (!pendingFinalAssistant) return;
+      const trailingPlanOnlyBlock =
+        !currentCommentaryBlock
+          ? createSummaryArchiveBlock(
+              pendingPlan,
+              pendingTools,
+              threadId,
+              String(turn?.id || "").trim()
+            )
+          : null;
+      const archiveMessage = buildCommentaryArchiveMessage(
+        turn?.id,
+        finalizeArchiveBlocks(commentaryBlocks, trailingPlanOnlyBlock || currentCommentaryBlock, true)
+      );
+      if (archiveMessage) pushHistoryMessage(messages, archiveMessage);
+      const finalMeta = {
+        threadId,
+        turnId: pendingFinalAssistant.turnId,
+        itemId: pendingFinalAssistant.itemId,
+      };
+      const proposedPlan = pendingFinalAssistant.proposedPlan;
+      if (proposedPlan.cleanedText) {
+        pushHistoryMessage(
+          messages,
+          withCanonicalMessageIds(
+            { role: "assistant", text: proposedPlan.cleanedText, kind: "" },
+            finalMeta,
+            { includeCanonicalIds }
+          )
+        );
+      }
+      if (proposedPlan.planMessage?.plan) {
+        pushHistoryMessage(
+          messages,
+          withCanonicalMessageIds(
+            proposedPlan.planMessage,
+            finalMeta,
+            { includeCanonicalIds }
+          )
+        );
+      }
+      if (!proposedPlan.cleanedText && !proposedPlan.planMessage?.plan) {
+        pushHistoryMessage(
+          messages,
+          withCanonicalMessageIds(
+            { role: "assistant", text: pendingFinalAssistant.text, kind: "" },
+            finalMeta,
+            { includeCanonicalIds }
+          )
+        );
+      }
+      commentaryBlocks = [];
+      currentCommentaryBlock = null;
+      pendingPlan = null;
+      pendingTools = [];
+      pendingFinalAssistant = null;
+    };
     for (const item of items) {
       const type = String(item?.type || "").trim();
       if (type === "userMessage") {
+        flushPendingFinalAssistant();
         const parsed = parseUserMessageParts(item);
         const text = parsed.text;
         if (text && isBootstrapAgentsPrompt(text)) continue;
@@ -154,58 +213,7 @@ export async function mapThreadReadMessages(thread, deps = {}) {
         tools: [...(Array.isArray(currentCommentaryBlock.tools) ? currentCommentaryBlock.tools : []), toolText],
       };
     }
-    if (pendingFinalAssistant) {
-      const trailingPlanOnlyBlock =
-        !currentCommentaryBlock
-          ? createSummaryArchiveBlock(
-              pendingPlan,
-              pendingTools,
-              threadId,
-              String(turn?.id || "").trim()
-            )
-          : null;
-      const archiveMessage = buildCommentaryArchiveMessage(
-        turn?.id,
-        finalizeArchiveBlocks(commentaryBlocks, trailingPlanOnlyBlock || currentCommentaryBlock, true)
-      );
-      if (archiveMessage) pushHistoryMessage(messages, archiveMessage);
-      const finalMeta = {
-        threadId,
-        turnId: pendingFinalAssistant.turnId,
-        itemId: pendingFinalAssistant.itemId,
-      };
-      const proposedPlan = pendingFinalAssistant.proposedPlan;
-      if (proposedPlan.cleanedText) {
-        pushHistoryMessage(
-          messages,
-          withCanonicalMessageIds(
-            { role: "assistant", text: proposedPlan.cleanedText, kind: "" },
-            finalMeta,
-            { includeCanonicalIds }
-          )
-        );
-      }
-      if (proposedPlan.planMessage?.plan) {
-        pushHistoryMessage(
-          messages,
-          withCanonicalMessageIds(
-            proposedPlan.planMessage,
-            finalMeta,
-            { includeCanonicalIds }
-          )
-        );
-      }
-      if (!proposedPlan.cleanedText && !proposedPlan.planMessage?.plan) {
-        pushHistoryMessage(
-          messages,
-          withCanonicalMessageIds(
-            { role: "assistant", text: pendingFinalAssistant.text, kind: "" },
-            finalMeta,
-            { includeCanonicalIds }
-          )
-        );
-      }
-    }
+    flushPendingFinalAssistant();
   }
   return messages;
 }

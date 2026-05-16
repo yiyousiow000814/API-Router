@@ -2543,6 +2543,86 @@ Implement this plan?
     ]);
   });
 
+  it("keeps the optimistic user after the previous final assistant when the incomplete history turn is only a user echo", () => {
+    const state = {
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingTurnId: "turn-5",
+      activeThreadPendingTurnBaselineTurnCount: 4,
+      activeThreadPendingTurnBaselineUserCount: 4,
+      activeThreadPendingClientMessageId: "client:thread-1:req-4",
+      activeThreadPendingUserMessage: "autotest",
+      activeThreadPendingAssistantMessage: "",
+    };
+
+    expect(
+      mergePendingLiveMessages(
+        [
+          { role: "user", text: "previous", kind: "", turnId: "turn-4" },
+          { role: "assistant", text: "previous reply", kind: "", turnId: "turn-4" },
+        ],
+        state,
+        "thread-1",
+        {
+          historyIncomplete: true,
+          historyTurnCount: 5,
+          historyTurnIds: ["turn-1", "turn-2", "turn-3", "turn-4", "turn-5"],
+        }
+      )
+    ).toEqual([
+      { role: "user", text: "previous", kind: "", turnId: "turn-4" },
+      { role: "assistant", text: "previous reply", kind: "", turnId: "turn-4" },
+      {
+        id: "client:thread-1:req-4",
+        clientMessageId: "client:thread-1:req-4",
+        role: "user",
+        text: "autotest",
+        kind: "",
+        optimistic: true,
+      },
+    ]);
+  });
+
+  it("does not move the optimistic user above an older assistant after runtime baseline is reset", () => {
+    const state = {
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingTurnId: "turn-6",
+      activeThreadPendingTurnBaselineTurnCount: 0,
+      activeThreadPendingTurnBaselineUserCount: 5,
+      activeThreadPendingClientMessageId: "client:thread-1:req-5",
+      activeThreadPendingUserMessage: "autotest two",
+      activeThreadPendingAssistantMessage: "",
+    };
+
+    expect(
+      mergePendingLiveMessages(
+        [
+          { role: "user", text: "previous", kind: "", turnId: "turn-5" },
+          { role: "assistant", text: "previous reply", kind: "", turnId: "turn-5" },
+        ],
+        state,
+        "thread-1",
+        {
+          historyIncomplete: true,
+          historyTurnCount: 6,
+          historyTurnIds: ["turn-1", "turn-2", "turn-3", "turn-4", "turn-5"],
+        }
+      )
+    ).toEqual([
+      { role: "user", text: "previous", kind: "", turnId: "turn-5" },
+      { role: "assistant", text: "previous reply", kind: "", turnId: "turn-5" },
+      {
+        id: "client:thread-1:req-5",
+        clientMessageId: "client:thread-1:req-5",
+        role: "user",
+        text: "autotest two",
+        kind: "",
+        optimistic: true,
+      },
+    ]);
+  });
+
   it("does not treat an identical prompt from the baseline turn as a materialized pending user", () => {
     const state = {
       activeThreadPendingTurnThreadId: "thread-1",

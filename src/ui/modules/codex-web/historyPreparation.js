@@ -38,6 +38,7 @@ export async function prepareThreadHistoryView(thread, options = {}, deps = {}) 
   const messages = mergePendingLiveMessages(rawMessages, state, threadId, {
     historyIncomplete: thread?.page?.incomplete === true,
     historyTurnCount: turns.length,
+    historyTurnIds: turns.map((turn) => String(turn?.id || "").trim()),
   });
   const inlineCommentaryArchiveCount = messages.filter((message) => message?.kind === "commentaryArchive").length;
   const liveCommentarySnapshot = captureLiveCommentarySnapshot(threadId);

@@ -193,6 +193,50 @@ function readMessageClientMessageId(message) {
   ).trim();
 }
 
+function readMessageTurnId(message) {
+  return String(message?.turnId || message?.turn_id || "").trim();
+}
+
+function latestHistoryTurnId(options = {}) {
+  const ids = Array.isArray(options.historyTurnIds) ? options.historyTurnIds : [];
+  for (let index = ids.length - 1; index >= 0; index -= 1) {
+    const id = String(ids[index] || "").trim();
+    if (id) return id;
+  }
+  return "";
+}
+
+function postBaselineHistoryTurnIds(options = {}, baselineTurnCount = 0) {
+  const ids = Array.isArray(options.historyTurnIds) ? options.historyTurnIds : [];
+  return new Set(
+    ids
+      .slice(Math.max(0, Number(baselineTurnCount || 0)))
+      .map((id) => String(id || "").trim())
+      .filter(Boolean)
+  );
+}
+
+function isPostBaselineAssistantMessage(message, postBaselineTurnIds) {
+  if (String(message?.role || "").trim() !== "assistant") return false;
+  const turnId = readMessageTurnId(message);
+  if (!turnId) return postBaselineTurnIds.size <= 0;
+  return postBaselineTurnIds.has(turnId);
+}
+
+function isLatestHistoryTurnAssistantMessage(message, latestTurnId) {
+  if (String(message?.role || "").trim() !== "assistant") return false;
+  const turnId = readMessageTurnId(message);
+  return !!turnId && !!latestTurnId && turnId === latestTurnId;
+}
+
+function isPartialCurrentTurnAssistantMessage(message, latestTurnId, postBaselineTurnIds, pendingTurnId) {
+  if (String(message?.role || "").trim() !== "assistant") return false;
+  const turnId = readMessageTurnId(message);
+  if (turnId && pendingTurnId) return turnId === pendingTurnId;
+  if (turnId) return isLatestHistoryTurnAssistantMessage(message, latestTurnId);
+  return !latestTurnId && isPostBaselineAssistantMessage(message, postBaselineTurnIds);
+}
+
 function buildPendingUserMessage(state = {}, threadId = "", text = "") {
   const clientMessageId = String(state.activeThreadPendingClientMessageId || "").trim();
   if (!clientMessageId) return { role: "user", text, kind: "" };
@@ -340,6 +384,15 @@ export function mergePendingLiveMessages(messages, state = {}, threadId = "", op
   }
   const baselineTurnCount = Math.max(0, Number(state.activeThreadPendingTurnBaselineTurnCount || 0));
   const historyTurnCount = Math.max(0, Number(options.historyTurnCount || 0));
+  const latestTurnId = latestHistoryTurnId(options);
+  const postBaselineTurnIds = postBaselineHistoryTurnIds(options, baselineTurnCount);
+  const pendingTurnId = String(state.activeThreadPendingTurnId || "").trim();
+  const partialCurrentTurnAssistantIndex = (() => {
+    for (let index = out.length - 1; index >= 0; index -= 1) {
+      if (isPartialCurrentTurnAssistantMessage(out[index], latestTurnId, postBaselineTurnIds, pendingTurnId)) return index;
+    }
+    return -1;
+  })();
   const shouldPlacePendingUserBeforePartialCurrentTurn =
     hasPendingUser &&
     !hasPendingAssistant &&
@@ -347,14 +400,11 @@ export function mergePendingLiveMessages(messages, state = {}, threadId = "", op
     historyIncomplete &&
     historyTurnCount > baselineTurnCount &&
     historyUserCount <= baselineUserCount &&
-    out.some((entry) => String(entry?.role || "").trim() === "assistant");
+    partialCurrentTurnAssistantIndex >= 0;
   if (shouldPlacePendingUserBeforePartialCurrentTurn) {
-    for (let index = out.length - 1; index >= 0; index -= 1) {
-      if (String(out[index]?.role || "").trim() !== "assistant") continue;
-      return out
-        .slice(0, index)
-        .concat(pending.slice(0, 1), out.slice(index));
-    }
+    return out
+      .slice(0, partialCurrentTurnAssistantIndex)
+      .concat(pending.slice(0, 1), out.slice(partialCurrentTurnAssistantIndex));
   }
   return out.concat(pending.slice(appendFrom));
 }
