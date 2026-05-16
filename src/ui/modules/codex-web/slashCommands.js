@@ -237,6 +237,7 @@ export function createSlashCommandsModule(deps) {
 
   let loadPromise = null;
   let positionListenersInstalled = false;
+  let outsideDismissListenersInstalled = false;
   let lastRenderedMenuViewKey = "";
   let menuViewTransitionTimer = 0;
   let lastPointerMenuActivationAt = 0;
@@ -488,6 +489,27 @@ export function createSlashCommandsModule(deps) {
     windowRef.addEventListener("scroll", sync, true);
   }
 
+  function isSlashMenuDismissTarget(target) {
+    if (!target) return true;
+    const menu = byId("slashCommandMenu");
+    const input = byId("mobilePromptInput");
+    if (menu?.contains?.(target)) return false;
+    if (input?.contains?.(target)) return false;
+    return true;
+  }
+
+  function installOutsideDismissListeners() {
+    if (outsideDismissListenersInstalled || !documentRef?.addEventListener) return;
+    outsideDismissListenersInstalled = true;
+    const dismiss = (event) => {
+      if (state.slashMenuOpen !== true) return;
+      if (!isSlashMenuDismissTarget(event?.target)) return;
+      hideSlashCommandMenu();
+    };
+    documentRef.addEventListener("pointerdown", dismiss, true);
+    documentRef.addEventListener("click", dismiss, true);
+  }
+
   function focusSpecialInput() {
     const menu = byId("slashCommandMenu");
     const field = menu?.querySelector?.("[data-slash-special-input='true']");
@@ -580,6 +602,7 @@ export function createSlashCommandsModule(deps) {
     const previousScrollBox = menu.querySelector?.(".slashCommandScroll");
     const previousScrollTop = Number(previousScrollBox?.scrollTop);
     installPositionListeners();
+    installOutsideDismissListeners();
     const open = state.slashMenuOpen === true;
     const items = Array.isArray(state.slashMenuItems) ? state.slashMenuItems : [];
     const context = currentMenuContext();

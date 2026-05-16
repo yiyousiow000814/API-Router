@@ -1251,6 +1251,73 @@ describe("slashCommands", () => {
     expect(input.value).toBe("/fast");
   });
 
+  it("closes the slash menu when clicking outside it", () => {
+    const documentListeners = {};
+    const state = {
+      slashCommands: [
+        { command: "/fast", usage: "/fast", insertText: "/fast", description: "Fast mode", children: [] },
+      ],
+      slashCommandsLoaded: true,
+      slashCommandsLoading: false,
+      slashCommandsError: "",
+      slashMenuItems: [],
+      slashMenuOpen: false,
+      slashMenuSelectedIndex: 0,
+      slashMenuSelectionVisible: false,
+      slashMenuContextKey: "",
+    };
+    const insideTarget = {};
+    const outsideTarget = {};
+    const menu = {
+      style: {},
+      innerHTML: "",
+      classList: { add() {}, remove() {} },
+      contains(target) {
+        return target === insideTarget;
+      },
+      querySelector() { return null; },
+      querySelectorAll() { return []; },
+    };
+    const input = {
+      value: "",
+      contains() { return false; },
+      focus() {},
+      setSelectionRange() {},
+      getBoundingClientRect() {
+        return { left: 24, top: 420, width: 320 };
+      },
+    };
+    const module = createSlashCommandsModule({
+      state,
+      byId(id) {
+        if (id === "slashCommandMenu") return menu;
+        if (id === "mobilePromptInput") return input;
+        return null;
+      },
+      api: async () => ({ commands: [] }),
+      updateMobileComposerState() {},
+      setStatus() {},
+      documentRef: {
+        activeElement: input,
+        addEventListener(name, handler) {
+          documentListeners[name] = handler;
+        },
+      },
+      windowRef: {
+        innerWidth: 390,
+        addEventListener() {},
+      },
+    });
+
+    module.openSlashCommandPicker();
+    documentListeners.pointerdown?.({ type: "pointerdown", target: insideTarget });
+    expect(state.slashMenuOpen).toBe(true);
+
+    documentListeners.pointerdown?.({ type: "pointerdown", target: outsideTarget });
+    expect(state.slashMenuOpen).toBe(false);
+    expect(menu.style.display).toBe("none");
+  });
+
   it("prevents pointerdown focus-steal on slash menu items", () => {
     const listeners = {};
     const state = {
