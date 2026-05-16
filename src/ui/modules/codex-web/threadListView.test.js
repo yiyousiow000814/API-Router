@@ -51,6 +51,7 @@ describe("threadListView", () => {
       scrollHeight: 0,
       clientHeight: 0,
       appendChild(child) {
+        child.offsetTop = this.children.length * 38;
         this.children.push(child);
         return child;
       },
@@ -73,7 +74,12 @@ describe("threadListView", () => {
         return this.children.length;
       },
       getBoundingClientRect() {
-        return { height: 0 };
+        if (Number.isFinite(this.mockHeight)) return { height: this.mockHeight };
+        if (this.children.length) {
+          const last = this.children[this.children.length - 1];
+          return { height: Math.max(0, Number(last.offsetTop || 0) + 32 + 16) };
+        }
+        return { height: 32 };
       },
       addEventListener() {},
       set innerHTML(value) {
@@ -164,7 +170,7 @@ describe("threadListView", () => {
     expect(shouldStaggerThreadGroupEnter(entries, new Set(["yiyou"]))).toBe(false);
   });
 
-  it("uses a short reveal animation for chat cards when a collapsed workspace group expands", () => {
+  it("steps the expanded group height with the chat card reveal", () => {
     const list = createFakeElement("div");
     const body = createFakeElement("body");
     const state = {
@@ -260,7 +266,10 @@ describe("threadListView", () => {
     expect(cards[1].classList.contains("threadExpandEnter")).toBe(true);
     expect(cards[0].classList.contains("threadEnter")).toBe(false);
     expect(cards[0].style["--thread-expand-enter-delay"]).toBe("0ms");
-    expect(cards[1].style["--thread-expand-enter-delay"]).toBe("18ms");
+    expect(cards[1].style["--thread-expand-enter-delay"]).toBe("64ms");
+    const groupBody = list.children[0].children[1];
+    expect(groupBody.classList.contains("is-stepped-expanding")).toBe(true);
+    expect(groupBody.style.height).toBe("32px");
   });
 
   it("renders grouped threads without touching entries before initialization", () => {

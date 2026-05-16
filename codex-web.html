@@ -683,7 +683,7 @@
     .itemCard.threadExpandEnter {
       opacity: 0;
       transform: translate3d(0, 6px, 0);
-      animation: thread-card-expand-enter 180ms cubic-bezier(.22, 1, .36, 1) both;
+      animation: thread-card-expand-enter 220ms cubic-bezier(.22, 1, .36, 1) both;
       animation-delay: var(--thread-expand-enter-delay, 0ms);
       will-change: opacity, transform;
     }
@@ -856,6 +856,13 @@
         padding-top 0.2s ease,
         padding-bottom 0.2s ease;
       will-change: height, opacity, padding-top, padding-bottom;
+    }
+    .groupBody.is-stepped-expanding {
+      transition:
+        height 150ms cubic-bezier(.22, 1, .36, 1),
+        opacity 180ms ease,
+        padding-top 150ms cubic-bezier(.22, 1, .36, 1),
+        padding-bottom 150ms cubic-bezier(.22, 1, .36, 1);
     }
     .itemCard .row { min-width: 0; width: 100%; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; column-gap: 4px; align-items: center; }
     .itemCard .row .itemTitle { min-width: 0; max-width: 100%; display: block; }
