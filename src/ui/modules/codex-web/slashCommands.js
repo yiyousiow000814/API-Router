@@ -769,6 +769,7 @@ export function createSlashCommandsModule(deps) {
       }
     });
     for (const node of Array.from(menu.querySelectorAll?.("[data-slash-index]") || [])) {
+      let pointerStartedOnNode = false;
       const applyFromNode = (event) => {
         if (!shouldHandlePrimaryActivation(event)) return;
         markMenuInteraction();
@@ -784,11 +785,20 @@ export function createSlashCommandsModule(deps) {
       };
       node.addEventListener("pointerdown", (event) => {
         markMenuInteraction();
+        pointerStartedOnNode = shouldHandlePrimaryActivation(event);
         stopMenuEvent(event);
       });
       node.addEventListener("pointerup", (event) => {
         lastPointerMenuActivationAt = Date.now();
+        if (!pointerStartedOnNode) {
+          stopMenuEvent(event);
+          return;
+        }
+        pointerStartedOnNode = false;
         applyFromNode(event);
+      });
+      node.addEventListener("pointercancel", () => {
+        pointerStartedOnNode = false;
       });
       node.addEventListener("click", (event) => {
         if (Date.now() - lastPointerMenuActivationAt <= 500) {

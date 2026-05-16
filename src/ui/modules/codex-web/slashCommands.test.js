@@ -1100,6 +1100,81 @@ describe("slashCommands", () => {
     expect(suppressedMs).toBe(0);
   });
 
+  it("ignores a pointerup that did not start on a slash menu item", () => {
+    const listeners = {};
+    const executed = [];
+    let suppressedMs = 0;
+    const state = {
+      slashCommands: [
+        { command: "/fast", usage: "/fast", insertText: "/fast", description: "Fast mode", children: [] },
+      ],
+      slashCommandsLoaded: true,
+      slashCommandsLoading: false,
+      slashCommandsError: "",
+      slashMenuItems: [],
+      slashMenuOpen: false,
+      slashMenuSelectedIndex: 0,
+      slashMenuSelectionVisible: false,
+      slashMenuContextKey: "",
+    };
+    const menu = {
+      style: {},
+      innerHTML: "",
+      querySelector() { return null; },
+      querySelectorAll() {
+        return [
+          {
+            getAttribute(name) {
+              return name === "data-slash-index" ? "0" : "";
+            },
+            addEventListener(name, handler) {
+              listeners[name] = handler;
+            },
+          },
+        ];
+      },
+    };
+    const input = {
+      value: "/",
+      focus() {},
+      setSelectionRange() {},
+      getBoundingClientRect() {
+        return { left: 24, top: 420, width: 320 };
+      },
+    };
+    const module = createSlashCommandsModule({
+      state,
+      byId(id) {
+        if (id === "slashCommandMenu") return menu;
+        if (id === "mobilePromptInput") return input;
+        return null;
+      },
+      api: async () => ({ commands: [] }),
+      armSyntheticClickSuppression(ms) {
+        suppressedMs = ms;
+      },
+      executeSlashCommand(command) {
+        executed.push(command);
+        return Promise.resolve();
+      },
+      updateMobileComposerState() {},
+      setStatus() {},
+      documentRef: { activeElement: input },
+      windowRef: {
+        innerWidth: 390,
+        addEventListener() {},
+      },
+    });
+
+    module.syncSlashCommandMenu();
+    listeners.pointerup?.({ type: "pointerup", button: 0, isPrimary: true, preventDefault() {}, stopPropagation() {} });
+    listeners.click?.({ type: "click", button: 0, preventDefault() {}, stopPropagation() {} });
+
+    expect(executed).toEqual([]);
+    expect(suppressedMs).toBe(0);
+    expect(state.slashMenuOpen).toBe(true);
+  });
+
   it("prevents pointerdown focus-steal on slash menu items", () => {
     const listeners = {};
     const state = {
