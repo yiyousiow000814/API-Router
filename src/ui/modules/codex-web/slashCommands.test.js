@@ -1021,17 +1021,17 @@ describe("slashCommands", () => {
     const state = {
       workspaceTarget: "windows",
       activeThreadWorkspace: "windows",
-      fastModeEnabled: false,
+      permissionPresetByWorkspace: { windows: "/permission auto", wsl2: "" },
       slashCommands: [
         {
-          command: "/fast",
-          usage: "/fast",
-          insertText: "/fast",
-          description: "Fast mode",
+          command: "/permission",
+          usage: "/permission",
+          insertText: "/permission",
+          description: "Permission presets",
           active: false,
           children: [
-            { command: "/fast on", usage: "/fast on", insertText: "/fast on", description: "Enable", active: false, children: [] },
-            { command: "/fast off", usage: "/fast off", insertText: "/fast off", description: "Disable", active: true, children: [] },
+            { command: "/permission full-access", usage: "/permission full-access", insertText: "/permission full-access", description: "Full access", active: false, children: [] },
+            { command: "/permission auto", usage: "/permission auto", insertText: "/permission auto", description: "Auto", active: true, children: [] },
           ],
         },
       ],
@@ -1062,7 +1062,7 @@ describe("slashCommands", () => {
       },
     };
     const input = {
-      value: "/fast",
+      value: "/permission",
       focus() {},
       setSelectionRange() {},
       getBoundingClientRect() {
@@ -1096,7 +1096,7 @@ describe("slashCommands", () => {
     module.syncSlashCommandMenu();
     listeners.click?.({ type: "click", button: 0, preventDefault() {}, stopPropagation() {} });
 
-    expect(executed).toEqual(["/fast on"]);
+    expect(executed).toEqual(["/permission full-access"]);
     expect(suppressedMs).toBe(0);
   });
 
