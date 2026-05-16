@@ -4952,11 +4952,17 @@
     .mobileAttachmentMenu {
       left: 0;
       right: auto;
-      min-width: 150px;
+      bottom: 38px;
+      min-width: 172px;
       transform-origin: left bottom;
     }
     body.floating-composer-layout .mobileAttachmentMenu {
-      bottom: calc(100% + 16px);
+      bottom: calc(100% + 8px);
+    }
+    .mobileAttachmentMenuDivider {
+      height: 1px;
+      margin: 4px 6px;
+      background: rgba(13, 18, 32, 0.1);
     }
     .queuedTurnCard {
       display: none;
@@ -7047,7 +7053,8 @@
             <div class="mobileAttachmentMenuWrap">
               <button id="mobileAttachBtn" class="mobileCircleBtn" type="button" aria-label="Open composer actions" aria-haspopup="menu" aria-expanded="false"><span class="mobileAttachGlyph">+</span></button>
               <div id="mobileAttachmentMenu" class="composerActionMenu mobileAttachmentMenu" role="menu">
-                <button id="mobileAttachFileBtn" class="composerActionMenuItem" type="button" role="menuitem">Attach file</button>
+                <button id="mobileAttachFileBtn" class="composerActionMenuItem" type="button" role="menuitem">Add photos &amp; files</button>
+                <div class="mobileAttachmentMenuDivider" role="separator" aria-hidden="true"></div>
                 <button id="mobileCommandsBtn" class="composerActionMenuItem" type="button" role="menuitem">Commands</button>
               </div>
             </div>
