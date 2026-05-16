@@ -532,8 +532,10 @@ export function createThreadListViewModule(deps) {
     groupCount = entries.length;
     const staggerGroupEnter = shouldStaggerThreadGroupEnter(entries, state.collapsedWorkspaceKeys);
     let threadEnterIndex = 0;
+    let threadExpandEnterIndex = 0;
     let groupEnterIndex = 0;
     const nextThreadEnterDelayMs = () => Math.min(420, threadEnterIndex++ * 28);
+    const nextThreadExpandEnterDelayMs = () => Math.min(144, threadExpandEnterIndex++ * 18);
     const nextGroupEnterDelayMs = () =>
       (staggerGroupEnter ? Math.min(640, groupEnterIndex++ * 120) : 0);
     if (!entries.length) {
@@ -603,7 +605,10 @@ export function createThreadListViewModule(deps) {
       const isFavorite = !!(id && favoriteSet.has(id));
       const card = documentRef.createElement("div");
       card.className = `itemCard${id && id === state.activeThreadId ? " active" : ""}`;
-      if (animateEnter || !!options.animateEnter || (id && animateThreadIds.has(id))) {
+      if (!!options.expandEnter) {
+        card.classList.add("threadExpandEnter");
+        card.style.setProperty("--thread-expand-enter-delay", `${nextThreadExpandEnterDelayMs()}ms`);
+      } else if (animateEnter || !!options.animateEnter || (id && animateThreadIds.has(id))) {
         card.classList.add("threadEnter");
         card.style.setProperty("--thread-enter-delay", `${nextThreadEnterDelayMs()}ms`);
       }
@@ -789,7 +794,7 @@ export function createThreadListViewModule(deps) {
         body.className = "groupBody";
         const animateExpandedGroupCards = expandAnimateGroupKeys.has(String(sectionKey));
         for (const thread of sectionItems) {
-          body.appendChild(renderThreadCard(thread, { animateEnter: animateExpandedGroupCards }));
+          body.appendChild(renderThreadCard(thread, { expandEnter: animateExpandedGroupCards }));
         }
         group.appendChild(body);
         if (expandAnimateGroupKeys.has(String(sectionKey))) bodyForExpandAnim = body;
@@ -865,7 +870,7 @@ export function createThreadListViewModule(deps) {
         const animateExpandedGroupCards =
           !renderCollapsedBody && expandAnimateGroupKeys.has(String(workspaceKey));
         for (const thread of filtered) {
-          body.appendChild(renderThreadCard(thread, { animateEnter: animateExpandedGroupCards }));
+          body.appendChild(renderThreadCard(thread, { expandEnter: animateExpandedGroupCards }));
         }
         group.appendChild(body);
         if (renderCollapsedBody) bodyForCollapseAnim = body;

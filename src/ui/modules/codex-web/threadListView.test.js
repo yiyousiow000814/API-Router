@@ -164,7 +164,7 @@ describe("threadListView", () => {
     expect(shouldStaggerThreadGroupEnter(entries, new Set(["yiyou"]))).toBe(false);
   });
 
-  it("stagger-animates chat cards when a collapsed workspace group expands", () => {
+  it("uses a short reveal animation for chat cards when a collapsed workspace group expands", () => {
     const list = createFakeElement("div");
     const body = createFakeElement("body");
     const state = {
@@ -256,10 +256,11 @@ describe("threadListView", () => {
 
     const cards = list.children[0].children[1].children;
     expect(cards).toHaveLength(2);
-    expect(cards[0].classList.contains("threadEnter")).toBe(true);
-    expect(cards[1].classList.contains("threadEnter")).toBe(true);
-    expect(cards[0].style["--thread-enter-delay"]).toBe("0ms");
-    expect(cards[1].style["--thread-enter-delay"]).toBe("28ms");
+    expect(cards[0].classList.contains("threadExpandEnter")).toBe(true);
+    expect(cards[1].classList.contains("threadExpandEnter")).toBe(true);
+    expect(cards[0].classList.contains("threadEnter")).toBe(false);
+    expect(cards[0].style["--thread-expand-enter-delay"]).toBe("0ms");
+    expect(cards[1].style["--thread-expand-enter-delay"]).toBe("18ms");
   });
 
   it("renders grouped threads without touching entries before initialization", () => {

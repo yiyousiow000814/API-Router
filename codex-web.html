@@ -680,6 +680,17 @@
       from { opacity: 0; transform: translate3d(0, 18px, 0); }
       to { opacity: 1; transform: translate3d(0, 0, 0); }
     }
+    .itemCard.threadExpandEnter {
+      opacity: 0;
+      transform: translate3d(0, 6px, 0);
+      animation: thread-card-expand-enter 180ms cubic-bezier(.22, 1, .36, 1) both;
+      animation-delay: var(--thread-expand-enter-delay, 0ms);
+      will-change: opacity, transform;
+    }
+    @keyframes thread-card-expand-enter {
+      from { opacity: 0; transform: translate3d(0, 6px, 0); }
+      to { opacity: 1; transform: translate3d(0, 0, 0); }
+    }
     @keyframes thread-header-enter {
       from { opacity: 0; transform: translate3d(0, 18px, 0); }
       to { opacity: 1; transform: translate3d(0, 0, 0); }
