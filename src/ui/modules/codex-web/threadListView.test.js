@@ -38,7 +38,11 @@ describe("threadListView", () => {
     return {
       tagName: String(tagName).toUpperCase(),
       children: [],
-      style: { setProperty() {} },
+      style: {
+        setProperty(name, value) {
+          this[String(name)] = String(value);
+        },
+      },
       classList: createFakeClassList(),
       attributes: new Map(),
       className: "",
@@ -158,6 +162,104 @@ describe("threadListView", () => {
     ];
     expect(shouldStaggerThreadGroupEnter(entries, new Set(["project", "yiyou"]))).toBe(true);
     expect(shouldStaggerThreadGroupEnter(entries, new Set(["yiyou"]))).toBe(false);
+  });
+
+  it("stagger-animates chat cards when a collapsed workspace group expands", () => {
+    const list = createFakeElement("div");
+    const body = createFakeElement("body");
+    const state = {
+      threadItems: [],
+      threadItemsAll: [],
+      threadSearchQuery: "",
+      threadListLoading: false,
+      threadListLoadingTarget: "",
+      workspaceAvailability: { windowsInstalled: true, wsl2Installed: true },
+      threadListPendingVisibleAnimationByWorkspace: {},
+      threadListAnimationHoldUntilByWorkspace: {},
+      threadListVisibleOpenAnimationUntil: 0,
+      threadListAnimateNextRender: false,
+      threadListAnimateThreadIds: new Set(),
+      threadListExpandAnimateGroupKeys: new Set(["windows"]),
+      threadListCollapseAnimateGroupKeys: new Set(),
+      threadListChevronOpenAnimateKeys: new Set(["windows"]),
+      threadListChevronCloseAnimateKeys: new Set(),
+      threadListSkipScrollRestoreOnce: false,
+      collapsedWorkspaceKeys: new Set(),
+      threadGroupCollapseInitializedByWorkspace: { windows: true, wsl2: true },
+      favoriteThreadIds: new Set(),
+    };
+    const module = createThreadListViewModule({
+      state,
+      byId(id) {
+        return id === "threadList" ? list : null;
+      },
+      escapeHtml(value) {
+        return String(value || "");
+      },
+      normalizeWorkspaceTarget(value) {
+        return String(value || "").toLowerCase() === "wsl2" ? "wsl2" : "windows";
+      },
+      getWorkspaceTarget() {
+        return "windows";
+      },
+      hasDualWorkspaceTargets() {
+        return true;
+      },
+      pushThreadAnimDebug() {},
+      isThreadListActuallyVisible() {
+        return true;
+      },
+      workspaceKeyOfThread(thread) {
+        return thread.workspace;
+      },
+      truncateLabel(value) {
+        return String(value || "");
+      },
+      relativeTimeLabel() {
+        return "";
+      },
+      pickThreadTimestamp() {
+        return Date.now();
+      },
+      setMainTab() {},
+      setMobileTab() {},
+      setActiveThread() {},
+      setChatOpening() {},
+      detectThreadWorkspaceTarget(thread) {
+        return thread.workspace;
+      },
+      loadThreadMessages: async () => {},
+      api: async () => ({}),
+      setStatus() {},
+      scheduleThreadRefresh() {},
+      scrollToBottomReliable() {},
+      windowRef: { getComputedStyle() { return { paddingTop: "0px", paddingBottom: "0px" }; } },
+      documentRef: {
+        body,
+        createElement(tagName) {
+          return createFakeElement(tagName);
+        },
+      },
+      requestAnimationFrameRef(callback) {
+        callback();
+        return 1;
+      },
+      performanceRef: { now() { return 0; } },
+      localStorageRef: { setItem() {} },
+      FAVORITE_THREADS_KEY: "favorites",
+    });
+
+    module.renderThreads([
+      { id: "thread-1", workspace: "windows", title: "Alpha" },
+      { id: "thread-2", workspace: "windows", title: "Beta" },
+    ]);
+
+    const cards = list.children[0].children[1].children;
+    expect(cards).toHaveLength(2);
+    expect(cards[0].classList.contains("threadEnter")).toBe(true);
+    expect(cards[1].classList.contains("threadEnter")).toBe(true);
+    expect(cards[0].style["--thread-enter-delay"]).toBe("0ms");
+    expect(cards[1].style["--thread-enter-delay"]).toBe("28ms");
   });
 
   it("renders grouped threads without touching entries before initialization", () => {

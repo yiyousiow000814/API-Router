@@ -590,7 +590,7 @@ export function createThreadListViewModule(deps) {
       return id && favoriteSet.has(id);
     });
 
-    const renderThreadCard = (thread) => {
+    const renderThreadCard = (thread, options = {}) => {
       const id = thread.id || thread.threadId || "";
       const preview = String(thread.preview || "").replace(/\s+/g, " ").trim();
       const title =
@@ -603,7 +603,7 @@ export function createThreadListViewModule(deps) {
       const isFavorite = !!(id && favoriteSet.has(id));
       const card = documentRef.createElement("div");
       card.className = `itemCard${id && id === state.activeThreadId ? " active" : ""}`;
-      if (animateEnter || (id && animateThreadIds.has(id))) {
+      if (animateEnter || !!options.animateEnter || (id && animateThreadIds.has(id))) {
         card.classList.add("threadEnter");
         card.style.setProperty("--thread-enter-delay", `${nextThreadEnterDelayMs()}ms`);
       }
@@ -787,7 +787,10 @@ export function createThreadListViewModule(deps) {
       if (!collapsed) {
         const body = documentRef.createElement("div");
         body.className = "groupBody";
-        for (const thread of sectionItems) body.appendChild(renderThreadCard(thread));
+        const animateExpandedGroupCards = expandAnimateGroupKeys.has(String(sectionKey));
+        for (const thread of sectionItems) {
+          body.appendChild(renderThreadCard(thread, { animateEnter: animateExpandedGroupCards }));
+        }
         group.appendChild(body);
         if (expandAnimateGroupKeys.has(String(sectionKey))) bodyForExpandAnim = body;
         const prevTop = prevGroupScroll.get(String(sectionKey));
@@ -859,7 +862,11 @@ export function createThreadListViewModule(deps) {
       if (!collapsed || renderCollapsedBody) {
         const body = documentRef.createElement("div");
         body.className = "groupBody";
-        for (const thread of filtered) body.appendChild(renderThreadCard(thread));
+        const animateExpandedGroupCards =
+          !renderCollapsedBody && expandAnimateGroupKeys.has(String(workspaceKey));
+        for (const thread of filtered) {
+          body.appendChild(renderThreadCard(thread, { animateEnter: animateExpandedGroupCards }));
+        }
         group.appendChild(body);
         if (renderCollapsedBody) bodyForCollapseAnim = body;
         else if (expandAnimateGroupKeys.has(String(workspaceKey))) bodyForExpandAnim = body;
