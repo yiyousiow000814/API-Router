@@ -601,6 +601,7 @@ export function createSlashCommandsModule(deps) {
     if (!menu) return;
     const previousScrollBox = menu.querySelector?.(".slashCommandScroll");
     const previousScrollTop = Number(previousScrollBox?.scrollTop);
+    const wasHidden = String(menu.style.display || "").trim() === "none";
     installPositionListeners();
     installOutsideDismissListeners();
     const open = state.slashMenuOpen === true;
@@ -612,6 +613,7 @@ export function createSlashCommandsModule(deps) {
         menuViewTransitionTimer = 0;
       }
       menu.classList?.remove?.("is-view-transition");
+      menu.classList?.remove?.("is-open-enter");
       lastRenderedMenuViewKey = "";
       menu.style.display = "none";
       resetSlashMenuPosition(menu);
@@ -678,6 +680,14 @@ export function createSlashCommandsModule(deps) {
     menu.innerHTML = html;
     positionSlashMenu(menu);
     menu.style.display = "block";
+    if (wasHidden) {
+      menu.classList?.remove?.("is-open-enter");
+      try {
+        void menu.offsetWidth;
+      } catch {}
+      menu.classList?.add?.("is-open-enter");
+      setTimeout(() => menu.classList?.remove?.("is-open-enter"), 220);
+    }
     const nextViewKey = specialMenuOpen()
       ? `special:${specialMenu.mode}:${specialMenu.query}:${specialMenu.draft}`
       : `menu:${String(context?.parent?.command || "")}:${items.map((item) => String(item?.command || "")).join("|")}`;
