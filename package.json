@@ -10,6 +10,7 @@
   "scripts": {
     "check:gateway-provider-id": "node tools/checks/check-gateway-provider-id.mjs",
     "check:line-endings": "node tools/checks/check-line-endings.mjs",
+    "check:updater-manifest": "node tools/checks/check-updater-manifest.mjs",
     "check:web-codex-assets": "node tools/checks/check-web-codex-assets.mjs",
     "check:codex-gateway": "node tools/checks/check-codex-gateway.mjs",
     "debug:dump": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/diagnostics/debug-dump.ps1",
