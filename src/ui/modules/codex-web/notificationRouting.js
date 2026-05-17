@@ -149,10 +149,11 @@ export function inspectNotificationThreadIdentity(notification) {
 export function shouldRefreshThreadsFromNotification(method) {
   const normalized = normalizeLiveMethod(method);
   return (
-    normalized.startsWith("thread/") ||
-    normalized.startsWith("turn/") ||
-    normalized.startsWith("item/") ||
-    normalized.startsWith("codex/event/")
+    normalized === "thread/updated" ||
+    normalized === "thread/name/updated" ||
+    normalized === "thread/status" ||
+    normalized === "thread/status/changed" ||
+    normalized === "codex/event/user_message"
   );
 }
 

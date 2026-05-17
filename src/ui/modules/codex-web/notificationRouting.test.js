@@ -69,10 +69,14 @@ describe("notificationRouting", () => {
   });
 
   it("matches refresh-worthy notification methods", () => {
-    expect(shouldRefreshThreadsFromNotification("turn/completed")).toBe(true);
-    expect(shouldRefreshThreadsFromNotification("turn.completed")).toBe(true);
-    expect(shouldRefreshThreadsFromNotification("item_completed")).toBe(true);
+    expect(shouldRefreshThreadsFromNotification("turn/completed")).toBe(false);
+    expect(shouldRefreshThreadsFromNotification("turn.completed")).toBe(false);
+    expect(shouldRefreshThreadsFromNotification("item_completed")).toBe(false);
+    expect(shouldRefreshThreadsFromNotification("item/started")).toBe(false);
     expect(shouldRefreshThreadsFromNotification("thread/status")).toBe(true);
+    expect(shouldRefreshThreadsFromNotification("thread/name/updated")).toBe(true);
+    expect(shouldRefreshThreadsFromNotification("codex/event/user_message")).toBe(true);
+    expect(shouldRefreshThreadsFromNotification("codex/event/response_item")).toBe(false);
     expect(shouldRefreshThreadsFromNotification("noop")).toBe(false);
     expect(shouldRefreshActiveThreadFromNotification("turn/started")).toBe(true);
     expect(shouldRefreshActiveThreadFromNotification("turn/completed")).toBe(true);
