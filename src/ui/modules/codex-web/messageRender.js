@@ -165,10 +165,20 @@ function isMarkdownTableStart(lines, index) {
   return header.length === alignments.length;
 }
 
+function markdownTableLooksMetric(rows) {
+  for (const row of rows) {
+    for (const cell of row || []) {
+      if (isSlashSeparatedNumericMetric(cell)) return true;
+    }
+  }
+  return false;
+}
+
 function renderMarkdownTable(rows, alignments) {
   const header = rows[0] || [];
   const bodyRows = rows.slice(1);
   const columnCount = header.length;
+  const isMetricTable = markdownTableLooksMetric(rows);
   const renderCellAttrs = (index) => {
     const align = alignments[index] || "";
     const columnClass = index === 0 ? "msgTableLeadCell" : "msgTableDetailCell";
@@ -185,7 +195,8 @@ function renderMarkdownTable(rows, alignments) {
       return `<tr>${cells.map((cell, index) => `<td${renderCellAttrs(index)}>${renderInlineMessageText(cell)}</td>`).join("")}</tr>`;
     })
     .join("");
-  return `<div class="msgTableWrap"><table class="msgTable" data-msg-table-cols="${columnCount}"><thead><tr>${headerHtml}</tr></thead><tbody>${bodyHtml}</tbody></table></div>`;
+  const metricAttr = isMetricTable ? ' data-msg-table-kind="metric"' : "";
+  return `<div class="msgTableWrap"><table class="msgTable" data-msg-table-cols="${columnCount}"${metricAttr}><thead><tr>${headerHtml}</tr></thead><tbody>${bodyHtml}</tbody></table></div>`;
 }
 
 export function fileRefDisplayLabel(value) {

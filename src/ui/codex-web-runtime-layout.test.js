@@ -196,14 +196,14 @@ describe("codex-web runtime layout", () => {
     const wrapMatch = source.match(/\.msgTableWrap\s*\{([^}]+)\}/s);
     const tableMatch = source.match(/\.msgTable\s*\{([^}]+)\}/s);
     const metricTableMatch = source.match(
-      /\.msgTable:not\(\[data-msg-table-cols="2"\]\):not\(\[data-msg-table-cols="3"\]\)\s*\{([^}]+)\}/s
+      /\.msgTable\[data-msg-table-kind="metric"\]\s*\{([^}]+)\}/s
     );
     const cellMatch = source.match(/\.msgTable th,\s*\.msgTable td\s*\{([^}]+)\}/s);
     const metricCellMatch = source.match(
-      /\.msgTable:not\(\[data-msg-table-cols="2"\]\):not\(\[data-msg-table-cols="3"\]\) th,\s*[\s\S]*?\.msgTable:not\(\[data-msg-table-cols="2"\]\):not\(\[data-msg-table-cols="3"\]\) td\s*\{([^}]+)\}/s
+      /\.msgTable\[data-msg-table-kind="metric"\] th,\s*[\s\S]*?\.msgTable\[data-msg-table-kind="metric"\] td\s*\{([^}]+)\}/s
     );
     const metricTokenMatch = source.match(
-      /\.msgTable:not\(\[data-msg-table-cols="2"\]\):not\(\[data-msg-table-cols="3"\]\)\s+\.msgLink,\s*[\s\S]*?\.msgTable:not\(\[data-msg-table-cols="2"\]\):not\(\[data-msg-table-cols="3"\]\)\s+\.msgInlineCode\s*\{([^}]+)\}/s
+      /\.msgTable\[data-msg-table-kind="metric"\]\s+\.msgLink,\s*[\s\S]*?\.msgTable\[data-msg-table-kind="metric"\]\s+\.msgInlineCode\s*\{([^}]+)\}/s
     );
     const leadMatch = source.match(
       /\.msgTable\[data-msg-table-cols="2"\]\s+\.msgTableLeadCell,\s*[\s\S]*?\.msgTable\[data-msg-table-cols="3"\]\s+\.msgTableLeadCell\s*\{([^}]+)\}/s
@@ -222,6 +222,7 @@ describe("codex-web runtime layout", () => {
     expect(metricTableMatch?.[1] || "").toMatch(/width:\s*max-content/i);
     expect(metricTableMatch?.[1] || "").toMatch(/min-width:\s*100%/i);
     expect(metricTableMatch?.[1] || "").toMatch(/table-layout:\s*auto/i);
+    expect(source).toContain('.msgTable[data-msg-table-kind="metric"]');
     expect(source).toContain('.msgTable[data-msg-table-cols="2"]');
     expect(source).toContain('.msgTable[data-msg-table-cols="3"]');
     expect(cellMatch?.[1] || "").not.toMatch(/white-space:\s*nowrap/i);

@@ -274,6 +274,7 @@ Checked`
     expect(html).toContain("<thead>");
     expect(html).toContain('<th class="msgTableLeadCell">year</th>');
     expect(html).toContain('style="text-align:right">14567.0</td>');
+    expect(html).not.toContain('data-msg-table-kind="metric"');
     expect(html).not.toContain("| year | net_pips");
     expect(html).toContain("<p>Conclusion</p>");
   });
@@ -311,6 +312,7 @@ Checked`
     expect(html).toContain("13318.7/16030.2/16346.8/6823.3");
     expect(html).toContain("930742.0/651434.1");
     expect(html).toContain("22/34/7588.3");
+    expect(html).toContain('data-msg-table-kind="metric"');
     expect(html).not.toContain('<span class="msgPseudoLink">645084.1</span>');
     expect(html).not.toContain('<span class="msgPseudoLink">6987.3</span>');
     expect(html).not.toContain('<span class="msgPseudoLink">7752.3</span>');

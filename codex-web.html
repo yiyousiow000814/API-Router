@@ -3514,7 +3514,7 @@
       line-height: 1.45;
       color: #18233a;
     }
-    .msgTable:not([data-msg-table-cols="2"]):not([data-msg-table-cols="3"]) {
+    .msgTable[data-msg-table-kind="metric"] {
       width: max-content;
       min-width: 100%;
       table-layout: auto;
@@ -3532,15 +3532,15 @@
       overflow-wrap: break-word;
       word-break: normal;
     }
-    .msgTable:not([data-msg-table-cols="2"]):not([data-msg-table-cols="3"]) th,
-    .msgTable:not([data-msg-table-cols="2"]):not([data-msg-table-cols="3"]) td {
+    .msgTable[data-msg-table-kind="metric"] th,
+    .msgTable[data-msg-table-kind="metric"] td {
       white-space: nowrap;
       overflow-wrap: normal;
       word-break: keep-all;
     }
-    .msgTable:not([data-msg-table-cols="2"]):not([data-msg-table-cols="3"]) .msgLink,
-    .msgTable:not([data-msg-table-cols="2"]):not([data-msg-table-cols="3"]) .msgPseudoLink,
-    .msgTable:not([data-msg-table-cols="2"]):not([data-msg-table-cols="3"]) .msgInlineCode {
+    .msgTable[data-msg-table-kind="metric"] .msgLink,
+    .msgTable[data-msg-table-kind="metric"] .msgPseudoLink,
+    .msgTable[data-msg-table-kind="metric"] .msgInlineCode {
       white-space: inherit;
       overflow-wrap: normal;
       word-break: normal;
