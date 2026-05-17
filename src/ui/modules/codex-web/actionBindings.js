@@ -1476,13 +1476,48 @@ export function createActionBindingsModule(deps) {
       updateMobileComposerState();
       syncSlashCommandMenu();
     });
+    const syncThreadSearchUi = () => {
+      const panel = byId("leftPanel");
+      const input = byId("threadSearchInput");
+      const open = state.threadSearchOpen === true || !!String(state.threadSearchQuery || "").trim();
+      panel?.classList?.toggle("search-open", open);
+      panel?.classList?.toggle("search-has-query", !!String(state.threadSearchQuery || "").trim());
+      input?.setAttribute?.("aria-expanded", open ? "true" : "false");
+    };
     const threadSearchInput = byId("threadSearchInput");
     if (threadSearchInput) {
       threadSearchInput.oninput = (event) => {
         state.threadSearchQuery = String(event?.target?.value || "");
+        state.threadSearchOpen = true;
+        syncThreadSearchUi();
         renderThreads(state.threadItems);
       };
     }
+    syncThreadSearchUi();
+    bindResponsiveClick("threadSearchOpenBtn", (event) => {
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+      state.threadSearchOpen = true;
+      syncThreadSearchUi();
+      byId("threadSearchInput")?.focus?.();
+    }, { activationEvent: "click" });
+    bindResponsiveClick("threadSearchCloseBtn", (event) => {
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+      state.threadSearchOpen = false;
+      syncThreadSearchUi();
+    }, { activationEvent: "click" });
+    bindResponsiveClick("threadSearchClearBtn", (event) => {
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+      const input = byId("threadSearchInput");
+      state.threadSearchQuery = "";
+      if (input) input.value = "";
+      state.threadSearchOpen = true;
+      syncThreadSearchUi();
+      renderThreads(state.threadItems);
+      input?.focus?.();
+    }, { activationEvent: "click" });
     wireThreadPullToRefresh();
     win.addEventListener?.("resize", () => {
       updateMobileComposerState();

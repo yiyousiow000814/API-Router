@@ -161,6 +161,7 @@ export function createInitialState() {
     collapsedWorkspaceKeysByWorkspace: { windows: new Set(), wsl2: new Set() },
     threadGroupCollapseInitializedByWorkspace: { windows: false, wsl2: false },
     sidebarCollapsed: false,
+    threadSearchOpen: false,
     threadSearchQuery: "",
     activeMainTab: "chat",
     settingsActiveSection: "provider",

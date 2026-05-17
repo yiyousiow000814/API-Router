@@ -5778,6 +5778,45 @@
       opacity: 0.95;
       margin: 0;
     }
+    .drawerSearchHeader {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-height: 28px;
+    }
+    .threadSearchControls {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .drawerSearchIconBtn {
+      width: 30px;
+      height: 30px;
+      flex: 0 0 auto;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      border-radius: 999px;
+      border: 1px solid rgba(13, 18, 32, 0.12);
+      background: rgba(255, 255, 255, 0.92);
+      color: #435168;
+    }
+    .drawerSearchIconBtn svg {
+      width: 16px;
+      height: 16px;
+      display: block;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    #threadSearchInput {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
     @keyframes threadPullSpin {
       from { transform: rotate(0deg); }
       to { transform: rotate(360deg); }
@@ -6649,6 +6688,37 @@
       .leftPanel .sectionTitle {
         color: #637188;
       }
+      .leftPanel .drawerSearchHeader {
+        min-height: 32px;
+      }
+      .leftPanel .drawerSearchHeader .drawerSectionTitle {
+        margin: 0;
+      }
+      .leftPanel .drawerSearchIconBtn {
+        display: inline-flex;
+      }
+      .leftPanel .threadSearchControls {
+        display: none;
+        min-height: 32px;
+      }
+      .leftPanel.search-open .drawerSearchHeader {
+        display: none;
+      }
+      .leftPanel.search-open .threadSearchControls {
+        display: flex;
+      }
+      .leftPanel #threadSearchInput {
+        height: 32px;
+        font-size: 16px;
+        line-height: 22px;
+        padding: 4px 10px;
+      }
+      .leftPanel #threadSearchClearBtn {
+        visibility: hidden;
+      }
+      .leftPanel.search-has-query #threadSearchClearBtn {
+        visibility: visible;
+      }
       .leftPanel .itemTitle,
       .leftPanel .drawerLabel {
         color: #0d1220;
@@ -6827,7 +6897,7 @@
     </section>
 
     <main id="mainLayout" class="layout">
-      <section class="panel leftPanel">
+      <section id="leftPanel" class="panel leftPanel">
         <div class="panelBody drawerBody">
           <div class="drawerBrandRow">
             <span class="drawerBrandMain"><img class="drawerBrandLogo" src="/ao-icon.png" alt="API Router logo" /><span>API Router</span></span>
@@ -6848,8 +6918,27 @@
               <span id="drawerWorkspaceText">Select folder</span>
             </span>
           </button>
-          <div class="drawerSectionTitle">Chats</div>
-          <input id="threadSearchInput" class="mono" placeholder="Search chats" />
+          <div id="drawerSearchHeader" class="drawerSearchHeader">
+            <div class="drawerSectionTitle">Chats</div>
+            <button id="threadSearchOpenBtn" class="drawerSearchIconBtn" type="button" aria-label="Search chats">
+              <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                <path d="M7.2 12.1a4.9 4.9 0 1 1 0-9.8 4.9 4.9 0 0 1 0 9.8Zm3.4-1.1 3.1 3.1"></path>
+              </svg>
+            </button>
+          </div>
+          <div id="threadSearchControls" class="threadSearchControls">
+            <button id="threadSearchCloseBtn" class="drawerSearchIconBtn" type="button" aria-label="Close chat search">
+              <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                <path d="M10 4 6 8l4 4"></path>
+              </svg>
+            </button>
+            <input id="threadSearchInput" class="mono" placeholder="Search chats" />
+            <button id="threadSearchClearBtn" class="drawerSearchIconBtn" type="button" aria-label="Clear chat search">
+              <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                <path d="m5 5 6 6m0-6-6 6"></path>
+              </svg>
+            </button>
+          </div>
           <div id="threadPullHint" class="threadPullHint" aria-live="polite">
             <span class="threadPullHintInner">
               <span class="threadPullSpinner" aria-hidden="true"></span>
