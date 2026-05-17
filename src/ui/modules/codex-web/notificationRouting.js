@@ -26,6 +26,10 @@ export function extractNotificationEventId(notification) {
 }
 
 export function extractNotificationThreadId(notification) {
+  return inspectNotificationThreadIdentity(notification).threadId;
+}
+
+export function inspectNotificationThreadIdentity(notification) {
   const record = toRecord(notification);
   const params = toRecord(record?.params) || toRecord(record?.payload) || null;
   const msg = toRecord(params?.msg);
@@ -34,6 +38,53 @@ export function extractNotificationThreadId(notification) {
   const item = toRecord(params?.item) || toRecord(params?.itemState) || toRecord(params?.item_state);
   const source = toRecord(params?.source) || toRecord(msg?.source);
   const subagent = toRecord(toRecord(source?.subagent)?.thread_spawn);
+  const exactMatches = [
+    ["msg.thread_id", readString(msg?.thread_id)],
+    ["msg.threadId", readString(msg?.threadId)],
+    ["msg.conversation_id", readString(msg?.conversation_id)],
+    ["msg.conversationId", readString(msg?.conversationId)],
+    ["msg.session_id", readString(msg?.session_id)],
+    ["msg.sessionId", readString(msg?.sessionId)],
+    ["params.thread_id", readString(params?.thread_id)],
+    ["params.threadId", readString(params?.threadId)],
+    ["params.conversation_id", readString(params?.conversation_id)],
+    ["params.conversationId", readString(params?.conversationId)],
+    ["params.session_id", readString(params?.session_id)],
+    ["params.sessionId", readString(params?.sessionId)],
+    ["thread.id", readString(thread?.id)],
+    ["thread.thread_id", readString(thread?.thread_id)],
+    ["thread.threadId", readString(thread?.threadId)],
+    ["thread.conversation_id", readString(thread?.conversation_id)],
+    ["thread.conversationId", readString(thread?.conversationId)],
+    ["thread.session_id", readString(thread?.session_id)],
+    ["thread.sessionId", readString(thread?.sessionId)],
+    ["turn.thread_id", readString(turn?.thread_id)],
+    ["turn.threadId", readString(turn?.threadId)],
+    ["turn.conversation_id", readString(turn?.conversation_id)],
+    ["turn.conversationId", readString(turn?.conversationId)],
+    ["turn.session_id", readString(turn?.session_id)],
+    ["turn.sessionId", readString(turn?.sessionId)],
+    ["item.thread_id", readString(item?.thread_id)],
+    ["item.threadId", readString(item?.threadId)],
+    ["item.conversation_id", readString(item?.conversation_id)],
+    ["item.conversationId", readString(item?.conversationId)],
+    ["item.session_id", readString(item?.session_id)],
+    ["item.sessionId", readString(item?.sessionId)],
+    ["source.thread_id", readString(source?.thread_id)],
+    ["source.threadId", readString(source?.threadId)],
+    ["source.conversation_id", readString(source?.conversation_id)],
+    ["source.conversationId", readString(source?.conversationId)],
+    ["source.session_id", readString(source?.session_id)],
+    ["source.sessionId", readString(source?.sessionId)],
+    ["source.parent_thread_id", readString(source?.parent_thread_id)],
+    ["source.parentThreadId", readString(source?.parentThreadId)],
+    ["source.parent_session_id", readString(source?.parent_session_id)],
+    ["source.parentSessionId", readString(source?.parentSessionId)],
+    ["subagent.parent_thread_id", readString(subagent?.parent_thread_id)],
+    ["subagent.parentThreadId", readString(subagent?.parentThreadId)],
+    ["subagent.parent_session_id", readString(subagent?.parent_session_id)],
+    ["subagent.parentSessionId", readString(subagent?.parentSessionId)],
+  ];
   const keys = new Set([
     "thread_id",
     "threadId",
@@ -60,7 +111,12 @@ export function extractNotificationThreadId(notification) {
     for (const key of Object.keys(root)) {
       if (keys.has(key)) {
         const found = readString(root[key]);
-        if (found) return found;
+        if (found) {
+          return {
+            threadId: found,
+            matchedKey: `deep.${key}`,
+          };
+        }
       }
     }
     for (const key of Object.keys(root)) {
@@ -69,55 +125,25 @@ export function extractNotificationThreadId(notification) {
     }
     return null;
   };
-  return (
-    readString(msg?.thread_id) ||
-    readString(msg?.threadId) ||
-    readString(msg?.conversation_id) ||
-    readString(msg?.conversationId) ||
-    readString(msg?.session_id) ||
-    readString(msg?.sessionId) ||
-    readString(params?.thread_id) ||
-    readString(params?.threadId) ||
-    readString(params?.conversation_id) ||
-    readString(params?.conversationId) ||
-    readString(params?.session_id) ||
-    readString(params?.sessionId) ||
-    readString(thread?.id) ||
-    readString(thread?.thread_id) ||
-    readString(thread?.threadId) ||
-    readString(thread?.conversation_id) ||
-    readString(thread?.conversationId) ||
-    readString(thread?.session_id) ||
-    readString(thread?.sessionId) ||
-    readString(turn?.thread_id) ||
-    readString(turn?.threadId) ||
-    readString(turn?.conversation_id) ||
-    readString(turn?.conversationId) ||
-    readString(turn?.session_id) ||
-    readString(turn?.sessionId) ||
-    readString(item?.thread_id) ||
-    readString(item?.threadId) ||
-    readString(item?.conversation_id) ||
-    readString(item?.conversationId) ||
-    readString(item?.session_id) ||
-    readString(item?.sessionId) ||
-    readString(source?.thread_id) ||
-    readString(source?.threadId) ||
-    readString(source?.conversation_id) ||
-    readString(source?.conversationId) ||
-    readString(source?.session_id) ||
-    readString(source?.sessionId) ||
-    readString(source?.parent_thread_id) ||
-    readString(source?.parentThreadId) ||
-    readString(source?.parent_session_id) ||
-    readString(source?.parentSessionId) ||
-    readString(subagent?.parent_thread_id) ||
-    readString(subagent?.parentThreadId) ||
-    readString(subagent?.parent_session_id) ||
-    readString(subagent?.parentSessionId) ||
-    deepFindThreadId(params) ||
-    null
-  );
+  const matched = exactMatches.find(([, value]) => value) || null;
+  const deepMatch = matched ? null : deepFindThreadId(params);
+  const finalThreadId = matched?.[1] || deepMatch?.threadId || null;
+  const matchedKey = matched?.[0] || deepMatch?.matchedKey || "";
+  return {
+    threadId: finalThreadId,
+    matchedKey,
+    usedParentThreadId: matchedKey.includes("parent_thread") || matchedKey.includes("parentThread"),
+    parentThreadId:
+      readString(source?.parent_thread_id) ||
+      readString(source?.parentThreadId) ||
+      readString(source?.parent_session_id) ||
+      readString(source?.parentSessionId) ||
+      readString(subagent?.parent_thread_id) ||
+      readString(subagent?.parentThreadId) ||
+      readString(subagent?.parent_session_id) ||
+      readString(subagent?.parentSessionId) ||
+      null,
+  };
 }
 
 export function shouldRefreshThreadsFromNotification(method) {
@@ -313,10 +339,32 @@ export function synthesizeProvisionalThreadItem(
   fallbackWorkspace = "windows",
   nowMs = Date.now()
 ) {
+  const inspection = inspectProvisionalThreadCandidate(notification, fallbackWorkspace, nowMs);
+  return inspection.accepted ? inspection.item : null;
+}
+
+export function inspectProvisionalThreadCandidate(
+  notification,
+  fallbackWorkspace = "windows",
+  nowMs = Date.now()
+) {
   const record = toRecord(notification);
-  if (isSubagentNotification(record)) return null;
-  const threadId = extractNotificationThreadId(record);
-  if (!threadId) return null;
+  const threadIdentity = inspectNotificationThreadIdentity(record);
+  if (isSubagentNotification(record)) {
+    return {
+      accepted: false,
+      rejectionReason: "subagent-notification",
+      ...threadIdentity,
+    };
+  }
+  const threadId = threadIdentity.threadId;
+  if (!threadId) {
+    return {
+      accepted: false,
+      rejectionReason: "missing-thread-id",
+      ...threadIdentity,
+    };
+  }
   const params = extractNotificationParams(record);
   const item = toRecord(params?.item) || toRecord(params?.payload);
   const thread = toRecord(params?.thread);
@@ -332,8 +380,29 @@ export function synthesizeProvisionalThreadItem(
     extractUserMessageTextPreview(thread) ||
     extractUserMessageTextPreview(params) ||
     "";
-  if (isFilteredTestThreadCwd(cwd) || isAuxiliaryThreadPreviewText(preview)) {
-    return null;
+  if (isFilteredTestThreadCwd(cwd)) {
+    return {
+      accepted: false,
+      rejectionReason: "filtered-cwd",
+      workspace,
+      rolloutPath,
+      cwd,
+      preview,
+      status: readNotificationStatus(record),
+      ...threadIdentity,
+    };
+  }
+  if (isAuxiliaryThreadPreviewText(preview)) {
+    return {
+      accepted: false,
+      rejectionReason: "auxiliary-preview",
+      workspace,
+      rolloutPath,
+      cwd,
+      preview,
+      status: readNotificationStatus(record),
+      ...threadIdentity,
+    };
   }
   const status = readNotificationStatus(record);
   const updatedAt = Number.isFinite(nowMs) ? nowMs : Date.now();
@@ -354,5 +423,15 @@ export function synthesizeProvisionalThreadItem(
     nextItem.previewSource = "user";
   }
   if (status) nextItem.status = { type: status };
-  return nextItem;
+  return {
+    accepted: true,
+    rejectionReason: "",
+    workspace,
+    rolloutPath,
+    cwd,
+    preview,
+    status,
+    item: nextItem,
+    ...threadIdentity,
+  };
 }

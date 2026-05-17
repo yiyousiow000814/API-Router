@@ -528,6 +528,70 @@ fn workspace_target_label(target: WorkspaceTarget) -> &'static str {
     }
 }
 
+fn summarize_thread_sidebar_item(item: &Value) -> Value {
+    let preview = item
+        .get("preview")
+        .or_else(|| item.get("title"))
+        .or_else(|| item.get("name"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    let cwd = item
+        .get("cwd")
+        .or_else(|| item.get("directory"))
+        .or_else(|| item.get("project"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    let path = item
+        .get("path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    json!({
+        "id": item
+            .get("id")
+            .or_else(|| item.get("threadId"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default(),
+        "source": item.get("source").and_then(Value::as_str).map(str::trim).unwrap_or_default(),
+        "sessionSource": item.get("sessionSource").and_then(Value::as_str).map(str::trim).unwrap_or_default(),
+        "filterReason": item.get("filterReason").and_then(Value::as_str).map(str::trim).unwrap_or_default(),
+        "isSubagent": item.get("isSubagent").and_then(Value::as_bool).unwrap_or(false),
+        "agentRole": item
+            .get("agentRole")
+            .or_else(|| item.get("agent_role"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default(),
+        "parentThreadId": item
+            .get("agent_parent_session_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default(),
+        "preview": preview.chars().take(180).collect::<String>(),
+        "cwd": cwd.chars().take(180).collect::<String>(),
+        "path": path.chars().take(220).collect::<String>(),
+        "visible": thread_item_should_be_visible(item),
+        "auxiliaryPreview": (!preview.is_empty()) && is_auxiliary_thread_preview_text(preview),
+        "filteredCwd": (!cwd.is_empty()) && is_filtered_test_thread_cwd(cwd),
+    })
+}
+
+fn append_thread_sidebar_trace(kind: &str, workspace: WorkspaceTarget, payload: Value) {
+    let _ =
+        crate::orchestrator::gateway::web_codex_storage::append_codex_live_trace_entry(&json!({
+            "source": "thread.sidebar",
+            "entry": {
+                "at": crate::orchestrator::store::unix_ms(),
+                "kind": kind,
+                "workspace": workspace_target_label(workspace),
+                "payload": payload,
+            }
+        }));
+}
+
 fn retained_live_notification_items(items: &[Value]) -> Vec<Value> {
     let mut retained = items
         .iter()
@@ -678,7 +742,14 @@ pub(super) fn upsert_thread_item_hint(workspace: WorkspaceTarget, item: Value) {
     let Some(item) = normalized.into_iter().next() else {
         return;
     };
+    let item_summary = summarize_thread_sidebar_item(&item);
+    append_thread_sidebar_trace(
+        "thread.sidebar.item_hint.inspect",
+        workspace,
+        item_summary.clone(),
+    );
     if !thread_item_should_be_visible(&item) {
+        append_thread_sidebar_trace("thread.sidebar.item_hint.drop", workspace, item_summary);
         return;
     }
 
@@ -690,8 +761,21 @@ pub(super) fn upsert_thread_item_hint(workspace: WorkspaceTarget, item: Value) {
         .unwrap_or_default()
         .to_string();
     if id.is_empty() {
+        append_thread_sidebar_trace(
+            "thread.sidebar.item_hint.drop",
+            workspace,
+            json!({
+                "reason": "missing-id",
+                "item": item_summary,
+            }),
+        );
         return;
     }
+    let item_source = item
+        .get("source")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
 
     let mut index = lock_threads_workspace_index();
     let bucket = workspace_bucket_mut(&mut index, workspace);
@@ -713,6 +797,14 @@ pub(super) fn upsert_thread_item_hint(workspace: WorkspaceTarget, item: Value) {
     sort_threads_by_updated_desc(&mut bucket.items);
     bucket.updated_at_unix_secs = current_unix_secs();
     mark_bucket_items_changed(bucket);
+    append_thread_sidebar_trace(
+        "thread.sidebar.item_hint.upsert",
+        workspace,
+        json!({
+            "id": id,
+            "source": item_source,
+        }),
+    );
 }
 
 fn notification_is_subagent(notification: &Value) -> bool {
@@ -742,14 +834,50 @@ fn notification_is_subagent(notification: &Value) -> bool {
 
 pub(super) fn upsert_thread_notification_hint(workspace: WorkspaceTarget, notification: &Value) {
     let scopes = NotificationScopes::new(notification);
+    let method = notification
+        .get("method")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string();
     let Some(thread_id) = scopes.thread_id() else {
+        append_thread_sidebar_trace(
+            "thread.sidebar.notification_hint.drop",
+            workspace,
+            json!({
+                "reason": "missing-thread-id",
+                "method": method,
+            }),
+        );
         return;
     };
     let is_subagent = notification_is_subagent(notification);
     if is_subagent {
+        append_thread_sidebar_trace(
+            "thread.sidebar.notification_hint.drop",
+            workspace,
+            json!({
+                "reason": "subagent-notification",
+                "method": method,
+                "threadId": thread_id,
+                "parentThreadId": scopes.parent_thread_id().unwrap_or_default(),
+                "agentRole": scopes.agent_role().unwrap_or_default(),
+            }),
+        );
         return;
     }
     if scopes.agent_role().is_some() && !is_subagent {
+        append_thread_sidebar_trace(
+            "thread.sidebar.notification_hint.drop",
+            workspace,
+            json!({
+                "reason": "agent-role",
+                "method": method,
+                "threadId": thread_id,
+                "parentThreadId": scopes.parent_thread_id().unwrap_or_default(),
+                "agentRole": scopes.agent_role().unwrap_or_default(),
+            }),
+        );
         return;
     }
     let cwd = scopes.cwd();
@@ -758,6 +886,16 @@ pub(super) fn upsert_thread_notification_hint(workspace: WorkspaceTarget, notifi
         .map(is_filtered_test_thread_cwd)
         .unwrap_or(false)
     {
+        append_thread_sidebar_trace(
+            "thread.sidebar.notification_hint.drop",
+            workspace,
+            json!({
+                "reason": "filtered-cwd",
+                "method": method,
+                "threadId": thread_id,
+                "cwd": cwd.unwrap_or_default(),
+            }),
+        );
         return;
     }
     let mut item = json!({
@@ -808,6 +946,17 @@ pub(super) fn upsert_thread_notification_hint(workspace: WorkspaceTarget, notifi
             obj.insert("status".to_string(), json!({ "type": status }));
         }
     }
+    append_thread_sidebar_trace(
+        "thread.sidebar.notification_hint.accept",
+        workspace,
+        json!({
+            "method": method,
+            "threadId": thread_id,
+            "parentThreadId": scopes.parent_thread_id().unwrap_or_default(),
+            "agentRole": scopes.agent_role().unwrap_or_default(),
+            "item": summarize_thread_sidebar_item(&item),
+        }),
+    );
     upsert_thread_item_hint(workspace, item);
 }
 

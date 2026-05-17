@@ -1,5 +1,5 @@
 import { createMockCodexTransport } from "./mockTransport.js";
-import { synthesizeProvisionalThreadItem } from "./notificationRouting.js";
+import { inspectProvisionalThreadCandidate } from "./notificationRouting.js";
 import { setThreadOpenState } from "./threadOpenState.js";
 import { resolveCurrentThreadId } from "./runtimeState.js";
 
@@ -747,13 +747,38 @@ export function createWsClientModule(deps) {
   }
 
   function maybeUpsertProvisionalThread(notification, workspaceHint = "windows") {
-    const item = synthesizeProvisionalThreadItem(
+    const inspection = inspectProvisionalThreadCandidate(
       notification,
       normalizeLiveWorkspaceTarget(workspaceHint, currentLiveWorkspace()),
       Date.now()
     );
-    if (!item) return false;
-    return upsertProvisionalThreadItem(item) === true;
+    const item = inspection?.item || null;
+    const inserted = item ? upsertProvisionalThreadItem(item) === true : false;
+    if (
+      inspection?.accepted === true ||
+      inspection?.usedParentThreadId === true ||
+      String(inspection?.parentThreadId || "").trim() ||
+      String(inspection?.rejectionReason || "").trim() === "subagent-notification"
+    ) {
+      pushLiveDebugEvent("thread.provisional.inspect", {
+        __tracePersist: true,
+        method: String(notification?.method || ""),
+        accepted: inspection?.accepted === true,
+        inserted,
+        rejectionReason: String(inspection?.rejectionReason || ""),
+        threadId: String(inspection?.threadId || ""),
+        matchedKey: String(inspection?.matchedKey || ""),
+        usedParentThreadId: inspection?.usedParentThreadId === true,
+        parentThreadId: String(inspection?.parentThreadId || ""),
+        workspace: String(inspection?.workspace || ""),
+        status: String(inspection?.status || ""),
+        cwd: String(inspection?.cwd || "").slice(0, 180),
+        preview: String(inspection?.preview || "").slice(0, 180),
+        itemSource: String(item?.source || ""),
+        itemId: String(item?.id || ""),
+      });
+    }
+    return inserted;
   }
 
   function handleWsPayload(payload) {
