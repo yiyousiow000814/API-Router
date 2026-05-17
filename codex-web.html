@@ -3514,6 +3514,10 @@
       line-height: 1.45;
       color: #18233a;
     }
+    .msgTable:not([data-msg-table-cols="2"]):not([data-msg-table-cols="3"]) {
+      width: max-content;
+      min-width: 100%;
+    }
     .msgTable[data-msg-table-cols="2"],
     .msgTable[data-msg-table-cols="3"] {
       table-layout: fixed;
@@ -3526,6 +3530,12 @@
       vertical-align: top;
       overflow-wrap: break-word;
       word-break: normal;
+    }
+    .msgTable:not([data-msg-table-cols="2"]):not([data-msg-table-cols="3"]) th,
+    .msgTable:not([data-msg-table-cols="2"]):not([data-msg-table-cols="3"]) td {
+      white-space: nowrap;
+      overflow-wrap: normal;
+      word-break: keep-all;
     }
     .msgTable[data-msg-table-cols="2"] .msgTableLeadCell,
     .msgTable[data-msg-table-cols="3"] .msgTableLeadCell {
