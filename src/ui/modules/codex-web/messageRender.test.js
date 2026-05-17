@@ -330,6 +330,7 @@ Checked`
     expect(html).toContain(">旧主线 combo_ABC2D_q2bounded</a>");
     expect(html).toContain(">959252.0/645084.1</a>");
     expect(html).toContain(">23/37/7752.3</a>");
+    expect(html).toContain('data-msg-table-kind="metric"');
     expect(html).not.toContain(">645084.1</a>");
     expect(html).not.toContain(">7752.3</a>");
   });

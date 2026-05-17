@@ -165,10 +165,33 @@ function isMarkdownTableStart(lines, index) {
   return header.length === alignments.length;
 }
 
+function extractMetricDetectionCandidates(value) {
+  const text = String(value || "").trim();
+  if (!text) return [];
+  const candidates = [text];
+  for (const match of text.matchAll(/\[([^\]\n]+)\]\(([^)\n]+)\)/g)) {
+    const label = String(match[1] || "").trim();
+    if (label) candidates.push(label);
+  }
+  let inlineSpan = findNextInlineCodeSpan(text, 0);
+  while (inlineSpan) {
+    const normalized = normalizeCodeSpanContent(inlineSpan.content).trim();
+    if (normalized) candidates.push(normalized);
+    inlineSpan = findNextInlineCodeSpan(text, inlineSpan.end);
+  }
+  return candidates;
+}
+
+function cellLooksLikeMetric(value) {
+  return extractMetricDetectionCandidates(value).some((candidate) =>
+    isSlashSeparatedNumericMetric(candidate)
+  );
+}
+
 function markdownTableLooksMetric(rows) {
   for (const row of rows) {
     for (const cell of row || []) {
-      if (isSlashSeparatedNumericMetric(cell)) return true;
+      if (cellLooksLikeMetric(cell)) return true;
     }
   }
   return false;
