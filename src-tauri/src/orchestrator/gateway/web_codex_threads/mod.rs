@@ -1,5 +1,7 @@
 use crate::orchestrator::gateway::web_codex_home::WorkspaceTarget;
-use crate::orchestrator::gateway::web_codex_session_runtime::workspace_thread_runtime_snapshot;
+use crate::orchestrator::gateway::web_codex_session_runtime::{
+    locate_workspace_thread_runtime_for_target, workspace_thread_runtime_snapshot,
+};
 use chrono::DateTime;
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -763,7 +765,26 @@ fn notification_is_subagent(notification: &Value) -> bool {
     scan(params, 0)
 }
 
+fn rollout_path_for_notification_thread(
+    workspace: WorkspaceTarget,
+    thread_id: &str,
+    scopes: &NotificationScopes<'_>,
+) -> Option<String> {
+    if let Some(rollout_path) = scopes.rollout_path() {
+        return Some(rollout_path);
+    }
+    let runtime = locate_workspace_thread_runtime_for_target(thread_id, workspace)?;
+    workspace_thread_runtime_snapshot(
+        runtime.workspace_target,
+        runtime.home_override.as_deref(),
+        thread_id,
+    )?
+    .rollout_path
+}
+
 fn resolve_notification_agent_identity(
+    workspace: WorkspaceTarget,
+    thread_id: &str,
     scopes: &NotificationScopes<'_>,
 ) -> NotificationAgentIdentity {
     let mut identity = NotificationAgentIdentity {
@@ -778,7 +799,8 @@ fn resolve_notification_agent_identity(
     if !needs_rollout_lookup {
         return identity;
     }
-    let Some(rollout_path) = scopes.rollout_path() else {
+    let Some(rollout_path) = rollout_path_for_notification_thread(workspace, thread_id, scopes)
+    else {
         return identity;
     };
     let Some(hint) = scan_session_file_identity_hint(Path::new(&rollout_path)) else {
@@ -834,7 +856,7 @@ pub(super) fn upsert_thread_notification_hint(workspace: WorkspaceTarget, notifi
     let Some(thread_id) = scopes.thread_id() else {
         return;
     };
-    let identity = resolve_notification_agent_identity(&scopes);
+    let identity = resolve_notification_agent_identity(workspace, &thread_id, &scopes);
     if identity.is_subagent {
         return;
     }
@@ -1179,7 +1201,9 @@ mod tests {
     };
     use crate::codex_app_server;
     use crate::orchestrator::gateway::web_codex_home::WorkspaceTarget;
-    use crate::orchestrator::gateway::web_codex_session_runtime::upsert_workspace_thread_runtime;
+    use crate::orchestrator::gateway::web_codex_session_runtime::{
+        upsert_workspace_thread_runtime, WorkspaceThreadRuntimeUpdate,
+    };
     use serde_json::Value;
     use std::sync::{Arc, Mutex};
 
@@ -1647,6 +1671,136 @@ mod tests {
                 item.get("id").and_then(Value::as_str) != Some("thread-subagent-inferred")
             }),
             "subagent live notifications should also be dropped when identity only exists in rollout session_meta"
+        );
+    }
+
+    #[tokio::test]
+    async fn live_notification_hint_drops_subagent_runtime_threads_without_rollout_path_in_notification(
+    ) {
+        let _test_guard = codex_app_server::lock_test_globals();
+        invalidate_thread_list_cache_all();
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let rollout_path = temp.path().join("rollout-subagent-runtime.jsonl");
+        std::fs::write(
+            &rollout_path,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":",
+                "{\"id\":\"thread-subagent-runtime\",",
+                "\"cwd\":\"C:\\\\Users\\\\yiyou\",",
+                "\"source\":{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"parent-thread\",\"depth\":1}}},",
+                "\"agent_nickname\":\"Pascal\",",
+                "\"agent_role\":\"explorer\"}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",",
+                "\"thread_id\":\"thread-subagent-runtime\",",
+                "\"content\":[{\"type\":\"output_text\",\"text\":\"background runtime activity\"}]}}\n"
+            ),
+        )
+        .expect("write rollout");
+
+        upsert_workspace_thread_runtime(
+            Some(WorkspaceTarget::Windows),
+            Some("C:\\Users\\yiyou\\API-Router\\user-data\\codex-home"),
+            WorkspaceThreadRuntimeUpdate {
+                thread_id: "thread-subagent-runtime",
+                cwd: Some("C:\\Users\\yiyou"),
+                rollout_path: Some(rollout_path.to_string_lossy().as_ref()),
+                status: Some("running"),
+                last_event_id: Some(12),
+                last_turn_id: Some("turn-1"),
+                clear_last_turn_id: false,
+            },
+        );
+
+        upsert_thread_notification_hint(
+            WorkspaceTarget::Windows,
+            &serde_json::json!({
+                "method": "item/started",
+                "params": {
+                    "threadId": "thread-subagent-runtime",
+                    "cwd": "C:\\Users\\yiyou",
+                    "item": {
+                        "type": "commandExecution",
+                        "thread_id": "thread-subagent-runtime",
+                        "status": "running"
+                    }
+                }
+            }),
+        );
+
+        let snapshot = list_threads_snapshot(Some(WorkspaceTarget::Windows), false).await;
+        assert!(
+            snapshot.items.iter().all(|item| {
+                item.get("id").and_then(Value::as_str) != Some("thread-subagent-runtime")
+            }),
+            "subagent runtime notifications with only a thread id should stay out of the sidebar"
+        );
+    }
+
+    #[tokio::test]
+    async fn live_notification_hint_drops_subagent_user_preview_notifications_when_runtime_has_rollout_path(
+    ) {
+        let _test_guard = codex_app_server::lock_test_globals();
+        invalidate_thread_list_cache_all();
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let rollout_path = temp.path().join("rollout-subagent-runtime-preview.jsonl");
+        std::fs::write(
+            &rollout_path,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":",
+                "{\"id\":\"thread-subagent-runtime-preview\",",
+                "\"cwd\":\"C:\\\\Users\\\\yiyou\",",
+                "\"source\":{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"parent-thread\",\"depth\":1}}},",
+                "\"agent_nickname\":\"Pauli\",",
+                "\"agent_role\":\"explorer\"}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",",
+                "\"thread_id\":\"thread-subagent-runtime-preview\",",
+                "\"content\":[{\"type\":\"input_text\",\"text\":\"inspect target directory\"}]}}\n"
+            ),
+        )
+        .expect("write rollout");
+
+        upsert_workspace_thread_runtime(
+            Some(WorkspaceTarget::Windows),
+            Some("C:\\Users\\yiyou\\API-Router\\user-data\\codex-home"),
+            WorkspaceThreadRuntimeUpdate {
+                thread_id: "thread-subagent-runtime-preview",
+                cwd: Some("C:\\Users\\yiyou"),
+                rollout_path: Some(rollout_path.to_string_lossy().as_ref()),
+                status: Some("running"),
+                last_event_id: Some(18),
+                last_turn_id: Some("turn-preview"),
+                clear_last_turn_id: false,
+            },
+        );
+
+        upsert_thread_notification_hint(
+            WorkspaceTarget::Windows,
+            &serde_json::json!({
+                "method": "codex/event/response_item",
+                "params": {
+                    "threadId": "thread-subagent-runtime-preview",
+                    "cwd": "C:\\Users\\yiyou",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "thread_id": "thread-subagent-runtime-preview",
+                        "content": [{
+                            "type": "input_text",
+                            "text": "inspect target directory"
+                        }]
+                    }
+                }
+            }),
+        );
+
+        let snapshot = list_threads_snapshot(Some(WorkspaceTarget::Windows), false).await;
+        assert!(
+            snapshot.items.iter().all(|item| {
+                item.get("id").and_then(Value::as_str) != Some("thread-subagent-runtime-preview")
+            }),
+            "subagent user-preview notifications should stay out of the sidebar when runtime already knows the rollout path"
         );
     }
 
