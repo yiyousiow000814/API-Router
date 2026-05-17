@@ -45,6 +45,54 @@ export function relativeTimeLabel(input) {
 
 const THREADS_CACHE_WRITE_DELAY_MS = 250;
 
+function isAuxiliaryThreadPreviewText(raw) {
+  const text = String(raw || "").trim().toLowerCase();
+  return (
+    text.startsWith("# agents.md instructions") ||
+    text.startsWith("<permissions instructions>") ||
+    text.startsWith("review the code changes against the base branch") ||
+    text.includes("<environment_context>") ||
+    text.includes("<turn_context>") ||
+    text.includes("another language model started to solve this problem") ||
+    text.includes("<user_action>") ||
+    text.includes("<turn_aborted>") ||
+    text === "say ok only" ||
+    text === "say ok only." ||
+    text.startsWith("reply with ok only.") ||
+    text.startsWith("reply with ok only [") ||
+    text.startsWith("reply with ok only. [") ||
+    text.startsWith("reply with exactly") ||
+    (text.startsWith("reply with ") && (text.includes(" only") || text.includes("nothing else"))) ||
+    text.startsWith("use the shell to ") ||
+    text.startsWith("sync smoke test") ||
+    text.startsWith("embedfix_") ||
+    text.startsWith("livefix_") ||
+    text.startsWith("histchk_") ||
+    text.startsWith("live_real_") ||
+    text.startsWith("livee2e") ||
+    text.startsWith("zxqw_")
+  );
+}
+
+function isFilteredTestThreadCwd(raw) {
+  const text = String(raw || "").trim().replace(/\//g, "\\").toLowerCase();
+  return (
+    text.includes("\\.tmp-codex-web") ||
+    text.endsWith("\\usersyiyouapi-router") ||
+    text.endsWith("\\home\\yiyou\\.tmp-codex-web-live-sync-debug")
+  );
+}
+
+function isVisibleCachedThreadItem(item) {
+  if (!item || typeof item !== "object") return false;
+  if (String(item.filterReason || "").trim()) return false;
+  if (item.isSubagent === true) return false;
+  if (String(item.agentRole || item.agent_role || "").trim()) return false;
+  if (isAuxiliaryThreadPreviewText(item.preview || item.title || item.name || "")) return false;
+  if (isFilteredTestThreadCwd(item.cwd || "")) return false;
+  return true;
+}
+
 export function createAppPersistenceModule(deps) {
   const {
     state,
@@ -178,11 +226,13 @@ export function createAppPersistenceModule(deps) {
   function writeThreadsCache() {
     const startedAt = performanceRef.now();
     try {
+      const windows = ensureArrayItems(state.threadItemsByWorkspace.windows).filter(isVisibleCachedThreadItem);
+      const wsl2 = ensureArrayItems(state.threadItemsByWorkspace.wsl2).filter(isVisibleCachedThreadItem);
       localStorageRef.setItem(
         THREADS_CACHE_KEY,
         JSON.stringify({
-          windows: ensureArrayItems(state.threadItemsByWorkspace.windows),
-          wsl2: ensureArrayItems(state.threadItemsByWorkspace.wsl2),
+          windows,
+          wsl2,
           updatedAt: Date.now(),
         })
       );
@@ -219,8 +269,8 @@ export function createAppPersistenceModule(deps) {
       const raw = String(localStorageRef.getItem(THREADS_CACHE_KEY) || "").trim();
       if (!raw) return false;
       const parsed = JSON.parse(raw);
-      const windows = ensureArrayItems(parsed?.windows);
-      const wsl2 = ensureArrayItems(parsed?.wsl2);
+      const windows = ensureArrayItems(parsed?.windows).filter(isVisibleCachedThreadItem);
+      const wsl2 = ensureArrayItems(parsed?.wsl2).filter(isVisibleCachedThreadItem);
       state.threadItemsByWorkspace.windows = windows;
       state.threadItemsByWorkspace.wsl2 = wsl2;
       state.threadListRenderSigByWorkspace.windows = buildThreadRenderSig(windows);
