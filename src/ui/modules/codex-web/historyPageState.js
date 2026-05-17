@@ -12,11 +12,14 @@ export function applyHistoryPageToState(state, threadId, history, options = {}) 
     const existingTurns = Array.isArray(state.activeThreadHistoryTurns) ? state.activeThreadHistoryTurns : [];
     mergedTurns = mergeHistoryTurns(incomingTurns, existingTurns);
   } else {
-    const shouldReplaceTurns = !!page?.incomplete || !!state.activeThreadHistoryIncomplete;
+    const isSameHistoryThread = state.activeThreadHistoryThreadId === threadId;
+    const shouldReplaceTurns =
+      !isSameHistoryThread ||
+      (!page?.incomplete && !!state.activeThreadHistoryIncomplete);
     mergedTurns = shouldReplaceTurns
       ? incomingTurns
       : mergeHistoryTurns(
-          state.activeThreadHistoryThreadId === threadId ? state.activeThreadHistoryTurns : [],
+          isSameHistoryThread ? state.activeThreadHistoryTurns : [],
           incomingTurns
         );
   }
