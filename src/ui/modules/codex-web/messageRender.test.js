@@ -316,6 +316,22 @@ Checked`
     expect(html).not.toContain('<span class="msgPseudoLink">7752.3</span>');
   });
 
+  it("keeps slash-separated metric labels intact even when cells use markdown links", () => {
+    const html = renderMessageRichHtml(
+      [
+        "| 版本 | 20p Net/OOS | 35p LM/UW/DD(M) |",
+        "| --- | ---: | ---: |",
+        "| [旧主线 combo_ABC2D_q2bounded](https://example.com/main) | [959252.0/645084.1](https://example.com/net) | [23/37/7752.3](https://example.com/lm) |",
+      ].join("\n")
+    );
+
+    expect(html).toContain(">旧主线 combo_ABC2D_q2bounded</a>");
+    expect(html).toContain(">959252.0/645084.1</a>");
+    expect(html).toContain(">23/37/7752.3</a>");
+    expect(html).not.toContain(">645084.1</a>");
+    expect(html).not.toContain(">7752.3</a>");
+  });
+
   it("marks comparison tables with an explicit label column contract", () => {
     const html = renderMessageRichHtml(
       [

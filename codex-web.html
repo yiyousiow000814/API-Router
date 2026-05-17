@@ -3517,6 +3517,7 @@
     .msgTable:not([data-msg-table-cols="2"]):not([data-msg-table-cols="3"]) {
       width: max-content;
       min-width: 100%;
+      table-layout: auto;
     }
     .msgTable[data-msg-table-cols="2"],
     .msgTable[data-msg-table-cols="3"] {
@@ -3536,6 +3537,13 @@
       white-space: nowrap;
       overflow-wrap: normal;
       word-break: keep-all;
+    }
+    .msgTable:not([data-msg-table-cols="2"]):not([data-msg-table-cols="3"]) .msgLink,
+    .msgTable:not([data-msg-table-cols="2"]):not([data-msg-table-cols="3"]) .msgPseudoLink,
+    .msgTable:not([data-msg-table-cols="2"]):not([data-msg-table-cols="3"]) .msgInlineCode {
+      white-space: inherit;
+      overflow-wrap: normal;
+      word-break: normal;
     }
     .msgTable[data-msg-table-cols="2"] .msgTableLeadCell,
     .msgTable[data-msg-table-cols="3"] .msgTableLeadCell {

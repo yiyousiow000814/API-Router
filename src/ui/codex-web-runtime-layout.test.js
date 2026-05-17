@@ -202,6 +202,9 @@ describe("codex-web runtime layout", () => {
     const metricCellMatch = source.match(
       /\.msgTable:not\(\[data-msg-table-cols="2"\]\):not\(\[data-msg-table-cols="3"\]\) th,\s*[\s\S]*?\.msgTable:not\(\[data-msg-table-cols="2"\]\):not\(\[data-msg-table-cols="3"\]\) td\s*\{([^}]+)\}/s
     );
+    const metricTokenMatch = source.match(
+      /\.msgTable:not\(\[data-msg-table-cols="2"\]\):not\(\[data-msg-table-cols="3"\]\)\s+\.msgLink,\s*[\s\S]*?\.msgTable:not\(\[data-msg-table-cols="2"\]\):not\(\[data-msg-table-cols="3"\]\)\s+\.msgInlineCode\s*\{([^}]+)\}/s
+    );
     const leadMatch = source.match(
       /\.msgTable\[data-msg-table-cols="2"\]\s+\.msgTableLeadCell,\s*[\s\S]*?\.msgTable\[data-msg-table-cols="3"\]\s+\.msgTableLeadCell\s*\{([^}]+)\}/s
     );
@@ -211,12 +214,14 @@ describe("codex-web runtime layout", () => {
     expect(metricTableMatch).toBeTruthy();
     expect(cellMatch).toBeTruthy();
     expect(metricCellMatch).toBeTruthy();
+    expect(metricTokenMatch).toBeTruthy();
     expect(leadMatch).toBeTruthy();
 
     expect(wrapMatch?.[1] || "").toMatch(/overflow-x:\s*auto/i);
     expect(tableMatch?.[1] || "").not.toMatch(/width:\s*max-content/i);
     expect(metricTableMatch?.[1] || "").toMatch(/width:\s*max-content/i);
     expect(metricTableMatch?.[1] || "").toMatch(/min-width:\s*100%/i);
+    expect(metricTableMatch?.[1] || "").toMatch(/table-layout:\s*auto/i);
     expect(source).toContain('.msgTable[data-msg-table-cols="2"]');
     expect(source).toContain('.msgTable[data-msg-table-cols="3"]');
     expect(cellMatch?.[1] || "").not.toMatch(/white-space:\s*nowrap/i);
@@ -226,6 +231,9 @@ describe("codex-web runtime layout", () => {
     expect(metricCellMatch?.[1] || "").toMatch(/white-space:\s*nowrap/i);
     expect(metricCellMatch?.[1] || "").toMatch(/overflow-wrap:\s*normal/i);
     expect(metricCellMatch?.[1] || "").toMatch(/word-break:\s*keep-all/i);
+    expect(metricTokenMatch?.[1] || "").toMatch(/white-space:\s*inherit/i);
+    expect(metricTokenMatch?.[1] || "").toMatch(/overflow-wrap:\s*normal/i);
+    expect(metricTokenMatch?.[1] || "").toMatch(/word-break:\s*normal/i);
     expect(leadMatch?.[1] || "").toMatch(/width:\s*clamp\(96px,\s*22%,\s*124px\)/i);
   });
 
