@@ -754,30 +754,6 @@ export function createWsClientModule(deps) {
     );
     const item = inspection?.item || null;
     const inserted = item ? upsertProvisionalThreadItem(item) === true : false;
-    if (
-      inspection?.accepted === true ||
-      inspection?.usedParentThreadId === true ||
-      String(inspection?.parentThreadId || "").trim() ||
-      String(inspection?.rejectionReason || "").trim() === "subagent-notification"
-    ) {
-      pushLiveDebugEvent("thread.provisional.inspect", {
-        __tracePersist: true,
-        method: String(notification?.method || ""),
-        accepted: inspection?.accepted === true,
-        inserted,
-        rejectionReason: String(inspection?.rejectionReason || ""),
-        threadId: String(inspection?.threadId || ""),
-        matchedKey: String(inspection?.matchedKey || ""),
-        usedParentThreadId: inspection?.usedParentThreadId === true,
-        parentThreadId: String(inspection?.parentThreadId || ""),
-        workspace: String(inspection?.workspace || ""),
-        status: String(inspection?.status || ""),
-        cwd: String(inspection?.cwd || "").slice(0, 180),
-        preview: String(inspection?.preview || "").slice(0, 180),
-        itemSource: String(item?.source || ""),
-        itemId: String(item?.id || ""),
-      });
-    }
     return inserted;
   }
 
