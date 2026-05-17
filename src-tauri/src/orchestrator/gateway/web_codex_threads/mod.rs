@@ -3,6 +3,7 @@ use crate::orchestrator::gateway::web_codex_session_runtime::workspace_thread_ru
 use chrono::DateTime;
 use serde_json::{json, Value};
 use std::collections::HashSet;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -13,7 +14,8 @@ type JsonMap = serde_json::Map<String, Value>;
 use self::source::{
     find_rollout_path_in_items, has_missing_session_rollout_path, is_auxiliary_thread_preview_text,
     is_filtered_test_thread_cwd, merge_items_without_duplicates, normalize_thread_items_shape,
-    rebuild_workspace_thread_items, sort_threads_by_updated_desc, thread_item_should_be_visible,
+    rebuild_workspace_thread_items, scan_session_file_identity_hint, sort_threads_by_updated_desc,
+    thread_item_should_be_visible,
 };
 
 const THREADS_WINDOWS_INDEX_STALE_SECS: i64 = 45;
@@ -266,6 +268,14 @@ struct NotificationScopes<'a> {
     method_lower: String,
 }
 
+#[derive(Default)]
+struct NotificationAgentIdentity {
+    is_subagent: bool,
+    parent_thread_id: Option<String>,
+    agent_role: Option<String>,
+    inferred_from_rollout: bool,
+}
+
 fn extract_notification_status_value(value: &Value) -> Option<String> {
     match value {
         Value::String(text) => {
@@ -472,6 +482,19 @@ impl<'a> NotificationScopes<'a> {
             return None;
         }
         Some(preview)
+    }
+
+    fn payload_type(&self) -> Option<String> {
+        self.payload
+            .and_then(|payload| payload.get("type"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    }
+
+    fn phase(&self) -> Option<String> {
+        self.first_non_empty_str(&[self.payload, self.item, self.params], &["phase"])
     }
 
     fn timestamp_secs(&self) -> Option<i64> {
@@ -832,6 +855,72 @@ fn notification_is_subagent(notification: &Value) -> bool {
     scan(params, 0)
 }
 
+fn resolve_notification_agent_identity(
+    scopes: &NotificationScopes<'_>,
+) -> NotificationAgentIdentity {
+    let mut identity = NotificationAgentIdentity {
+        is_subagent: notification_is_subagent(scopes.notification),
+        parent_thread_id: scopes.parent_thread_id(),
+        agent_role: scopes.agent_role(),
+        inferred_from_rollout: false,
+    };
+    let needs_rollout_lookup = !identity.is_subagent
+        && identity.parent_thread_id.is_none()
+        && identity.agent_role.is_none();
+    if !needs_rollout_lookup {
+        return identity;
+    }
+    let Some(rollout_path) = scopes.rollout_path() else {
+        return identity;
+    };
+    let Some(hint) = scan_session_file_identity_hint(Path::new(&rollout_path)) else {
+        return identity;
+    };
+    if hint.is_subagent {
+        identity.is_subagent = true;
+    }
+    if identity.parent_thread_id.is_none() {
+        identity.parent_thread_id = hint.agent_parent_session_id;
+    }
+    if identity.agent_role.is_none() {
+        identity.agent_role = hint.agent_role;
+    }
+    identity.inferred_from_rollout = identity.is_subagent
+        || identity.parent_thread_id.is_some()
+        || identity.agent_role.is_some();
+    identity
+}
+
+fn should_ignore_notification_for_sidebar(scopes: &NotificationScopes<'_>) -> Option<&'static str> {
+    let method = scopes.method_lower.as_str();
+    if method == "codex/event/agent_message" {
+        return Some("commentary-agent-message");
+    }
+    if method == "codex/event/response_item"
+        && scopes
+            .phase()
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case("commentary"))
+    {
+        return Some("commentary-response-item");
+    }
+    if matches!(
+        method,
+        "item/started" | "item/completed" | "codex/event/token_count"
+    ) && scopes.preview().is_none()
+    {
+        return Some("activity-without-preview");
+    }
+    if scopes
+        .payload_type()
+        .as_deref()
+        .is_some_and(|value| value.eq_ignore_ascii_case("token_count"))
+    {
+        return Some("token-count");
+    }
+    None
+}
+
 pub(super) fn upsert_thread_notification_hint(workspace: WorkspaceTarget, notification: &Value) {
     let scopes = NotificationScopes::new(notification);
     let method = notification
@@ -851,8 +940,8 @@ pub(super) fn upsert_thread_notification_hint(workspace: WorkspaceTarget, notifi
         );
         return;
     };
-    let is_subagent = notification_is_subagent(notification);
-    if is_subagent {
+    let identity = resolve_notification_agent_identity(&scopes);
+    if identity.is_subagent {
         append_thread_sidebar_trace(
             "thread.sidebar.notification_hint.drop",
             workspace,
@@ -860,13 +949,14 @@ pub(super) fn upsert_thread_notification_hint(workspace: WorkspaceTarget, notifi
                 "reason": "subagent-notification",
                 "method": method,
                 "threadId": thread_id,
-                "parentThreadId": scopes.parent_thread_id().unwrap_or_default(),
-                "agentRole": scopes.agent_role().unwrap_or_default(),
+                "parentThreadId": identity.parent_thread_id.clone().unwrap_or_default(),
+                "agentRole": identity.agent_role.clone().unwrap_or_default(),
+                "inferredFromRollout": identity.inferred_from_rollout,
             }),
         );
         return;
     }
-    if scopes.agent_role().is_some() && !is_subagent {
+    if identity.agent_role.is_some() {
         append_thread_sidebar_trace(
             "thread.sidebar.notification_hint.drop",
             workspace,
@@ -874,8 +964,9 @@ pub(super) fn upsert_thread_notification_hint(workspace: WorkspaceTarget, notifi
                 "reason": "agent-role",
                 "method": method,
                 "threadId": thread_id,
-                "parentThreadId": scopes.parent_thread_id().unwrap_or_default(),
-                "agentRole": scopes.agent_role().unwrap_or_default(),
+                "parentThreadId": identity.parent_thread_id.clone().unwrap_or_default(),
+                "agentRole": identity.agent_role.clone().unwrap_or_default(),
+                "inferredFromRollout": identity.inferred_from_rollout,
             }),
         );
         return;
@@ -898,6 +989,19 @@ pub(super) fn upsert_thread_notification_hint(workspace: WorkspaceTarget, notifi
         );
         return;
     }
+    if let Some(reason) = should_ignore_notification_for_sidebar(&scopes) {
+        append_thread_sidebar_trace(
+            "thread.sidebar.notification_hint.drop",
+            workspace,
+            json!({
+                "reason": reason,
+                "method": method,
+                "threadId": thread_id,
+            }),
+        );
+        return;
+    }
+    let preview = scopes.preview();
     let mut item = json!({
         "id": thread_id,
         "workspace": match workspace {
@@ -907,12 +1011,12 @@ pub(super) fn upsert_thread_notification_hint(workspace: WorkspaceTarget, notifi
         "source": "live-notification",
         "updatedAt": scopes.timestamp_secs().unwrap_or_else(current_unix_secs),
     });
-    if is_subagent {
+    if identity.is_subagent {
         if let Some(obj) = item.as_object_mut() {
             obj.insert("isSubagent".to_string(), Value::Bool(true));
         }
     }
-    if let Some(parent_thread_id) = scopes.parent_thread_id() {
+    if let Some(parent_thread_id) = identity.parent_thread_id.clone() {
         if let Some(obj) = item.as_object_mut() {
             obj.insert(
                 "agent_parent_session_id".to_string(),
@@ -920,7 +1024,7 @@ pub(super) fn upsert_thread_notification_hint(workspace: WorkspaceTarget, notifi
             );
         }
     }
-    if let Some(agent_role) = scopes.agent_role() {
+    if let Some(agent_role) = identity.agent_role.clone() {
         if let Some(obj) = item.as_object_mut() {
             obj.insert("agentRole".to_string(), Value::String(agent_role));
         }
@@ -935,7 +1039,7 @@ pub(super) fn upsert_thread_notification_hint(workspace: WorkspaceTarget, notifi
             obj.insert("cwd".to_string(), Value::String(cwd));
         }
     }
-    if let Some(preview) = scopes.preview() {
+    if let Some(preview) = preview {
         if let Some(obj) = item.as_object_mut() {
             obj.insert("preview".to_string(), Value::String(preview.clone()));
             obj.insert("title".to_string(), Value::String(preview));
@@ -952,8 +1056,9 @@ pub(super) fn upsert_thread_notification_hint(workspace: WorkspaceTarget, notifi
         json!({
             "method": method,
             "threadId": thread_id,
-            "parentThreadId": scopes.parent_thread_id().unwrap_or_default(),
-            "agentRole": scopes.agent_role().unwrap_or_default(),
+            "parentThreadId": identity.parent_thread_id.unwrap_or_default(),
+            "agentRole": identity.agent_role.unwrap_or_default(),
+            "inferredFromRollout": identity.inferred_from_rollout,
             "item": summarize_thread_sidebar_item(&item),
         }),
     );
@@ -1655,6 +1760,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn live_notification_hint_drops_subagent_threads_inferred_from_rollout_meta() {
+        let _test_guard = codex_app_server::lock_test_globals();
+        invalidate_thread_list_cache_all();
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let rollout_path = temp.path().join("rollout-subagent-inferred.jsonl");
+        std::fs::write(
+            &rollout_path,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":",
+                "{\"id\":\"thread-subagent-inferred\",",
+                "\"cwd\":\"C:\\\\Users\\\\yiyou\",",
+                "\"source\":{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"parent-thread\",\"depth\":1}}},",
+                "\"agent_nickname\":\"Huygens\",",
+                "\"agent_role\":\"explorer\"}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",",
+                "\"thread_id\":\"thread-subagent-inferred\",",
+                "\"content\":[{\"type\":\"output_text\",\"text\":\"diagnostic output\"}]}}\n"
+            ),
+        )
+        .expect("write rollout");
+
+        upsert_thread_notification_hint(
+            WorkspaceTarget::Windows,
+            &serde_json::json!({
+                "method": "codex/event/response_item",
+                "params": {
+                    "rolloutPath": rollout_path.to_string_lossy().to_string(),
+                    "cwd": "C:\\Users\\yiyou",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "thread_id": "thread-subagent-inferred",
+                        "content": [{
+                            "type": "output_text",
+                            "text": "diagnostic output"
+                        }]
+                    }
+                }
+            }),
+        );
+
+        let snapshot = list_threads_snapshot(Some(WorkspaceTarget::Windows), false).await;
+        assert!(
+            snapshot.items.iter().all(|item| {
+                item.get("id").and_then(Value::as_str) != Some("thread-subagent-inferred")
+            }),
+            "subagent live notifications should also be dropped when identity only exists in rollout session_meta"
+        );
+    }
+
+    #[tokio::test]
     async fn live_notification_hint_drops_string_subagent_threads() {
         let _test_guard = codex_app_server::lock_test_globals();
         invalidate_thread_list_cache_all();
@@ -1724,6 +1881,122 @@ mod tests {
                 .iter()
                 .all(|item| item.get("id").and_then(Value::as_str) != Some("thread-agent-role")),
             "agent-role live notifications should not surface in sidebar"
+        );
+    }
+
+    #[tokio::test]
+    async fn live_notification_hint_ignores_commentary_agent_messages_for_main_thread() {
+        let _test_guard = codex_app_server::lock_test_globals();
+        invalidate_thread_list_cache_all();
+
+        upsert_thread_notification_hint(
+            WorkspaceTarget::Windows,
+            &serde_json::json!({
+                "method": "codex/event/agent_message",
+                "params": {
+                    "threadId": "thread-main",
+                    "cwd": "C:\\Users\\yiyou\\API-Router",
+                    "payload": {
+                        "type": "agent_message",
+                        "thread_id": "thread-main",
+                        "phase": "commentary",
+                        "message": "working notes"
+                    }
+                }
+            }),
+        );
+
+        let index = lock_threads_workspace_index();
+        let snapshot = workspace_bucket_ref(&index, WorkspaceTarget::Windows);
+        assert!(
+            snapshot
+                .items
+                .iter()
+                .all(|item| item.get("id").and_then(Value::as_str) != Some("thread-main")),
+            "commentary agent_message notifications should not update sidebar thread items"
+        );
+    }
+
+    #[tokio::test]
+    async fn live_notification_hint_ignores_commentary_response_items_for_main_thread() {
+        let _test_guard = codex_app_server::lock_test_globals();
+        invalidate_thread_list_cache_all();
+
+        upsert_thread_notification_hint(
+            WorkspaceTarget::Windows,
+            &serde_json::json!({
+                "method": "codex/event/response_item",
+                "params": {
+                    "threadId": "thread-main",
+                    "cwd": "C:\\Users\\yiyou\\API-Router",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "thread_id": "thread-main",
+                        "phase": "commentary",
+                        "content": [{
+                            "type": "output_text",
+                            "text": "working notes"
+                        }]
+                    }
+                }
+            }),
+        );
+
+        let index = lock_threads_workspace_index();
+        let snapshot = workspace_bucket_ref(&index, WorkspaceTarget::Windows);
+        assert!(
+            snapshot
+                .items
+                .iter()
+                .all(|item| item.get("id").and_then(Value::as_str) != Some("thread-main")),
+            "commentary response_item notifications should not update sidebar thread items"
+        );
+    }
+
+    #[tokio::test]
+    async fn live_notification_hint_ignores_activity_only_notifications_without_preview() {
+        let _test_guard = codex_app_server::lock_test_globals();
+        invalidate_thread_list_cache_all();
+
+        upsert_thread_notification_hint(
+            WorkspaceTarget::Windows,
+            &serde_json::json!({
+                "method": "item/started",
+                "params": {
+                    "threadId": "thread-main",
+                    "cwd": "C:\\Users\\yiyou\\API-Router",
+                    "item": {
+                        "type": "commandExecution",
+                        "thread_id": "thread-main",
+                        "status": "running"
+                    }
+                }
+            }),
+        );
+        upsert_thread_notification_hint(
+            WorkspaceTarget::Windows,
+            &serde_json::json!({
+                "method": "codex/event/token_count",
+                "params": {
+                    "threadId": "thread-main",
+                    "cwd": "C:\\Users\\yiyou\\API-Router",
+                    "payload": {
+                        "type": "token_count",
+                        "thread_id": "thread-main"
+                    }
+                }
+            }),
+        );
+
+        let index = lock_threads_workspace_index();
+        let snapshot = workspace_bucket_ref(&index, WorkspaceTarget::Windows);
+        assert!(
+            snapshot
+                .items
+                .iter()
+                .all(|item| item.get("id").and_then(Value::as_str) != Some("thread-main")),
+            "activity-only notifications without preview should not update sidebar thread items"
         );
     }
 
