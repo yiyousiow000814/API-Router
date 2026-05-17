@@ -30,6 +30,12 @@ function isDottedIdentifierPath(value) {
   return /^[A-Za-z_$][A-Za-z0-9_$]*(\.[A-Za-z_$][A-Za-z0-9_$]*)+$/.test(text);
 }
 
+function isSlashSeparatedNumericMetric(value) {
+  const text = String(value || "").trim();
+  if (!text.includes("/")) return false;
+  return /^[+-]?\d+(?:\.\d+)?(?:\/[+-]?\d+(?:\.\d+)?)+$/.test(text);
+}
+
 export function looksLikeFileRef(value) {
   const raw = String(value || "").trim();
   if (!raw) return false;
@@ -38,6 +44,7 @@ export function looksLikeFileRef(value) {
   if (!text) return false;
   if (isHttpUrl(text)) return false;
   if (isDottedIdentifierPath(text)) return false;
+  if (isSlashSeparatedNumericMetric(text)) return false;
   if (/^[\\/]+$/.test(text)) return false;
   if (/^\/[^\/\s.?#]+$/.test(text)) return false;
   if (/^%[A-Za-z0-9_]+%(?:[\\/]+)?$/.test(text)) return false;

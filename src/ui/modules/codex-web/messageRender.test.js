@@ -293,6 +293,29 @@ Checked`
     expect(html).not.toContain("<tbody></tbody>");
   });
 
+  it("keeps slash-separated numeric metric cells intact instead of path-linking the last segment", () => {
+    const html = renderMessageRichHtml(
+      [
+        "| 版本 | 20p Net/OOS | DD/DDRT/PRDD/DD(M) | 35p Net/OOS | 35p LM/UW/DD(M) |",
+        "| --- | ---: | ---: | ---: | ---: |",
+        "| 旧主线 combo_ABC2D_q2bounded | 959252.0/645084.1 | 13318.7/16030.2/16346.8/6987.3 | 915542.0/634509.1 | 23/37/7752.3 |",
+        "| 新候选 q1wide_ret240neg | 97/797.0/662144.1 | 13318.7/16030.2/16346.8/6823.3 | 930742.0/651434.1 | 22/34/7588.3 |",
+      ].join("\n")
+    );
+
+    expect(html).toContain("959252.0/645084.1");
+    expect(html).toContain("13318.7/16030.2/16346.8/6987.3");
+    expect(html).toContain("915542.0/634509.1");
+    expect(html).toContain("23/37/7752.3");
+    expect(html).toContain("97/797.0/662144.1");
+    expect(html).toContain("13318.7/16030.2/16346.8/6823.3");
+    expect(html).toContain("930742.0/651434.1");
+    expect(html).toContain("22/34/7588.3");
+    expect(html).not.toContain('<span class="msgPseudoLink">645084.1</span>');
+    expect(html).not.toContain('<span class="msgPseudoLink">6987.3</span>');
+    expect(html).not.toContain('<span class="msgPseudoLink">7752.3</span>');
+  });
+
   it("marks comparison tables with an explicit label column contract", () => {
     const html = renderMessageRichHtml(
       [
