@@ -145,7 +145,21 @@ fn read_persisted_wsl2_thread_snapshot() -> Option<(Vec<Value>, i64)> {
     {
         return None;
     }
-    let items = value.get("items").and_then(Value::as_array)?.clone();
+    let mut items = value.get("items").and_then(Value::as_array)?.clone();
+    normalize_thread_items_shape(&mut items);
+    items.retain(|item| {
+        thread_item_should_be_visible(item)
+            && !item
+                .get("preview")
+                .and_then(Value::as_str)
+                .map(is_auxiliary_thread_preview_text)
+                .unwrap_or(false)
+            && !item
+                .get("cwd")
+                .and_then(Value::as_str)
+                .map(is_filtered_test_thread_cwd)
+                .unwrap_or(false)
+    });
     if items.is_empty() {
         return None;
     }
@@ -167,10 +181,25 @@ fn write_persisted_wsl2_thread_snapshot(items: &[Value], updated_at_unix_secs: i
     if std::fs::create_dir_all(parent).is_err() {
         return;
     }
+    let mut visible_items = items.to_vec();
+    normalize_thread_items_shape(&mut visible_items);
+    visible_items.retain(|item| {
+        thread_item_should_be_visible(item)
+            && !item
+                .get("preview")
+                .and_then(Value::as_str)
+                .map(is_auxiliary_thread_preview_text)
+                .unwrap_or(false)
+            && !item
+                .get("cwd")
+                .and_then(Value::as_str)
+                .map(is_filtered_test_thread_cwd)
+                .unwrap_or(false)
+    });
     let body = json!({
         "version": THREADS_WSL2_PERSISTED_SNAPSHOT_VERSION,
         "updatedAtUnixSecs": updated_at_unix_secs,
-        "items": items,
+        "items": visible_items,
     });
     let tmp_path = path.with_extension("json.tmp");
     if std::fs::write(&tmp_path, body.to_string()).is_err() {
@@ -2086,6 +2115,65 @@ mod tests {
             !bucket.refreshing,
             "hydrating stale WSL2 cache should clear background refresh state when done"
         );
+    }
+
+    #[tokio::test]
+    async fn wsl2_thread_snapshot_filters_auxiliary_persisted_cache_before_returning_stale_items() {
+        let _test_guard = codex_app_server::lock_test_globals();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let user_data_dir = temp.path().join("user-data");
+        let cache_dir = user_data_dir.join("data");
+        std::fs::create_dir_all(&cache_dir).expect("cache dir");
+        std::fs::write(
+            cache_dir.join("codex-web-wsl2-thread-index-snapshot-v1.json"),
+            serde_json::json!({
+                "version": 1,
+                "updatedAtUnixSecs": super::current_unix_secs() - THREADS_WSL2_INDEX_STALE_SECS - 60,
+                "items": [
+                    {
+                        "id": "visible-wsl-thread",
+                        "workspace": "wsl2",
+                        "preview": "real chat",
+                        "path": "\\\\wsl.localhost\\Ubuntu\\home\\yiyou\\.codex\\sessions\\rollout-visible.jsonl",
+                        "source": "wsl-session-index",
+                        "updatedAt": 1742331000
+                    },
+                    {
+                        "id": "agent-wsl-thread",
+                        "workspace": "wsl2",
+                        "preview": "agent chat",
+                        "isSubagent": true,
+                        "path": "\\\\wsl.localhost\\Ubuntu\\home\\yiyou\\.codex\\sessions\\rollout-agent.jsonl",
+                        "source": "wsl-session-index",
+                        "updatedAt": 1742331001
+                    },
+                    {
+                        "id": "aux-wsl-thread",
+                        "workspace": "wsl2",
+                        "preview": "# AGENTS.md instructions",
+                        "path": "\\\\wsl.localhost\\Ubuntu\\home\\yiyou\\.codex\\sessions\\rollout-aux.jsonl",
+                        "source": "wsl-session-index",
+                        "updatedAt": 1742331002
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .expect("write persisted snapshot");
+        let _guard = EnvGuard::set("API_ROUTER_USER_DATA_DIR", &user_data_dir.to_string_lossy());
+        invalidate_thread_list_cache_all();
+
+        let snapshot = list_threads_snapshot(Some(WorkspaceTarget::Wsl2), false).await;
+
+        assert_eq!(
+            snapshot
+                .items
+                .iter()
+                .filter_map(|item| item.get("id").and_then(Value::as_str))
+                .collect::<Vec<_>>(),
+            vec!["visible-wsl-thread"]
+        );
+        wait_for_workspace_refresh_to_finish(WorkspaceTarget::Wsl2).await;
     }
 
     #[test]
