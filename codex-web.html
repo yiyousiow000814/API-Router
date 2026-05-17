@@ -682,13 +682,13 @@
     }
     .itemCard.threadExpandEnter {
       opacity: 0;
-      transform: translate3d(0, 6px, 0);
-      animation: thread-card-expand-enter 220ms cubic-bezier(.22, 1, .36, 1) both;
+      transform: translate3d(0, 4px, 0);
+      animation: thread-card-expand-enter 200ms cubic-bezier(.22, 1, .36, 1) both;
       animation-delay: var(--thread-expand-enter-delay, 0ms);
       will-change: opacity, transform;
     }
     @keyframes thread-card-expand-enter {
-      from { opacity: 0; transform: translate3d(0, 6px, 0); }
+      from { opacity: 0; transform: translate3d(0, 4px, 0); }
       to { opacity: 1; transform: translate3d(0, 0, 0); }
     }
     @keyframes thread-header-enter {
@@ -828,10 +828,10 @@
       stroke-linejoin: round;
     }
     .groupChevron.anim-open {
-      animation: chevron-open var(--motion-fast, 160ms) ease;
+      animation: chevron-open 220ms cubic-bezier(.22, 1, .36, 1);
     }
     .groupChevron.anim-close {
-      animation: chevron-close var(--motion-fast, 160ms) ease;
+      animation: chevron-close 220ms cubic-bezier(.22, 1, .36, 1);
     }
     @keyframes chevron-open {
       from { transform: rotate(0deg); }
@@ -859,10 +859,10 @@
     }
     .groupBody.is-continuous-expanding {
       transition:
-        height var(--thread-expand-duration, 260ms) cubic-bezier(.22, 1, .36, 1),
-        opacity 180ms ease,
-        padding-top var(--thread-expand-duration, 260ms) cubic-bezier(.22, 1, .36, 1),
-        padding-bottom var(--thread-expand-duration, 260ms) cubic-bezier(.22, 1, .36, 1);
+        height var(--thread-expand-duration, 240ms) cubic-bezier(.22, 1, .36, 1),
+        opacity 180ms cubic-bezier(.22, 1, .36, 1),
+        padding-top var(--thread-expand-duration, 240ms) cubic-bezier(.22, 1, .36, 1),
+        padding-bottom var(--thread-expand-duration, 240ms) cubic-bezier(.22, 1, .36, 1);
     }
     .itemCard .row { min-width: 0; width: 100%; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; column-gap: 4px; align-items: center; }
     .itemCard .row .itemTitle { min-width: 0; max-width: 100%; display: block; }

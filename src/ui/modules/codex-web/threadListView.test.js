@@ -282,8 +282,8 @@ describe("threadListView", () => {
     expect(cards[1].classList.contains("threadExpandEnter")).toBe(true);
     expect(cards[0].classList.contains("threadEnter")).toBe(false);
     expect(cards[0].style["--thread-expand-enter-delay"]).toBe("0ms");
-    expect(cards[1].style["--thread-expand-enter-delay"]).toBe("32ms");
-    expect(cards[13].style["--thread-expand-enter-delay"]).toBe("416ms");
+    expect(cards[1].style["--thread-expand-enter-delay"]).toBe("20ms");
+    expect(cards[13].style["--thread-expand-enter-delay"]).toBe("260ms");
     const groupBody = list.children[0].children[1];
     expect(groupBody.classList.contains("is-continuous-expanding")).toBe(true);
     expect(groupBody.style.height).toBe("542px");

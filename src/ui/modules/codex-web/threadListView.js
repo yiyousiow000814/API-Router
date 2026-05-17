@@ -372,7 +372,7 @@ export function createThreadListViewModule(deps) {
       const revealCardCount = Array.from(body.children || []).filter((child) =>
         child?.classList?.contains?.("threadExpandEnter")
       ).length;
-      const expandDurationMs = Math.min(640, Math.max(260, revealCardCount * 32 + 180));
+      const expandDurationMs = Math.min(520, Math.max(240, revealCardCount * 20 + 180));
       body.classList.add("is-expanding");
       body.classList.add("is-continuous-expanding");
       body.style.setProperty("--thread-expand-duration", `${expandDurationMs}ms`);
@@ -536,7 +536,7 @@ export function createThreadListViewModule(deps) {
     let threadExpandEnterIndex = 0;
     let groupEnterIndex = 0;
     const nextThreadEnterDelayMs = () => Math.min(420, threadEnterIndex++ * 28);
-    const nextThreadExpandEnterDelayMs = () => Math.min(420, threadExpandEnterIndex++ * 32);
+    const nextThreadExpandEnterDelayMs = () => Math.min(260, threadExpandEnterIndex++ * 20);
     const nextGroupEnterDelayMs = () =>
       (staggerGroupEnter ? Math.min(640, groupEnterIndex++ * 120) : 0);
     if (!entries.length) {
