@@ -1318,6 +1318,139 @@ describe("slashCommands", () => {
     expect(menu.style.display).toBe("none");
   });
 
+  it("keeps the manual command picker open through the opener pointer click", () => {
+    const documentListeners = {};
+    const state = {
+      slashCommands: [
+        { command: "/fast", usage: "/fast", insertText: "/fast", description: "Fast mode", children: [] },
+      ],
+      slashCommandsLoaded: true,
+      slashCommandsLoading: false,
+      slashCommandsError: "",
+      slashMenuItems: [],
+      slashMenuOpen: false,
+      slashMenuSelectedIndex: 0,
+      slashMenuSelectionVisible: false,
+      slashMenuContextKey: "",
+    };
+    const openerTarget = {};
+    const menu = {
+      style: {},
+      innerHTML: "",
+      classList: { add() {}, remove() {} },
+      contains() { return false; },
+      querySelector() { return null; },
+      querySelectorAll() { return []; },
+    };
+    const input = {
+      value: "",
+      contains() { return false; },
+      focus() {},
+      setSelectionRange() {},
+      getBoundingClientRect() {
+        return { left: 24, top: 420, width: 320 };
+      },
+    };
+    const module = createSlashCommandsModule({
+      state,
+      byId(id) {
+        if (id === "slashCommandMenu") return menu;
+        if (id === "mobilePromptInput") return input;
+        return null;
+      },
+      api: async () => ({ commands: [] }),
+      updateMobileComposerState() {},
+      setStatus() {},
+      documentRef: {
+        activeElement: null,
+        addEventListener(name, handler) {
+          documentListeners[name] = handler;
+        },
+      },
+      windowRef: {
+        innerWidth: 390,
+        addEventListener() {},
+      },
+    });
+
+    module.openSlashCommandPicker({ type: "pointerdown", button: 0, isPrimary: true, target: openerTarget });
+    documentListeners.click?.({ type: "click", target: openerTarget });
+
+    expect(state.slashMenuOpen).toBe(true);
+    expect(menu.style.display).toBe("block");
+
+    documentListeners.click?.({ type: "click", target: {} });
+    expect(state.slashMenuOpen).toBe(false);
+  });
+
+  it("anchors the desktop slash menu to the prompt wrapper instead of fixed viewport coordinates", () => {
+    const state = {
+      slashCommands: [
+        { command: "/fast", usage: "/fast", insertText: "/fast", description: "Fast mode", children: [] },
+      ],
+      slashCommandsLoaded: true,
+      slashCommandsLoading: false,
+      slashCommandsError: "",
+      slashMenuItems: [],
+      slashMenuOpen: false,
+      slashMenuSelectedIndex: 0,
+      slashMenuSelectionVisible: false,
+      slashMenuContextKey: "",
+    };
+    const menu = {
+      style: {},
+      innerHTML: "",
+      classList: { add() {}, remove() {} },
+      contains() { return false; },
+      querySelector() { return null; },
+      querySelectorAll() { return []; },
+    };
+    const input = {
+      value: "/",
+      contains() { return false; },
+      focus() {},
+      setSelectionRange() {},
+      getBoundingClientRect() {
+        return { left: 369, top: 447, right: 1177, width: 808 };
+      },
+    };
+    const wrap = {
+      getBoundingClientRect() {
+        return { left: 369, top: 447, right: 1177, width: 808 };
+      },
+    };
+    const module = createSlashCommandsModule({
+      state,
+      byId(id) {
+        if (id === "slashCommandMenu") return menu;
+        if (id === "mobilePromptInput") return input;
+        if (id === "mobilePromptWrap") return wrap;
+        return null;
+      },
+      api: async () => ({ commands: [] }),
+      updateMobileComposerState() {},
+      setStatus() {},
+      documentRef: {
+        activeElement: input,
+        body: { classList: { contains() { return false; } } },
+        addEventListener() {},
+      },
+      windowRef: {
+        innerWidth: 1256,
+        addEventListener() {},
+      },
+    });
+
+    module.syncSlashCommandMenu();
+
+    expect(state.slashMenuOpen).toBe(true);
+    expect(menu.style.position).toBe("absolute");
+    expect(menu.style.left).toBe("0px");
+    expect(menu.style.right).toBe("0px");
+    expect(menu.style.bottom).toBe("calc(100% + 8px)");
+    expect(menu.style.transform).toBe("");
+  });
+
   it("prevents pointerdown focus-steal on slash menu items", () => {
     const listeners = {};
     const state = {
@@ -1708,7 +1841,8 @@ describe("slashCommands", () => {
     expect(state.slashCommandsLoading).toBe(true);
     expect(menu.innerHTML).toContain("Loading slash commands");
     expect(menu.style.display).toBe("block");
-    expect(menu.style.position).toBe("fixed");
+    expect(menu.style.position).toBe("absolute");
+    expect(menu.style.bottom).toBe("calc(100% + 8px)");
   });
 
   it("opens the top-level command picker without typing slash", async () => {
