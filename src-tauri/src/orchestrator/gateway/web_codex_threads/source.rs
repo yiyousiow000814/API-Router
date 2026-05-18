@@ -22,6 +22,13 @@ const LOADED_THREAD_OVERLAY_TIMEOUT_MS: u64 = 750;
 const LOADED_THREAD_OVERLAY_MAX_ITEMS: usize = 48;
 const VISIBLE_SESSION_SOURCES: &[&str] = &["cli", "vscode", "exec"];
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) struct SessionFileIdentityHint {
+    pub(super) is_subagent: bool,
+    pub(super) agent_parent_session_id: Option<String>,
+    pub(super) agent_role: Option<String>,
+}
+
 #[derive(Clone)]
 struct SessionFileScanCacheEntry {
     file_len: u64,
@@ -274,6 +281,15 @@ pub(super) fn is_filtered_test_thread_cwd(raw: &str) -> bool {
 
 fn extract_user_preview_from_session_file(path: &Path) -> Option<String> {
     scan_session_file(path).and_then(|scan| scan.preview)
+}
+
+pub(super) fn scan_session_file_identity_hint(path: &Path) -> Option<SessionFileIdentityHint> {
+    let scan = scan_session_file(path)?;
+    Some(SessionFileIdentityHint {
+        is_subagent: scan.is_subagent,
+        agent_parent_session_id: scan.agent_parent_session_id,
+        agent_role: scan.agent_role,
+    })
 }
 
 #[derive(Clone)]
@@ -719,7 +735,7 @@ import time
 
 MAX_ITEMS = {THREADS_MAX_ITEMS}
 MAX_AGE_SECS = {THREADS_MAX_AGE_SECS}
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 CACHE_FILE_NAME = "api-router-thread-index-cache-v1.json"
 
 def normalize_preview_text(raw):
@@ -807,6 +823,28 @@ def classify_filter_reason(preview, cwd, is_subagent, auxiliary_prompt_only):
     if preview and is_synthetic_probe_preview(preview):
         return "synthetic-probe"
     return None
+
+def is_visible_candidate(item):
+    if not isinstance(item, dict):
+        return False
+    filter_reason = item.get("filterReason")
+    if isinstance(filter_reason, str) and filter_reason.strip():
+        return False
+    session_source = item.get("sessionSource")
+    if session_source is not None:
+        return isinstance(session_source, str) and session_source.strip() in ("cli", "vscode", "exec")
+    if bool(item.get("isSubagent")):
+        return False
+    agent_role = item.get("agentRole") or item.get("agent_role")
+    if isinstance(agent_role, str) and agent_role.strip():
+        return False
+    preview = item.get("preview") or item.get("title") or item.get("name") or ""
+    if is_auxiliary_instruction_text(preview) or is_synthetic_probe_preview(preview):
+        return False
+    cwd = item.get("cwd") or ""
+    if is_filtered_test_thread_cwd(cwd):
+        return False
+    return True
 
 def int_or_none(raw):
     try:
@@ -900,6 +938,8 @@ def cached_candidate(path_key, path_obj, stat_result):
     candidate = dict(item)
     candidate["path"] = to_windows_path(path_obj)
     candidate["updatedAt"] = int(stat_result.st_mtime)
+    if not is_visible_candidate(candidate):
+        return True, None
     return True, candidate
 
 def parse_session_candidate(p, stat_result):
@@ -1043,6 +1083,8 @@ for p in sessions_dir.rglob("*.jsonl"):
     metrics["cacheMissCount"] += 1
     metrics["parsedFileCount"] += 1
     candidate = parse_session_candidate(p, stat_result)
+    if candidate is not None and not is_visible_candidate(candidate):
+        candidate = None
     next_cache_files[path_key] = {{
         "size": int(stat_result.st_size),
         "mtimeNs": file_mtime_ns(stat_result),
@@ -1676,10 +1718,13 @@ mod tests {
     fn wsl_thread_scan_script_uses_incremental_cache_metrics() {
         let script = wsl_thread_scan_script();
 
+        assert!(script.contains("CACHE_VERSION = 2"));
         assert!(script.contains("api-router-thread-index-cache-v1.json"));
         assert!(script.contains("cacheHitCount"));
         assert!(script.contains("parsedFileCount"));
         assert!(script.contains("removedCacheEntryCount"));
+        assert!(script.contains("def is_visible_candidate(item):"));
+        assert!(script.contains("if not is_visible_candidate(candidate):"));
     }
 
     #[tokio::test]

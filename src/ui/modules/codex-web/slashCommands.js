@@ -245,6 +245,7 @@ export function createSlashCommandsModule(deps) {
   let manualCommandPickerOpen = false;
   let manualCommandPickerParent = null;
   let suppressNextMenuClick = false;
+  let suppressNextOutsideClickUntil = 0;
   const scheduleFrame = typeof windowRef?.requestAnimationFrame === "function"
     ? windowRef.requestAnimationFrame.bind(windowRef)
     : ((cb) => cb());
@@ -456,24 +457,14 @@ export function createSlashCommandsModule(deps) {
       resetSlashMenuPosition(menu);
       return;
     }
-    const viewportWidth = Number(windowRef?.innerWidth || 0) || rect.width || 0;
-    const margin = 8;
-    const desiredWidth = Math.max(220, rect.width);
-    const maxWidth = Math.max(220, viewportWidth - margin * 2);
-    const width = Math.min(desiredWidth, maxWidth);
-    const left = Math.min(
-      Math.max(margin, rect.left + (rect.width - width) / 2),
-      Math.max(margin, viewportWidth - width - margin)
-    );
-    const top = Math.max(margin, rect.top - 8);
-    menu.style.position = "fixed";
-    menu.style.left = `${Math.round(left)}px`;
-    menu.style.top = `${Math.round(top)}px`;
-    menu.style.right = "auto";
-    menu.style.bottom = "auto";
-    menu.style.width = `${Math.round(width)}px`;
-    menu.style.maxWidth = `${Math.round(maxWidth)}px`;
-    menu.style.transform = "translateY(-100%)";
+    menu.style.position = "absolute";
+    menu.style.left = "0px";
+    menu.style.top = "auto";
+    menu.style.right = "0px";
+    menu.style.bottom = "calc(100% + 8px)";
+    menu.style.width = "auto";
+    menu.style.maxWidth = "none";
+    menu.style.transform = "";
   }
 
   function installPositionListeners() {
@@ -503,6 +494,15 @@ export function createSlashCommandsModule(deps) {
     outsideDismissListenersInstalled = true;
     const dismiss = (event) => {
       if (state.slashMenuOpen !== true) return;
+      if (
+        String(event?.type || "") === "click" &&
+        suppressNextOutsideClickUntil > 0 &&
+        Date.now() <= suppressNextOutsideClickUntil
+      ) {
+        suppressNextOutsideClickUntil = 0;
+        return;
+      }
+      suppressNextOutsideClickUntil = 0;
       if (!isSlashMenuDismissTarget(event?.target)) return;
       hideSlashCommandMenu();
     };
@@ -913,6 +913,7 @@ export function createSlashCommandsModule(deps) {
   function openSlashCommandPicker(sourceEvent) {
     manualCommandPickerOpen = true;
     manualCommandPickerParent = null;
+    suppressNextOutsideClickUntil = isPointerActivationEvent(sourceEvent) ? Date.now() + 700 : 0;
     suppressNextMenuClick = isPointerActivationEvent(sourceEvent);
     resetSpecialMenu();
     state.slashMenuOpen = true;

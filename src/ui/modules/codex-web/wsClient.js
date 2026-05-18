@@ -1,5 +1,5 @@
 import { createMockCodexTransport } from "./mockTransport.js";
-import { synthesizeProvisionalThreadItem } from "./notificationRouting.js";
+import { inspectProvisionalThreadCandidate } from "./notificationRouting.js";
 import { setThreadOpenState } from "./threadOpenState.js";
 import { resolveCurrentThreadId } from "./runtimeState.js";
 
@@ -747,13 +747,14 @@ export function createWsClientModule(deps) {
   }
 
   function maybeUpsertProvisionalThread(notification, workspaceHint = "windows") {
-    const item = synthesizeProvisionalThreadItem(
+    const inspection = inspectProvisionalThreadCandidate(
       notification,
       normalizeLiveWorkspaceTarget(workspaceHint, currentLiveWorkspace()),
       Date.now()
     );
-    if (!item) return false;
-    return upsertProvisionalThreadItem(item) === true;
+    const item = inspection?.item || null;
+    const inserted = item ? upsertProvisionalThreadItem(item) === true : false;
+    return inserted;
   }
 
   function handleWsPayload(payload) {
