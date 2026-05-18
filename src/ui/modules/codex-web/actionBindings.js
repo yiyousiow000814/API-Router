@@ -2,6 +2,7 @@ import { applyActiveThreadGitMetaState, activeComposerWorkspace } from "./thread
 import { resolveBranchPickerSelection } from "./branchPickerState.js";
 import { resolveCurrentThreadId } from "./runtimeState.js";
 import { shouldUseAppleMobileMotionTuning } from "./mobileViewport.js";
+import { resetThreadSearchUiState, syncThreadSearchUiState } from "./threadSearchUiState.js";
 
 export const PROVIDER_SWITCHBOARD_AUTO_REFRESH_MS = 15_000;
 export const PROVIDER_SWITCHBOARD_STALE_MS = 15_000;
@@ -1503,23 +1504,14 @@ export function createActionBindingsModule(deps) {
         syncThreadSearchUi();
       }, resolveThreadSearchTransitionMs());
     };
-    const syncThreadSearchMode = () => {
-      const open = state.threadSearchOpen === true || !!String(state.threadSearchQuery || "").trim();
-      const mobileMode = open && isCompactSearchViewport(win);
-      state.threadSearchMobileMode = mobileMode;
-      return { open, mobileMode };
-    };
     const syncThreadSearchUi = () => {
-      const panel = byId("leftPanel");
-      const input = byId("threadSearchInput");
-      const { open, mobileMode } = syncThreadSearchMode();
-      panel?.classList?.toggle("search-open", open);
-      panel?.classList?.toggle("search-mobile-mode", mobileMode);
-      panel?.classList?.toggle("search-has-query", !!String(state.threadSearchQuery || "").trim());
-      panel?.classList?.toggle("search-transition-opening", state.threadSearchTransitionPhase === "opening");
-      panel?.classList?.toggle("search-transition-closing", state.threadSearchTransitionPhase === "closing");
-      doc?.body?.classList?.toggle?.("drawer-left-search-open", mobileMode);
-      input?.setAttribute?.("aria-expanded", open ? "true" : "false");
+      return syncThreadSearchUiState({
+        state,
+        panel: byId("leftPanel"),
+        input: byId("threadSearchInput"),
+        body: doc?.body,
+        isCompactViewport: () => isCompactSearchViewport(win),
+      });
     };
     const threadSearchInput = byId("threadSearchInput");
     if (threadSearchInput) {
@@ -1543,11 +1535,16 @@ export function createActionBindingsModule(deps) {
     bindResponsiveClick("threadSearchCloseBtn", (event) => {
       event?.preventDefault?.();
       event?.stopPropagation?.();
-      state.threadSearchOpen = false;
-      state.threadSearchQuery = "";
-      const input = byId("threadSearchInput");
-      if (input) input.value = "";
-      if (state.threadSearchMobileMode) armThreadSearchTransition("closing");
+      const shouldAnimateClosing = state.threadSearchMobileMode;
+      resetThreadSearchUiState({
+        state,
+        panel: byId("leftPanel"),
+        input: byId("threadSearchInput"),
+        body: doc?.body,
+        clearScheduledTimeout,
+        isCompactViewport: () => isCompactSearchViewport(win),
+      });
+      if (shouldAnimateClosing) armThreadSearchTransition("closing");
       syncThreadSearchUi();
       renderThreads(state.threadItems);
     }, { activationEvent: "click" });
