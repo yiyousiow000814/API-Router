@@ -137,6 +137,31 @@ export function createMobileShellModule(deps) {
     return byId("leftPanel") || documentRef?.querySelector?.(".leftPanel") || null;
   }
 
+  function resetThreadSearchUiState() {
+    const panel = getLeftDrawerPanel();
+    const input = byId("threadSearchInput");
+    state.threadSearchOpen = false;
+    state.threadSearchMobileMode = false;
+    state.threadSearchTransitionPhase = "";
+    state.threadSearchQuery = "";
+    if (state.threadSearchTransitionTimer) {
+      clearTimeout(state.threadSearchTransitionTimer);
+      state.threadSearchTransitionTimer = 0;
+    }
+    if (input) {
+      input.value = "";
+      input.setAttribute?.("aria-expanded", "false");
+    }
+    panel?.classList?.remove?.(
+      "search-open",
+      "search-mobile-mode",
+      "search-has-query",
+      "search-transition-opening",
+      "search-transition-closing"
+    );
+    documentRef?.body?.classList?.remove?.("drawer-left-search-open");
+  }
+
   function updateDrawerDragVisual(deltaX, mode = "open") {
     const body = documentRef?.body;
     const backdrop = byId("mobileDrawerBackdrop");
@@ -210,6 +235,7 @@ export function createMobileShellModule(deps) {
         clearTimeout(state.threadListVisibleAnimationTimer);
         state.threadListVisibleAnimationTimer = 0;
       }
+      resetThreadSearchUiState();
     }
     if (shouldOpenDrawerWithAnimation(tab, wasThreadsOpen)) {
       const currentWorkspaceKey = normalizeWorkspaceTarget(getWorkspaceTarget());

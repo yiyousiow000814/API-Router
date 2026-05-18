@@ -173,6 +173,125 @@ describe("mobileShell", () => {
     expect(calls).toEqual(["hide"]);
   });
 
+  it("clears mobile thread search state when leaving the thread drawer", () => {
+    const body = {
+      _classes: new Set(["drawer-left-open"]),
+      classList: {
+        contains(name) {
+          return body._classes.has(name);
+        },
+        add(...names) {
+          for (const name of names) body._classes.add(name);
+        },
+        remove(...names) {
+          for (const name of names) body._classes.delete(name);
+        },
+        toggle(name, force) {
+          if (force) body._classes.add(name);
+          else body._classes.delete(name);
+        },
+      },
+      style: {
+        removeProperty() {},
+      },
+    };
+    const leftPanel = {
+      _classes: new Set([
+        "search-open",
+        "search-mobile-mode",
+        "search-has-query",
+        "search-transition-opening",
+      ]),
+      classList: {
+        contains(name) {
+          return leftPanel._classes.has(name);
+        },
+        add(...names) {
+          for (const name of names) leftPanel._classes.add(name);
+        },
+        remove(...names) {
+          for (const name of names) leftPanel._classes.delete(name);
+        },
+      },
+    };
+    const input = {
+      value: "abc",
+      attrs: new Map([["aria-expanded", "true"]]),
+      setAttribute(name, value) {
+        this.attrs.set(name, value);
+      },
+    };
+    const backdrop = {
+      classList: {
+        toggle() {},
+        remove() {},
+      },
+    };
+    const state = {
+      drawerOpenPhaseTimer: 0,
+      threadListVisibleOpenAnimationUntil: 0,
+      threadListPendingSidebarOpenAnimation: false,
+      threadListVisibleAnimationTimer: 0,
+      threadListLoading: false,
+      threadItems: [],
+      threadListPendingVisibleAnimationByWorkspace: { windows: false, wsl2: false },
+      threadListAnimateNextRender: false,
+      threadListAnimateThreadIds: new Set(),
+      threadListExpandAnimateGroupKeys: new Set(),
+      threadListSkipScrollRestoreOnce: false,
+      threadSearchOpen: true,
+      threadSearchMobileMode: true,
+      threadSearchTransitionPhase: "opening",
+      threadSearchQuery: "abc",
+      threadSearchTransitionTimer: 123,
+    };
+    const clearedTimers = [];
+    const originalClearTimeout = globalThis.clearTimeout;
+    globalThis.clearTimeout = (timer) => {
+      clearedTimers.push(timer);
+    };
+
+    try {
+      const module = createMobileShellModule({
+        state,
+        byId(id) {
+          if (id === "mobileDrawerBackdrop") return backdrop;
+          if (id === "leftPanel") return leftPanel;
+          if (id === "threadSearchInput") return input;
+          return null;
+        },
+        documentRef: { body },
+        normalizeWorkspaceTarget(value) {
+          return value;
+        },
+        getWorkspaceTarget() {
+          return "windows";
+        },
+        pushThreadAnimDebug() {},
+        renderThreads() {},
+        hideSlashCommandMenu() {},
+      });
+
+      module.setMobileTab("chat");
+    } finally {
+      globalThis.clearTimeout = originalClearTimeout;
+    }
+
+    expect(state.threadSearchOpen).toBe(false);
+    expect(state.threadSearchMobileMode).toBe(false);
+    expect(state.threadSearchTransitionPhase).toBe("");
+    expect(state.threadSearchQuery).toBe("");
+    expect(state.threadSearchTransitionTimer).toBe(0);
+    expect(clearedTimers).toContain(123);
+    expect(input.value).toBe("");
+    expect(input.attrs.get("aria-expanded")).toBe("false");
+    expect(leftPanel.classList.contains("search-open")).toBe(false);
+    expect(leftPanel.classList.contains("search-mobile-mode")).toBe(false);
+    expect(leftPanel.classList.contains("search-has-query")).toBe(false);
+    expect(leftPanel.classList.contains("search-transition-opening")).toBe(false);
+    expect(body.classList.contains("drawer-left-search-open")).toBe(false);
+  });
+
   it("keeps drawer content hidden during open drag preview and restores entry animation after release", () => {
     const body = {
       _classes: new Set(),
