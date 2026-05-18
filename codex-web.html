@@ -6719,8 +6719,13 @@
       .leftPanel .sectionTitle {
         color: #637188;
       }
+      .leftPanel .drawerSectionTitle {
+        margin: 0 0 8px;
+      }
       .leftPanel .drawerSearchHeader {
-        min-height: 32px;
+        min-height: 28px;
+        margin-bottom: 6px;
+        padding-bottom: 6px;
         transition:
           transform var(--search-morph-duration, 320ms) cubic-bezier(.2, .82, .2, 1),
           opacity 220ms ease,
@@ -6733,6 +6738,16 @@
       .leftPanel .drawerSearchStage {
         min-height: 36px;
         flex: 0 0 auto;
+      }
+      .leftPanel #threadList {
+        gap: 4px;
+      }
+      .leftPanel #threadSearchOpenBtn {
+        width: 24px;
+        height: 24px;
+        border-color: transparent;
+        background: transparent;
+        color: #637188;
       }
       .leftPanel .drawerSearchIconBtn {
         display: inline-flex;
@@ -6860,15 +6875,23 @@
         transform: translateX(0) translateY(0) scale(1);
         filter: blur(0);
       }
+      .leftPanel.search-transition-closing .drawerSearchHeader,
+      .leftPanel.search-transition-closing .threadSearchControls {
+        transition: none;
+      }
       .leftPanel.search-transition-closing .drawerSearchHeader {
         opacity: 1;
         transform: translateX(0) translateY(0) scale(1);
         filter: blur(0);
       }
+      .leftPanel.search-transition-closing .drawerSearchHeader .drawerSearchIconBtn {
+        transform: none;
+      }
       .leftPanel.search-transition-closing .threadSearchControls {
         opacity: 0;
-        transform: translateX(14px) translateY(4px) scale(0.95);
-        filter: blur(1px);
+        pointer-events: none;
+        transform: translateX(0) translateY(0) scale(1);
+        filter: blur(0);
       }
       .leftPanel #threadSearchInput {
         height: 32px;
