@@ -58,6 +58,96 @@ describe("actionBindings", () => {
     expect(source).toMatch(/\.leftPanel\.search-mobile-mode\.search-has-query #threadSearchClearBtn \{[\s\S]*width: 42px;[\s\S]*margin-left: 10px;[\s\S]*opacity: 1;/);
   });
 
+  it("keeps desktop and small-screen search collapsed to an icon trigger by default", () => {
+    const source = fs.readFileSync(new URL("../../../../codex-web.html", import.meta.url), "utf8");
+    expect(source).toMatch(/#threadSearchOpenBtn \{[\s\S]*width: 24px;[\s\S]*background: transparent;[\s\S]*color: #637188;[\s\S]*display: inline-flex;/);
+    expect(source).toMatch(/\.leftPanel \.threadSearchControls \{[\s\S]*position: absolute;[\s\S]*opacity: 0;[\s\S]*pointer-events: none;/);
+    expect(source).toMatch(/\.leftPanel\.search-open \.threadSearchControls \{[\s\S]*opacity: 1;[\s\S]*pointer-events: auto;/);
+    expect(source).toMatch(/@media \(max-width: 720px\) \{[\s\S]*\.leftPanel\.search-open \.threadSearchControls \{[\s\S]*opacity: 1;[\s\S]*pointer-events: auto;/);
+  });
+
+  it("limits compact chat search mode to true small screens", () => {
+    const source = fs.readFileSync(new URL("./actionBindings.js", import.meta.url), "utf8");
+    expect(source).toMatch(/matchMedia\("\(max-width: 720px\)"\)/);
+    expect(source).toMatch(/innerWidth <= 720/);
+  });
+
+  it("does not open the mobile drawer backdrop when desktop search opens", () => {
+    const responsiveHandlers = new Map();
+    const bodyToggleCalls = [];
+    const input = {
+      focusCalls: 0,
+      setAttribute() {},
+      focus() {
+        this.focusCalls += 1;
+      },
+    };
+    const leftPanelClasses = new Set();
+    const leftPanel = {
+      classList: {
+        contains(name) {
+          return leftPanelClasses.has(name);
+        },
+        add(...names) {
+          for (const name of names) leftPanelClasses.add(name);
+        },
+        remove(...names) {
+          for (const name of names) leftPanelClasses.delete(name);
+        },
+        toggle(name, enabled) {
+          if (enabled) leftPanelClasses.add(name);
+          else leftPanelClasses.delete(name);
+        },
+      },
+    };
+    const deps = {
+      state: { threadItems: [], threadSearchQuery: "", threadSearchOpen: false },
+      byId(id) {
+        if (id === "leftPanel") return leftPanel;
+        if (id === "threadSearchInput") return input;
+        return null;
+      },
+      bindClick() {},
+      bindInput() {},
+      bindResponsiveClick(id, handler) {
+        responsiveHandlers.set(id, { handler });
+      },
+      renderThreads() {},
+      setMobileTab: vi.fn(),
+      wireBlurBackdropShield() {},
+      wireThreadPullToRefresh() {},
+      armSyntheticClickSuppression() {},
+      updateMobileComposerState() {},
+      windowRef: {
+        addEventListener() {},
+        matchMedia(query) {
+          return { matches: false, media: query, addEventListener() {}, removeEventListener() {} };
+        },
+      },
+      documentRef: {
+        addEventListener() {},
+        body: {
+          classList: {
+            toggle(name, enabled) {
+              bodyToggleCalls.push([name, enabled]);
+            },
+          },
+        },
+      },
+      NotificationRef: { requestPermission: async () => "default" },
+    };
+
+    createActionBindingsModule(deps).wireActions();
+    responsiveHandlers.get("threadSearchOpenBtn")?.handler?.({ preventDefault() {}, stopPropagation() {} });
+
+    expect(deps.state.threadSearchOpen).toBe(true);
+    expect(deps.state.threadSearchMobileMode).toBe(false);
+    expect(deps.state.threadSearchTransitionPhase || "").toBe("");
+    expect(deps.setMobileTab).not.toHaveBeenCalled();
+    expect(bodyToggleCalls).not.toContainEqual(["drawer-left-search-open", true]);
+    expect(input.focusCalls).toBe(1);
+  });
+
   it("reuses in-flight provider switchboard refreshes for the same scope", async () => {
     let apiCalls = 0;
     let resolveRequest;

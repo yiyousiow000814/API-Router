@@ -44,8 +44,8 @@ export function providerRuntimeRefreshErrorMessage(workspaceLabel, refreshErrors
 }
 
 function isCompactSearchViewport(windowRef) {
-  if (windowRef?.matchMedia) return windowRef.matchMedia("(max-width: 1080px)").matches;
-  if (typeof windowRef?.innerWidth === "number") return windowRef.innerWidth <= 1080;
+  if (windowRef?.matchMedia) return windowRef.matchMedia("(max-width: 720px)").matches;
+  if (typeof windowRef?.innerWidth === "number") return windowRef.innerWidth <= 720;
   return false;
 }
 
@@ -1526,9 +1526,12 @@ export function createActionBindingsModule(deps) {
     bindResponsiveClick("threadSearchOpenBtn", (event) => {
       event?.preventDefault?.();
       event?.stopPropagation?.();
+      const compactSearchViewport = isCompactSearchViewport(win);
       state.threadSearchOpen = true;
-      setMobileTab("threads");
-      if (isCompactSearchViewport(win)) armThreadSearchTransition("opening");
+      if (compactSearchViewport) {
+        setMobileTab("threads");
+        armThreadSearchTransition("opening");
+      }
       syncThreadSearchUi();
       byId("threadSearchInput")?.focus?.();
     }, { activationEvent: "click" });

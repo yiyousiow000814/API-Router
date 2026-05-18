@@ -5812,21 +5812,32 @@
       margin-bottom: 6px;
       padding-bottom: 6px;
       border-bottom: 1px solid rgba(13, 18, 32, 0.06);
+      transition: opacity 220ms ease, transform 220ms ease, filter 220ms ease;
+      transform-origin: top left;
     }
     .drawerSearchStage {
       position: relative;
       margin-top: 10px;
+      min-height: 36px;
     }
     .threadSearchControls {
       display: flex;
       align-items: center;
       gap: 6px;
+      position: absolute;
+      inset: 0;
+      min-height: 32px;
+      opacity: 0;
+      pointer-events: none;
+      transform: translateX(8px);
+      filter: blur(1px);
+      transition: opacity 180ms ease, transform 220ms ease, filter 220ms ease;
     }
     .drawerSearchIconBtn {
       width: 28px;
       height: 28px;
       flex: 0 0 auto;
-      display: none;
+      display: inline-flex;
       align-items: center;
       justify-content: center;
       padding: 0;
@@ -5841,6 +5852,7 @@
       border-color: transparent;
       background: transparent;
       color: #637188;
+      display: inline-flex;
     }
     .drawerSearchIconBtn svg {
       width: 16px;
@@ -5855,6 +5867,29 @@
     #threadSearchInput {
       flex: 1 1 auto;
       min-width: 0;
+    }
+    .leftPanel .threadSearchControls {
+      display: flex;
+      position: absolute;
+      inset: 0;
+      min-height: 32px;
+      opacity: 0;
+      pointer-events: none;
+      transform: translateX(8px);
+      filter: blur(1px);
+      transition: opacity 180ms ease, transform 220ms ease, filter 220ms ease;
+    }
+    .leftPanel.search-open .threadSearchControls {
+      opacity: 1;
+      pointer-events: auto;
+      transform: translateX(0);
+      filter: blur(0);
+    }
+    .leftPanel.search-open .drawerSearchHeader {
+      opacity: 0;
+      pointer-events: none;
+      transform: translateX(-10px);
+      filter: blur(1px);
     }
     @keyframes threadPullSpin {
       from { transform: rotate(0deg); }
@@ -6754,40 +6789,12 @@
         gap: 4px;
       }
       .leftPanel .drawerSearchIconBtn {
-        display: inline-flex;
         transition:
           transform var(--search-morph-duration, 320ms) cubic-bezier(.2, .82, .2, 1),
           opacity 220ms ease,
           border-color 220ms ease,
           box-shadow var(--search-morph-duration, 320ms) ease,
           background-color 220ms ease;
-      }
-      .leftPanel .threadSearchControls {
-        display: flex;
-        position: absolute;
-        inset: 0;
-        min-height: 32px;
-        opacity: 0;
-        pointer-events: none;
-        transform: translateX(18px) translateY(6px) scale(0.94);
-        transform-origin: top right;
-        filter: blur(1px);
-        transition:
-          transform var(--search-morph-duration, 320ms) cubic-bezier(.2, .82, .2, 1),
-          opacity 220ms ease,
-          filter var(--search-morph-duration, 320ms) ease;
-      }
-      .leftPanel.search-open .threadSearchControls {
-        opacity: 1;
-        pointer-events: auto;
-        transform: translateX(0) translateY(0) scale(1);
-        filter: blur(0);
-      }
-      .leftPanel.search-open .drawerSearchHeader {
-        opacity: 0;
-        pointer-events: none;
-        transform: translateX(-14px) translateY(-10px) scale(0.96);
-        filter: blur(1px);
       }
       .leftPanel.search-mobile-mode {
         width: 100vw;
@@ -6863,39 +6870,6 @@
       .leftPanel.search-mobile-mode #threadList {
         padding-right: 0;
         padding-bottom: max(16px, calc(env(safe-area-inset-bottom, 0px) + 10px));
-      }
-      .leftPanel.search-transition-opening #threadList {
-        transform: translateY(-8px) scale(0.995);
-      }
-      .leftPanel.search-transition-closing #threadList {
-        transform: translateY(6px) scale(0.997);
-      }
-      .leftPanel.search-transition-opening .drawerSearchHeader .drawerSearchIconBtn,
-      .leftPanel.search-open .drawerSearchHeader .drawerSearchIconBtn {
-        transform: translateX(-4px) scale(0.88);
-      }
-      .leftPanel.search-transition-opening .threadSearchControls {
-        opacity: 1;
-        transform: translateX(0) translateY(0) scale(1);
-        filter: blur(0);
-      }
-      .leftPanel.search-transition-closing .drawerSearchHeader,
-      .leftPanel.search-transition-closing .threadSearchControls {
-        transition: none;
-      }
-      .leftPanel.search-transition-closing .drawerSearchHeader {
-        opacity: 1;
-        transform: translateX(0) translateY(0) scale(1);
-        filter: blur(0);
-      }
-      .leftPanel.search-transition-closing .drawerSearchHeader .drawerSearchIconBtn {
-        transform: none;
-      }
-      .leftPanel.search-transition-closing .threadSearchControls {
-        opacity: 0;
-        pointer-events: none;
-        transform: translateX(0) translateY(0) scale(1);
-        filter: blur(0);
       }
       .leftPanel #threadSearchInput {
         height: 32px;
@@ -6975,6 +6949,77 @@
       }
       .leftPanel .panelFooter {
         padding-bottom: max(32px, calc(env(safe-area-inset-bottom, 0px) + 24px));
+      }
+      .leftPanel #threadSearchOpenBtn {
+        width: 24px;
+        height: 24px;
+        border-color: transparent;
+        background: transparent;
+        color: #637188;
+        display: inline-flex;
+      }
+      .leftPanel #threadSearchCloseBtn {
+        display: inline-flex;
+      }
+      .leftPanel .threadSearchControls {
+        display: flex;
+        position: absolute;
+        inset: 0;
+        min-height: 32px;
+        opacity: 0;
+        pointer-events: none;
+        transform: translateX(18px) translateY(6px) scale(0.94);
+        transform-origin: top right;
+        filter: blur(1px);
+        transition:
+          transform var(--search-morph-duration, 320ms) cubic-bezier(.2, .82, .2, 1),
+          opacity 220ms ease,
+          filter var(--search-morph-duration, 320ms) ease;
+      }
+      .leftPanel.search-open .threadSearchControls {
+        opacity: 1;
+        pointer-events: auto;
+        transform: translateX(0) translateY(0) scale(1);
+        filter: blur(0);
+      }
+      .leftPanel.search-open .drawerSearchHeader {
+        opacity: 0;
+        pointer-events: none;
+        transform: translateX(-14px) translateY(-10px) scale(0.96);
+        filter: blur(1px);
+      }
+      .leftPanel.search-transition-opening #threadList {
+        transform: translateY(-8px) scale(0.995);
+      }
+      .leftPanel.search-transition-closing #threadList {
+        transform: translateY(6px) scale(0.997);
+      }
+      .leftPanel.search-transition-opening .drawerSearchHeader .drawerSearchIconBtn,
+      .leftPanel.search-open .drawerSearchHeader .drawerSearchIconBtn {
+        transform: translateX(-4px) scale(0.88);
+      }
+      .leftPanel.search-transition-opening .threadSearchControls {
+        opacity: 1;
+        transform: translateX(0) translateY(0) scale(1);
+        filter: blur(0);
+      }
+      .leftPanel.search-transition-closing .drawerSearchHeader,
+      .leftPanel.search-transition-closing .threadSearchControls {
+        transition: none;
+      }
+      .leftPanel.search-transition-closing .drawerSearchHeader {
+        opacity: 1;
+        transform: translateX(0) translateY(0) scale(1);
+        filter: blur(0);
+      }
+      .leftPanel.search-transition-closing .drawerSearchHeader .drawerSearchIconBtn {
+        transform: none;
+      }
+      .leftPanel.search-transition-closing .threadSearchControls {
+        opacity: 0;
+        pointer-events: none;
+        transform: translateX(0) translateY(0) scale(1);
+        filter: blur(0);
       }
       .shell {
         padding: 0;
