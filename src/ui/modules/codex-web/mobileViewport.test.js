@@ -4,6 +4,7 @@ import {
   computeViewportMetrics,
   installMobileViewportSync,
   isEditableElement,
+  shouldUseAppleMobileMotionTuning,
   shouldUseFloatingComposerLayout,
 } from "./mobileViewport.js";
 
@@ -122,6 +123,7 @@ describe("mobileViewport", () => {
     expect(rootStyle.setProperty).toHaveBeenCalledWith("--keyboard-offset", "300px");
     expect(bodyClassList.toggle).toHaveBeenCalledWith("mobile-keyboard-open", true);
     expect(bodyClassList.toggle).toHaveBeenCalledWith("floating-composer-layout", true);
+    expect(bodyClassList.toggle).toHaveBeenCalledWith("apple-mobile-motion", false);
     expect(windowRef.scrollTo).toHaveBeenCalledWith(0, 0);
     expect(updateMobileComposerState).toHaveBeenCalledTimes(1);
     expect(vvHandlers.has("resize")).toBe(true);
@@ -169,5 +171,53 @@ describe("mobileViewport", () => {
 
     expect(bodyClassList.toggle).toHaveBeenCalledWith("floating-composer-layout", true);
     expect(rootStyle.setProperty).toHaveBeenCalledWith("--app-height", "820px");
+  });
+
+  it("enables apple mobile motion tuning only on iPhone-like devices", () => {
+    expect(shouldUseAppleMobileMotionTuning({
+      navigator: { userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)", platform: "iPhone", maxTouchPoints: 5 },
+    })).toBe(true);
+    expect(shouldUseAppleMobileMotionTuning({
+      navigator: { userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", platform: "Win32", maxTouchPoints: 0 },
+    })).toBe(false);
+  });
+
+  it("applies the apple mobile motion class during viewport sync for iPhone-like devices", () => {
+    const rootStyle = { setProperty: vi.fn() };
+    const bodyClassList = { toggle: vi.fn() };
+    const visualViewport = {
+      height: 520,
+      offsetTop: 0,
+      addEventListener() {},
+      removeEventListener() {},
+    };
+    const documentRef = {
+      activeElement: { tagName: "INPUT", type: "search" },
+      documentElement: { clientHeight: 820, style: rootStyle },
+      body: { classList: bodyClassList },
+      addEventListener() {},
+      removeEventListener() {},
+    };
+    const windowRef = {
+      innerHeight: 820,
+      innerWidth: 390,
+      visualViewport,
+      navigator: {
+        userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)",
+        platform: "iPhone",
+        maxTouchPoints: 5,
+      },
+      addEventListener() {},
+      removeEventListener() {},
+      requestAnimationFrame(callback) {
+        callback();
+        return 1;
+      },
+      scrollTo() {},
+    };
+
+    installMobileViewportSync({ windowRef, documentRef });
+
+    expect(bodyClassList.toggle).toHaveBeenCalledWith("apple-mobile-motion", true);
   });
 });

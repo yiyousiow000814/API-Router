@@ -1,6 +1,7 @@
 import { applyActiveThreadGitMetaState, activeComposerWorkspace } from "./threadGitMetaState.js";
 import { resolveBranchPickerSelection } from "./branchPickerState.js";
 import { resolveCurrentThreadId } from "./runtimeState.js";
+import { shouldUseAppleMobileMotionTuning } from "./mobileViewport.js";
 
 export const PROVIDER_SWITCHBOARD_AUTO_REFRESH_MS = 15_000;
 export const PROVIDER_SWITCHBOARD_STALE_MS = 15_000;
@@ -39,6 +40,12 @@ export function providerRuntimeRefreshErrorMessage(workspaceLabel, refreshErrors
   return details
     ? `Web Codex ${workspaceLabel} provider saved, but runtime refresh failed: ${details}`
     : `Web Codex ${workspaceLabel} provider saved, but runtime refresh failed.`;
+}
+
+function isCompactSearchViewport(windowRef) {
+  if (windowRef?.matchMedia) return windowRef.matchMedia("(max-width: 1080px)").matches;
+  if (typeof windowRef?.innerWidth === "number") return windowRef.innerWidth <= 1080;
+  return false;
 }
 
 export function createActionBindingsModule(deps) {
@@ -126,7 +133,15 @@ export function createActionBindingsModule(deps) {
       : typeof globalThis.setInterval === "function"
         ? globalThis.setInterval.bind(globalThis)
         : null;
+  const clearScheduledTimeout =
+    typeof win?.clearTimeout === "function"
+      ? win.clearTimeout.bind(win)
+      : typeof globalThis.clearTimeout === "function"
+        ? globalThis.clearTimeout.bind(globalThis)
+        : () => {};
     const PENDING_FREEFORM_EXIT_MS = 180;
+  const resolveThreadSearchTransitionMs = () =>
+    shouldUseAppleMobileMotionTuning(win) ? 440 : 320;
 
   let pendingBlockedBranchSwitch = null;
   const providerSwitchboardRefreshInFlight = new Map();
@@ -1476,12 +1491,34 @@ export function createActionBindingsModule(deps) {
       updateMobileComposerState();
       syncSlashCommandMenu();
     });
+    const armThreadSearchTransition = (phase) => {
+      state.threadSearchTransitionPhase = phase;
+      if (state.threadSearchTransitionTimer) {
+        clearScheduledTimeout(state.threadSearchTransitionTimer);
+        state.threadSearchTransitionTimer = 0;
+      }
+      state.threadSearchTransitionTimer = scheduleTimeout(() => {
+        state.threadSearchTransitionPhase = "";
+        state.threadSearchTransitionTimer = 0;
+        syncThreadSearchUi();
+      }, resolveThreadSearchTransitionMs());
+    };
+    const syncThreadSearchMode = () => {
+      const open = state.threadSearchOpen === true || !!String(state.threadSearchQuery || "").trim();
+      const mobileMode = open && isCompactSearchViewport(win);
+      state.threadSearchMobileMode = mobileMode;
+      return { open, mobileMode };
+    };
     const syncThreadSearchUi = () => {
       const panel = byId("leftPanel");
       const input = byId("threadSearchInput");
-      const open = state.threadSearchOpen === true || !!String(state.threadSearchQuery || "").trim();
+      const { open, mobileMode } = syncThreadSearchMode();
       panel?.classList?.toggle("search-open", open);
+      panel?.classList?.toggle("search-mobile-mode", mobileMode);
       panel?.classList?.toggle("search-has-query", !!String(state.threadSearchQuery || "").trim());
+      panel?.classList?.toggle("search-transition-opening", state.threadSearchTransitionPhase === "opening");
+      panel?.classList?.toggle("search-transition-closing", state.threadSearchTransitionPhase === "closing");
+      doc?.body?.classList?.toggle?.("drawer-left-search-open", mobileMode);
       input?.setAttribute?.("aria-expanded", open ? "true" : "false");
     };
     const threadSearchInput = byId("threadSearchInput");
@@ -1498,6 +1535,8 @@ export function createActionBindingsModule(deps) {
       event?.preventDefault?.();
       event?.stopPropagation?.();
       state.threadSearchOpen = true;
+      setMobileTab("threads");
+      if (isCompactSearchViewport(win)) armThreadSearchTransition("opening");
       syncThreadSearchUi();
       byId("threadSearchInput")?.focus?.();
     }, { activationEvent: "click" });
@@ -1505,7 +1544,12 @@ export function createActionBindingsModule(deps) {
       event?.preventDefault?.();
       event?.stopPropagation?.();
       state.threadSearchOpen = false;
+      state.threadSearchQuery = "";
+      const input = byId("threadSearchInput");
+      if (input) input.value = "";
+      if (state.threadSearchMobileMode) armThreadSearchTransition("closing");
       syncThreadSearchUi();
+      renderThreads(state.threadItems);
     }, { activationEvent: "click" });
     bindResponsiveClick("threadSearchClearBtn", (event) => {
       event?.preventDefault?.();
@@ -1520,6 +1564,7 @@ export function createActionBindingsModule(deps) {
     }, { activationEvent: "click" });
     wireThreadPullToRefresh();
     win.addEventListener?.("resize", () => {
+      syncThreadSearchUi();
       updateMobileComposerState();
       setMobileTab("chat");
     });

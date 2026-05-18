@@ -645,6 +645,8 @@ export function createThreadListViewModule(deps) {
         state.openingThreadAbort = controller;
         setMainTab("chat");
         setMobileTab("chat");
+        state.threadSearchOpen = false;
+        state.threadSearchQuery = "";
         const selection = primeOpeningThreadState({
           thread,
           state,

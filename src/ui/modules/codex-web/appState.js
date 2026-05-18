@@ -162,6 +162,8 @@ export function createInitialState() {
     threadGroupCollapseInitializedByWorkspace: { windows: false, wsl2: false },
     sidebarCollapsed: false,
     threadSearchOpen: false,
+    threadSearchMobileMode: false,
+    threadSearchTransitionPhase: "",
     threadSearchQuery: "",
     activeMainTab: "chat",
     settingsActiveSection: "provider",
