@@ -159,14 +159,12 @@ export function createWorkspaceUiModule(deps) {
     const nextValue = normalizeStartCwd(value, workspace);
     if (state.startCwdByWorkspace[workspace] === nextValue) {
       applyWorkspaceUi();
-      if (getWorkspaceTarget() === workspace) applyThreadFilter();
       return;
     }
     state.startCwdByWorkspace[workspace] = nextValue;
     persistStartCwdByWorkspace();
     applyWorkspaceUi();
     if (getWorkspaceTarget() === workspace) {
-      applyThreadFilter();
       refreshThreads(workspace, { force: false, silent: true }).catch(() => {});
     }
   }

@@ -10,7 +10,6 @@ export function createThreadListRefreshModule(deps) {
     ensureArrayItems,
     normalizeWorkspaceTarget,
     getWorkspaceTarget,
-    getStartCwdForWorkspace,
     sortThreadsByNewest,
     filterThreadsForWorkspace,
     hasDualWorkspaceTargets,
@@ -108,7 +107,6 @@ export function createThreadListRefreshModule(deps) {
         filterThreadsForWorkspace(state.threadItemsAll, {
           hasDualWorkspaceTargets: hasDualWorkspaceTargets(),
           currentTarget,
-          startCwd: getStartCwdForWorkspace(currentTarget),
         })
       );
       renderThreads(state.threadItems);

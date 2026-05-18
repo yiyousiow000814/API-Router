@@ -5,6 +5,7 @@ import { createThreadListRefreshModule } from "./threadListRefresh.js";
 describe("threadListRefresh", () => {
   it("filters and sorts threads for the active workspace before rendering", () => {
     const rendered = [];
+    const filterCalls = [];
     const state = {
       threadItemsAll: [
         { id: "b", cwd: "C:\\repo\\b", updatedAt: "2026-03-08T00:00:00Z" },
@@ -23,12 +24,10 @@ describe("threadListRefresh", () => {
       getWorkspaceTarget: () => "windows",
       getStartCwdForWorkspace: () => "C:\\repo\\a",
       sortThreadsByNewest: (items) => [...items].sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))),
-      filterThreadsForWorkspace: (items, options) =>
-        items.filter(
-          (item) =>
-            String(item.cwd || "").startsWith("C:\\") &&
-            String(item.cwd || "").startsWith(String(options?.startCwd || ""))
-        ),
+      filterThreadsForWorkspace: (items, options) => {
+        filterCalls.push(options);
+        return items.filter((item) => String(item.cwd || "").startsWith("C:\\"));
+      },
       hasDualWorkspaceTargets: () => true,
       detectWorkspaceAvailabilityFromThreads: vi.fn(),
       buildThreadRenderSig: vi.fn(),
@@ -44,8 +43,14 @@ describe("threadListRefresh", () => {
 
     module.applyThreadFilter();
 
-    expect(state.threadItems.map((item) => item.id)).toEqual(["a"]);
-    expect(rendered).toEqual([["a"]]);
+    expect(state.threadItems.map((item) => item.id)).toEqual(["a", "b"]);
+    expect(rendered).toEqual([["a", "b"]]);
+    expect(filterCalls).toEqual([
+      {
+        hasDualWorkspaceTargets: true,
+        currentTarget: "windows",
+      },
+    ]);
   });
 
   it("updates workspace availability from discovered thread paths", () => {
