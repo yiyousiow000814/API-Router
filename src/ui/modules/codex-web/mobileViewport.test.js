@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  advanceKeyboardMotionOffset,
   computeViewportMetrics,
   installMobileViewportSync,
   isComposerTextEntryActive,
@@ -145,6 +146,16 @@ describe("mobileViewport", () => {
     })).toBe(false);
   });
 
+  it("advances keyboard motion toward the target in smooth steps", () => {
+    const opening = advanceKeyboardMotionOffset(0, 300);
+    const closing = advanceKeyboardMotionOffset(300, 0);
+
+    expect(opening).toBeGreaterThan(0);
+    expect(opening).toBeLessThan(300);
+    expect(closing).toBeGreaterThan(0);
+    expect(closing).toBeLessThan(300);
+  });
+
   it("syncs viewport CSS variables from visualViewport changes", () => {
     const rootStyle = { setProperty: vi.fn() };
     const bodyClassList = { toggle: vi.fn() };
@@ -179,22 +190,140 @@ describe("mobileViewport", () => {
         return 1;
       },
     };
-    const updateMobileComposerState = vi.fn();
-
-    installMobileViewportSync({ windowRef, documentRef, updateMobileComposerState });
+    installMobileViewportSync({ windowRef, documentRef });
 
     expect(rootStyle.setProperty).toHaveBeenCalledWith("--app-height", "820px");
     expect(rootStyle.setProperty).toHaveBeenCalledWith("--visual-viewport-height", "520px");
-    expect(rootStyle.setProperty).toHaveBeenCalledWith("--keyboard-offset", "300px");
+    expect(rootStyle.setProperty).toHaveBeenCalledWith("--keyboard-offset", "0px");
     expect(bodyClassList.toggle).toHaveBeenCalledWith("mobile-keyboard-open", true);
     expect(bodyClassList.toggle).toHaveBeenCalledWith("floating-composer-layout", true);
     expect(bodyClassList.toggle).toHaveBeenCalledWith("apple-mobile-motion", false);
     expect(windowRef.scrollTo).toHaveBeenCalledWith(0, 0);
-    expect(updateMobileComposerState).toHaveBeenCalledTimes(1);
     expect(vvHandlers.has("resize")).toBe(true);
     expect(vvHandlers.has("scroll")).toBe(true);
     expect(docHandlers.has("focusin")).toBe(true);
     expect(winHandlers.has("resize")).toBe(true);
+  });
+
+  it("animates keyboard offset changes instead of jumping directly", () => {
+    vi.useFakeTimers();
+    const rootStyle = { setProperty: vi.fn() };
+    const vvHandlers = new Map();
+    const documentRef = {
+      activeElement: { tagName: "TEXTAREA" },
+      documentElement: { clientHeight: 820, style: rootStyle },
+      body: { classList: { toggle() {} } },
+      addEventListener() {},
+      removeEventListener() {},
+    };
+    const visualViewport = {
+      height: 520,
+      offsetTop: 0,
+      addEventListener(event, handler) { vvHandlers.set(event, handler); },
+      removeEventListener(event) { vvHandlers.delete(event); },
+    };
+    const windowRef = {
+      innerHeight: 820,
+      innerWidth: 390,
+      visualViewport,
+      addEventListener() {},
+      removeEventListener() {},
+      matchMedia(query) {
+        return { matches: query === "(pointer: coarse)" };
+      },
+      requestAnimationFrame(callback) {
+        callback();
+        return 1;
+      },
+      scrollTo() {},
+      setTimeout,
+      clearTimeout,
+    };
+
+    installMobileViewportSync({ windowRef, documentRef });
+    const initialCalls = rootStyle.setProperty.mock.calls
+      .filter(([name]) => name === "--keyboard-offset")
+      .map(([, value]) => value);
+    expect(initialCalls).toContain("0px");
+
+    visualViewport.height = 610;
+    vvHandlers.get("resize")?.();
+
+    const afterResizeCalls = rootStyle.setProperty.mock.calls
+      .filter(([name]) => name === "--keyboard-offset")
+      .map(([, value]) => value);
+    expect(afterResizeCalls).not.toContain("300px");
+
+    vi.advanceTimersByTime(32);
+
+    const animatedCalls = rootStyle.setProperty.mock.calls
+      .filter(([name]) => name === "--keyboard-offset")
+      .map(([, value]) => value);
+    expect(animatedCalls.some((value) => value !== "0px")).toBe(true);
+    vi.useRealTimers();
+  });
+
+  it("eases the keyboard offset back down when the keyboard closes", () => {
+    vi.useFakeTimers();
+    const rootStyle = { setProperty: vi.fn() };
+    const vvHandlers = new Map();
+    const documentRef = {
+      activeElement: { tagName: "TEXTAREA" },
+      documentElement: { clientHeight: 820, style: rootStyle },
+      body: { classList: { toggle() {} } },
+      addEventListener() {},
+      removeEventListener() {},
+    };
+    const visualViewport = {
+      height: 520,
+      offsetTop: 0,
+      addEventListener(event, handler) { vvHandlers.set(event, handler); },
+      removeEventListener(event) { vvHandlers.delete(event); },
+    };
+    const windowRef = {
+      innerHeight: 820,
+      innerWidth: 390,
+      visualViewport,
+      addEventListener() {},
+      removeEventListener() {},
+      matchMedia(query) {
+        return { matches: query === "(pointer: coarse)" };
+      },
+      requestAnimationFrame(callback) {
+        callback();
+        return 1;
+      },
+      scrollTo() {},
+      setTimeout,
+      clearTimeout,
+    };
+
+    installMobileViewportSync({ windowRef, documentRef });
+    vi.advanceTimersByTime(160);
+    rootStyle.setProperty.mockClear();
+
+    visualViewport.height = 820;
+    vvHandlers.get("resize")?.();
+
+    const closeStartCalls = rootStyle.setProperty.mock.calls
+      .filter(([name]) => name === "--keyboard-offset")
+      .map(([, value]) => value);
+    expect(Number.parseInt(closeStartCalls.at(-1) || "0", 10)).toBeGreaterThan(200);
+
+    vi.advanceTimersByTime(16);
+
+    const closeFrameCalls = rootStyle.setProperty.mock.calls
+      .filter(([name]) => name === "--keyboard-offset")
+      .map(([, value]) => value);
+    expect(closeFrameCalls).not.toContain("0px");
+
+    vi.advanceTimersByTime(420);
+
+    const closeEndCalls = rootStyle.setProperty.mock.calls
+      .filter(([name]) => name === "--keyboard-offset")
+      .map(([, value]) => value);
+    expect(closeEndCalls.at(-1)).toBe("0px");
+    vi.useRealTimers();
   });
 
   it("recomputes floating composer mode when only the viewport width changes", () => {
