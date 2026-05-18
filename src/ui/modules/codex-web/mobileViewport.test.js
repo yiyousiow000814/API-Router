@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   computeViewportMetrics,
   installMobileViewportSync,
+  isComposerTextEntryActive,
   isEditableElement,
   shouldUseAppleMobileMotionTuning,
   shouldUseFloatingComposerLayout,
@@ -41,7 +42,13 @@ describe("mobileViewport", () => {
     expect(isEditableElement({ tagName: "BUTTON" })).toBe(false);
   });
 
-  it("uses compact width, not touch capability, for floating composer mode", () => {
+  it("only treats the main chat composer as a floating-composer text target", () => {
+    expect(isComposerTextEntryActive({ id: "mobilePromptInput", tagName: "TEXTAREA" })).toBe(true);
+    expect(isComposerTextEntryActive({ id: "threadSearchInput", tagName: "INPUT", type: "search" })).toBe(false);
+    expect(isComposerTextEntryActive({ id: "tokenInput", tagName: "INPUT", type: "text" })).toBe(false);
+  });
+
+  it("uses compact width or an active iPad composer for floating composer mode", () => {
     expect(shouldUseFloatingComposerLayout({
       innerWidth: 900,
       matchMedia() {
@@ -55,6 +62,9 @@ describe("mobileViewport", () => {
       },
       innerWidth: 1400,
       navigator: { maxTouchPoints: 0 },
+      document: {
+        activeElement: { id: "mobilePromptInput", tagName: "TEXTAREA" },
+      },
     })).toBe(false);
     expect(shouldUseFloatingComposerLayout({
       matchMedia() {
@@ -62,14 +72,39 @@ describe("mobileViewport", () => {
       },
       innerWidth: 1400,
       navigator: { maxTouchPoints: 5 },
+      document: {
+        activeElement: { id: "mobilePromptInput", tagName: "TEXTAREA" },
+      },
     })).toBe(false);
     expect(shouldUseFloatingComposerLayout({
-      innerWidth: 1366,
-      document: { documentElement: { clientWidth: 1366 } },
+      innerWidth: 1194,
+      document: {
+        documentElement: { clientWidth: 1194 },
+        activeElement: { id: "mobilePromptInput", tagName: "TEXTAREA" },
+      },
+      navigator: {
+        userAgent: "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X)",
+        platform: "iPad",
+        maxTouchPoints: 5,
+      },
       matchMedia(query) {
         return { matches: query === "(pointer: coarse)" || query === "(hover: none)" };
       },
-      navigator: { maxTouchPoints: 5 },
+    })).toBe(true);
+    expect(shouldUseFloatingComposerLayout({
+      innerWidth: 1194,
+      document: {
+        documentElement: { clientWidth: 1194 },
+        activeElement: { id: "threadSearchInput", tagName: "INPUT", type: "search" },
+      },
+      navigator: {
+        userAgent: "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X)",
+        platform: "iPad",
+        maxTouchPoints: 5,
+      },
+      matchMedia(query) {
+        return { matches: query === "(pointer: coarse)" || query === "(hover: none)" };
+      },
     })).toBe(false);
     expect(shouldUseFloatingComposerLayout({
       matchMedia() {
@@ -219,5 +254,37 @@ describe("mobileViewport", () => {
     installMobileViewportSync({ windowRef, documentRef });
 
     expect(bodyClassList.toggle).toHaveBeenCalledWith("apple-mobile-motion", true);
+  });
+
+  it("does not force floating composer layout when iPad search input owns the keyboard", () => {
+    const bodyClassList = { toggle: vi.fn() };
+    const documentRef = {
+      activeElement: { id: "threadSearchInput", tagName: "INPUT", type: "search" },
+      documentElement: { clientHeight: 834, clientWidth: 1194, style: { setProperty() {} } },
+      body: { classList: bodyClassList },
+      addEventListener() {},
+      removeEventListener() {},
+    };
+    const windowRef = {
+      innerHeight: 834,
+      innerWidth: 1194,
+      visualViewport: { height: 534, offsetTop: 0, addEventListener() {}, removeEventListener() {} },
+      navigator: {
+        userAgent: "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X)",
+        platform: "iPad",
+        maxTouchPoints: 5,
+      },
+      addEventListener() {},
+      removeEventListener() {},
+      requestAnimationFrame(callback) {
+        callback();
+        return 1;
+      },
+    };
+
+    installMobileViewportSync({ windowRef, documentRef });
+
+    expect(bodyClassList.toggle).toHaveBeenCalledWith("mobile-keyboard-open", true);
+    expect(bodyClassList.toggle).toHaveBeenCalledWith("floating-composer-layout", false);
   });
 });

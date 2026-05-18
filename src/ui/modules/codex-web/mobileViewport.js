@@ -12,6 +12,11 @@ export function shouldUseAppleMobileMotionTuning(windowRef = globalThis.window) 
   return /iPhone|iPad|iPod/i.test(ua) || (platform === "MacIntel" && Number(nav.maxTouchPoints || 0) > 1);
 }
 
+export function isComposerTextEntryActive(node) {
+  if (!isEditableElement(node)) return false;
+  return String(node?.id || "").trim() === "mobilePromptInput";
+}
+
 export function shouldUseFloatingComposerLayout(windowRef = globalThis.window) {
   if (!windowRef || typeof windowRef !== "object") return false;
   const viewportWidth = Math.max(
@@ -19,7 +24,9 @@ export function shouldUseFloatingComposerLayout(windowRef = globalThis.window) {
     Number(windowRef.innerWidth || 0),
     Number(windowRef.document?.documentElement?.clientWidth || 0)
   );
-  return viewportWidth > 0 && viewportWidth <= FLOATING_COMPOSER_BREAKPOINT_PX;
+  if (viewportWidth > 0 && viewportWidth <= FLOATING_COMPOSER_BREAKPOINT_PX) return true;
+  if (!shouldUseAppleMobileMotionTuning(windowRef)) return false;
+  return isComposerTextEntryActive(windowRef.document?.activeElement);
 }
 
 export function isEditableElement(node) {
@@ -114,10 +121,7 @@ export function installMobileViewportSync({
     root.style.setProperty("--visual-viewport-height", `${Math.round(metrics.viewportHeight)}px`);
     root.style.setProperty("--keyboard-offset", `${Math.round(metrics.keyboardOffset)}px`);
     documentRef.body?.classList?.toggle?.("mobile-keyboard-open", metrics.keyboardOffset > 0);
-    documentRef.body?.classList?.toggle?.(
-      "floating-composer-layout",
-      floatingComposerLayout || metrics.keyboardOffset > 0
-    );
+    documentRef.body?.classList?.toggle?.("floating-composer-layout", floatingComposerLayout);
     documentRef.body?.classList?.toggle?.("apple-mobile-motion", shouldUseAppleMobileMotionTuning(windowRef));
     if (floatingComposerLayout && typeof windowRef.scrollTo === "function") {
       windowRef.scrollTo(0, 0);
