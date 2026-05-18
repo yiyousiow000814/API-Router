@@ -181,16 +181,11 @@ export function filterThreadsForWorkspace(items, options = {}) {
   const sourceItems = Array.isArray(items) ? items : [];
   const hasDualWorkspaceTargets = !!options.hasDualWorkspaceTargets;
   const currentTarget = normalizeWorkspaceTarget(String(options.currentTarget || "").trim());
-  const startCwd = String(options.startCwd || "").trim();
   return sourceItems.filter((thread) => {
     const target = detectThreadWorkspaceTarget(thread);
     if (hasDualWorkspaceTargets && target !== "unknown" && target !== currentTarget) return false;
-    const matchTarget = target === "unknown" ? currentTarget : target;
-    if (!startCwd) return true;
-    if (target === "unknown") return true;
-    if (hasDualWorkspaceTargets && target !== currentTarget) return false;
-    if (!hasDualWorkspaceTargets && target !== "unknown" && target !== currentTarget) return false;
-    return threadMatchesStartCwd(thread, startCwd, matchTarget);
+    if (!hasDualWorkspaceTargets) return true;
+    return target === "unknown" || target === currentTarget;
   });
 }
 

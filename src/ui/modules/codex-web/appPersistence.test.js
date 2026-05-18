@@ -332,6 +332,62 @@ describe("appPersistence", () => {
     });
   });
 
+  it("drops auxiliary and subagent threads when restoring the local thread cache", () => {
+    const state = {
+      threadItemsByWorkspace: { windows: [], wsl2: [] },
+      threadListRenderSigByWorkspace: { windows: "", wsl2: "" },
+      threadWorkspaceHydratedByWorkspace: { windows: false, wsl2: false },
+      threadListPendingVisibleAnimationByWorkspace: { windows: false, wsl2: false },
+      threadListAnimateNextRender: false,
+      threadListAnimateThreadIds: new Set(),
+      threadListExpandAnimateGroupKeys: new Set(),
+    };
+    const module = createAppPersistenceModule({
+      state,
+      byId: () => null,
+      api: async () => ({}),
+      setStatus: () => {},
+      updateWorkspaceAvailability: () => {},
+      getEmbeddedToken: () => "",
+      ensureArrayItems: (value) => (Array.isArray(value) ? value : []),
+      normalizeModelOption: (item) => item,
+      pickLatestModelId: () => "",
+      buildThreadRenderSig: (items) => items.map((item) => item.id).join("|"),
+      sortThreadsByNewest: (items) => items,
+      isThreadListActuallyVisible: () => false,
+      MODELS_CACHE_KEY: "models",
+      CODEX_VERSION_CACHE_KEY: "versions",
+      THREADS_CACHE_KEY: "threads",
+      REASONING_EFFORT_KEY: "effort",
+      localStorageRef: {
+        getItem(key) {
+          if (key !== "threads") return "";
+          return JSON.stringify({
+            windows: [
+              { id: "visible-win", workspace: "windows", preview: "real chat" },
+              { id: "agent-win", workspace: "windows", isSubagent: true, preview: "agent chat" },
+              { id: "role-win", workspace: "windows", agentRole: "explorer", preview: "agent role" },
+            ],
+            wsl2: [
+              { id: "visible-wsl", workspace: "wsl2", preview: "real wsl chat" },
+              { id: "aux-wsl", workspace: "wsl2", preview: "# AGENTS.md instructions" },
+              { id: "filtered-wsl", workspace: "wsl2", filterReason: "auxiliary-prompt-only" },
+            ],
+          });
+        },
+        setItem() {},
+      },
+      documentRef: {},
+    });
+
+    expect(module.restoreThreadsCache("wsl2")).toBe(true);
+
+    expect(state.threadItemsByWorkspace.windows.map((item) => item.id)).toEqual(["visible-win"]);
+    expect(state.threadItemsByWorkspace.wsl2.map((item) => item.id)).toEqual(["visible-wsl"]);
+    expect(state.threadItemsAll.map((item) => item.id)).toEqual(["visible-wsl"]);
+    expect(state.threadItems.map((item) => item.id)).toEqual(["visible-wsl"]);
+  });
+
   it("coalesces concurrent version refreshes into one API request", async () => {
     let resolveVersion;
     const versionResponse = new Promise((resolve) => {

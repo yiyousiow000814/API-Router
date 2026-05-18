@@ -2527,4 +2527,86 @@ describe("wsClient", () => {
       provisional: true,
     });
   });
+
+  it("does not refresh the thread list for activity-only rpc notifications", () => {
+    const threadRefreshes = [];
+    const module = createWsClientModule({
+      state: {
+        token: "",
+        ws: null,
+        wsReqHandlers: new Map(),
+        pendingApprovals: [],
+        pendingUserInputs: [],
+        wsLastEventId: 0,
+        wsRecentEventIds: new Set(),
+        wsSubscribedEvents: false,
+      },
+      setStatus() {},
+      toRecord(value) {
+        return value && typeof value === "object" ? value : null;
+      },
+      readString(value) {
+        const text = String(value ?? "").trim();
+        return text || "";
+      },
+      readNumber(value) {
+        const num = Number(value);
+        return Number.isFinite(num) ? num : null;
+      },
+      resetEventReplayState() {},
+      markEventIdSeen() {},
+      extractNotificationEventId() {
+        return null;
+      },
+      extractNotificationThreadId() {
+        return "thread-1";
+      },
+      shouldRefreshThreadsFromNotification(method) {
+        return method === "thread/status";
+      },
+      shouldRefreshActiveThreadFromNotification() {
+        return false;
+      },
+      scheduleThreadRefresh(delay) {
+        threadRefreshes.push(delay ?? null);
+      },
+      scheduleActiveThreadRefresh() {},
+      renderLiveNotification() {},
+      applyPendingPayloads() {},
+      addChat() {},
+      LAST_EVENT_ID_KEY: "last",
+      localStorageRef: { setItem() {}, getItem() { return "0"; } },
+      windowRef: { location: { protocol: "http:", host: "example.com" } },
+      WebSocketRef: class {},
+      fetchRef: async () => ({ ok: true, json: async () => ({}) }),
+    });
+
+    module.handleWsPayload({
+      type: "rpc.notification",
+      payload: {
+        method: "item/started",
+        params: {
+          threadId: "thread-1",
+          item: { type: "exec_command", id: "tool-1" },
+        },
+      },
+    });
+    module.handleWsPayload({
+      type: "rpc.notification",
+      payload: {
+        method: "codex/event/response_item",
+        params: {
+          payload: {
+            type: "message",
+            role: "assistant",
+            thread_id: "thread-1",
+            phase: "commentary",
+            content: [{ type: "output_text", text: "thinking..." }],
+          },
+        },
+      },
+    });
+
+    expect(threadRefreshes).toEqual([]);
+  });
 });

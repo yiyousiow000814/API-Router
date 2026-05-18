@@ -189,6 +189,7 @@ describe("threadListView", () => {
     const state = {
       threadItems: [],
       threadItemsAll: [],
+      threadSearchOpen: false,
       threadSearchQuery: "",
       threadListLoading: false,
       threadListLoadingTarget: "",
@@ -502,7 +503,8 @@ describe("threadListView", () => {
     const state = {
       threadItems: [],
       threadItemsAll: [],
-      threadSearchQuery: "",
+      threadSearchOpen: true,
+      threadSearchQuery: "alpha",
       threadListLoading: false,
       threadListLoadingTarget: "",
       workspaceAvailability: { windowsInstalled: true, wsl2Installed: true },
@@ -642,6 +644,8 @@ describe("threadListView", () => {
     expect(events).not.toContain(
       "POST:/codex/threads/thread-1/resume?workspace=windows"
     );
+    expect(state.threadSearchOpen).toBe(false);
+    expect(state.threadSearchQuery).toBe("");
   });
 
   it("waits for the opening overlay to paint before loading history", async () => {
@@ -1667,6 +1671,8 @@ describe("threadListView", () => {
       events.indexOf("history:thread-2")
     );
     expect(events).toContain("pending:sync");
+    expect(state.threadSearchOpen).toBe(false);
+    expect(state.threadSearchQuery).toBe("");
     expect(state.activeThreadOpenState.loaded).toBe(true);
     expect(state.activeThreadPendingTurnThreadId).toBe("thread-2");
     expect(state.activeThreadPendingTurnRunning).toBe(true);

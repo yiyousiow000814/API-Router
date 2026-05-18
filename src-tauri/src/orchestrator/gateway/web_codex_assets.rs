@@ -112,6 +112,8 @@ const WEB_CODEX_THREAD_LIST_VIEW_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/threadListView.js");
 const WEB_CODEX_THREAD_OPEN_STATE_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/threadOpenState.js");
+const WEB_CODEX_THREAD_SEARCH_UI_STATE_JS: &str =
+    include_str!("../../../../src/ui/modules/codex-web/threadSearchUiState.js");
 const WEB_CODEX_TRANSPORT_MODE_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/transportMode.js");
 const WEB_CODEX_TURN_ACTIONS_JS: &str =
@@ -235,6 +237,7 @@ fn resolve_web_codex_module_asset(module_path: &str) -> Option<WebCodexModuleAss
         "codex-web/threadGitMetaState.js" => WEB_CODEX_THREAD_GIT_META_STATE_JS,
         "codex-web/threadListView.js" => WEB_CODEX_THREAD_LIST_VIEW_JS,
         "codex-web/threadOpenState.js" => WEB_CODEX_THREAD_OPEN_STATE_JS,
+        "codex-web/threadSearchUiState.js" => WEB_CODEX_THREAD_SEARCH_UI_STATE_JS,
         "codex-web/transportMode.js" => WEB_CODEX_TRANSPORT_MODE_JS,
         "codex-web/turnActions.js" => WEB_CODEX_TURN_ACTIONS_JS,
         "codex-web/uiHelpers.js" => WEB_CODEX_UI_HELPERS_JS,
