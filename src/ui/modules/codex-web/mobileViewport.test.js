@@ -107,6 +107,36 @@ describe("mobileViewport", () => {
       },
     })).toBe(false);
     expect(shouldUseFloatingComposerLayout({
+      innerWidth: 1280,
+      document: {
+        documentElement: { clientWidth: 1280 },
+        activeElement: { id: "mobilePromptInput", tagName: "TEXTAREA" },
+      },
+      navigator: {
+        userAgent: "Mozilla/5.0 (Linux; Android 14; Pixel Tablet Build/UP1A.231005.007)",
+        platform: "Linux armv8l",
+        maxTouchPoints: 5,
+      },
+      matchMedia(query) {
+        return { matches: query === "(pointer: coarse)" || query === "(hover: none)" };
+      },
+    })).toBe(true);
+    expect(shouldUseFloatingComposerLayout({
+      innerWidth: 1280,
+      document: {
+        documentElement: { clientWidth: 1280 },
+        activeElement: { id: "threadSearchInput", tagName: "INPUT", type: "search" },
+      },
+      navigator: {
+        userAgent: "Mozilla/5.0 (Linux; Android 14; Pixel Tablet Build/UP1A.231005.007)",
+        platform: "Linux armv8l",
+        maxTouchPoints: 5,
+      },
+      matchMedia(query) {
+        return { matches: query === "(pointer: coarse)" || query === "(hover: none)" };
+      },
+    })).toBe(false);
+    expect(shouldUseFloatingComposerLayout({
       matchMedia() {
         return { matches: false };
       },

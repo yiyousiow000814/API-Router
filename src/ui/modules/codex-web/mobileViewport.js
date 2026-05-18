@@ -12,6 +12,15 @@ export function shouldUseAppleMobileMotionTuning(windowRef = globalThis.window) 
   return /iPhone|iPad|iPod/i.test(ua) || (platform === "MacIntel" && Number(nav.maxTouchPoints || 0) > 1);
 }
 
+function isTouchTabletViewport(windowRef = globalThis.window) {
+  const nav = windowRef?.navigator || {};
+  const appleTouch = shouldUseAppleMobileMotionTuning(windowRef);
+  const hasTouchPoints = Number(nav.maxTouchPoints || 0) > 0;
+  if (windowRef?.matchMedia?.("(pointer: coarse)")?.matches) return appleTouch || hasTouchPoints;
+  if (windowRef?.matchMedia?.("(hover: none)")?.matches) return appleTouch || hasTouchPoints;
+  return appleTouch;
+}
+
 export function isComposerTextEntryActive(node) {
   if (!isEditableElement(node)) return false;
   return String(node?.id || "").trim() === "mobilePromptInput";
@@ -25,7 +34,7 @@ export function shouldUseFloatingComposerLayout(windowRef = globalThis.window) {
     Number(windowRef.document?.documentElement?.clientWidth || 0)
   );
   if (viewportWidth > 0 && viewportWidth <= FLOATING_COMPOSER_BREAKPOINT_PX) return true;
-  if (!shouldUseAppleMobileMotionTuning(windowRef)) return false;
+  if (!isTouchTabletViewport(windowRef)) return false;
   return isComposerTextEntryActive(windowRef.document?.activeElement);
 }
 
