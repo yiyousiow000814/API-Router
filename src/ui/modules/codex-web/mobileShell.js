@@ -1,3 +1,5 @@
+import { resetThreadSearchUiState } from "./threadSearchUiState.js";
+
 export function shouldOpenDrawerWithAnimation(tab, wasThreadsOpen) {
   return tab === "threads" && !wasThreadsOpen;
 }
@@ -210,6 +212,13 @@ export function createMobileShellModule(deps) {
         clearTimeout(state.threadListVisibleAnimationTimer);
         state.threadListVisibleAnimationTimer = 0;
       }
+      resetThreadSearchUiState({
+        state,
+        panel: getLeftDrawerPanel(),
+        input: byId("threadSearchInput"),
+        body: documentRef?.body,
+        clearScheduledTimeout: clearTimeout,
+      });
     }
     if (shouldOpenDrawerWithAnimation(tab, wasThreadsOpen)) {
       const currentWorkspaceKey = normalizeWorkspaceTarget(getWorkspaceTarget());

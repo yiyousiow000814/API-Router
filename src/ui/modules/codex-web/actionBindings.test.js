@@ -1,3 +1,5 @@
+import fs from "node:fs";
+
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -46,6 +48,14 @@ describe("actionBindings", () => {
   it("keeps provider switchboard auto-refresh below chat refresh pressure", () => {
     expect(PROVIDER_SWITCHBOARD_AUTO_REFRESH_MS).toBe(15_000);
     expect(PROVIDER_SWITCHBOARD_STALE_MS).toBe(15_000);
+  });
+
+  it("lets the search input expand into the clear-button slot until a query exists", () => {
+    const source = fs.readFileSync(new URL("../../../../codex-web.html", import.meta.url), "utf8");
+    expect(source).toMatch(/\.leftPanel\.search-mobile-mode \.threadSearchControls \{\s*min-height: 44px;\s*gap: 0;/);
+    expect(source).toMatch(/\.leftPanel\.search-mobile-mode #threadSearchInput \{[\s\S]*margin-left: 10px;[\s\S]*margin-right: 0;[\s\S]*flex: 1 1 auto;/);
+    expect(source).toMatch(/\.leftPanel\.search-mobile-mode #threadSearchClearBtn \{[\s\S]*width: 0;[\s\S]*opacity: 0;[\s\S]*pointer-events: none;/);
+    expect(source).toMatch(/\.leftPanel\.search-mobile-mode\.search-has-query #threadSearchClearBtn \{[\s\S]*width: 42px;[\s\S]*margin-left: 10px;[\s\S]*opacity: 1;/);
   });
 
   it("reuses in-flight provider switchboard refreshes for the same scope", async () => {
@@ -2161,6 +2171,152 @@ describe("actionBindings", () => {
     responsiveHandlers.get("mobileCommandsBtn")?.handler?.(event);
     expect(deps.state.composerAttachmentMenuOpen).toBe(false);
     expect(deps.__commandsOpened).toBe(true);
+  });
+
+  it("toggles mobile chat search mode without closing on input blur", () => {
+    const responsiveHandlers = new Map();
+    const classes = new Set();
+    const leftPanel = {
+      classList: {
+        toggle(name, enabled) {
+          if (enabled) classes.add(name);
+          else classes.delete(name);
+        },
+        contains(name) {
+          return classes.has(name);
+        },
+      },
+    };
+    const input = {
+      value: "",
+      attributes: {},
+      focusCalls: 0,
+      setAttribute(name, value) {
+        this.attributes[name] = value;
+      },
+      focus() {
+        this.focusCalls += 1;
+      },
+    };
+    const bodyToggleCalls = [];
+    const scheduledTimeouts = [];
+    const deps = {
+      state: {
+        folderPickerOpen: false,
+        modelOptionsLoading: false,
+        threadItems: [{ id: "thread-1" }],
+        threadSearchOpen: false,
+        threadSearchMobileMode: false,
+        threadSearchTransitionPhase: "",
+        threadSearchQuery: "",
+      },
+      byId(id) {
+        if (id === "leftPanel") return leftPanel;
+        if (id === "threadSearchInput") return input;
+        return null;
+      },
+      bindClick() {},
+      bindResponsiveClick(id, handler, options = {}) {
+        responsiveHandlers.set(id, { handler, options });
+      },
+      bindInput() {},
+      setStatus() {},
+      updateNotificationState() {},
+      armSyntheticClickSuppression() {},
+      wireBlurBackdropShield() {},
+      closeFolderPicker() {},
+      refreshFolderPicker: async () => {},
+      renderFolderPicker() {},
+      confirmFolderPickerCurrentPath() {},
+      resetFolderPickerPath() {},
+      switchFolderPickerWorkspace: async () => {},
+      openFolderPicker: async () => {},
+      newThread: async () => {},
+      setMainTab() {},
+      setMobileTab() {},
+      refreshCodexVersions: async () => {},
+      setWorkspaceTarget: async () => {},
+      setHeaderModelMenuOpen() {},
+      closeInlineEffortOverlay() {},
+      shouldSuppressSyntheticClick() { return false; },
+      renderThreads(items) {
+        deps.__rendered = items;
+      },
+      wireThreadPullToRefresh() {},
+      addHost: async () => {},
+      resolveApproval: async () => {},
+      resolveUserInput: async () => {},
+      refreshPending: async () => {},
+      uploadAttachment: async () => {},
+      sendTurn: async () => {},
+      syncSlashCommandMenu() {},
+      syncSettingsControlsFromMain() {},
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      windowRef: {
+        innerWidth: 420,
+        addEventListener() {},
+        setTimeout(callback, delay) {
+          scheduledTimeouts.push({ callback, delay });
+          return scheduledTimeouts.length;
+        },
+      },
+      documentRef: {
+        addEventListener() {},
+        body: {
+          classList: {
+            toggle(name, enabled) {
+              bodyToggleCalls.push([name, enabled]);
+            },
+          },
+        },
+      },
+      NotificationRef: { requestPermission: async () => "default" },
+    };
+    const event = { preventDefault() {}, stopPropagation() {} };
+
+    createActionBindingsModule(deps).wireActions();
+    expect(leftPanel.classList.contains("search-open")).toBe(false);
+
+    responsiveHandlers.get("threadSearchOpenBtn")?.handler?.(event);
+    expect(deps.state.threadSearchOpen).toBe(true);
+    expect(deps.state.threadSearchMobileMode).toBe(true);
+    expect(deps.state.threadSearchTransitionPhase).toBe("opening");
+    expect(leftPanel.classList.contains("search-open")).toBe(true);
+    expect(leftPanel.classList.contains("search-mobile-mode")).toBe(true);
+    expect(leftPanel.classList.contains("search-transition-opening")).toBe(true);
+    expect(bodyToggleCalls).toContainEqual(["drawer-left-search-open", true]);
+    expect(input.focusCalls).toBe(1);
+    expect(scheduledTimeouts).toHaveLength(1);
+    expect(scheduledTimeouts[0].delay).toBe(320);
+
+    input.value = "abc";
+    input.oninput?.({ target: input });
+    expect(deps.state.threadSearchQuery).toBe("abc");
+    expect(leftPanel.classList.contains("search-has-query")).toBe(true);
+    expect(deps.__rendered).toEqual(deps.state.threadItems);
+
+    responsiveHandlers.get("threadSearchClearBtn")?.handler?.(event);
+    expect(deps.state.threadSearchQuery).toBe("");
+    expect(input.value).toBe("");
+    expect(leftPanel.classList.contains("search-open")).toBe(true);
+    expect(leftPanel.classList.contains("search-has-query")).toBe(false);
+
+    responsiveHandlers.get("threadSearchCloseBtn")?.handler?.(event);
+    expect(deps.state.threadSearchOpen).toBe(false);
+    expect(deps.state.threadSearchMobileMode).toBe(false);
+    expect(deps.state.threadSearchTransitionPhase).toBe("closing");
+    expect(deps.state.threadSearchQuery).toBe("");
+    expect(input.value).toBe("");
+    expect(leftPanel.classList.contains("search-open")).toBe(false);
+    expect(leftPanel.classList.contains("search-mobile-mode")).toBe(false);
+    expect(leftPanel.classList.contains("search-transition-closing")).toBe(true);
+    expect(bodyToggleCalls).toContainEqual(["drawer-left-search-open", false]);
+    expect(scheduledTimeouts).toHaveLength(2);
+
+    scheduledTimeouts[1].callback();
+    expect(deps.state.threadSearchTransitionPhase).toBe("");
+    expect(leftPanel.classList.contains("search-transition-opening")).toBe(false);
+    expect(leftPanel.classList.contains("search-transition-closing")).toBe(false);
   });
 
   it("reconciles chat scroll when the prompt input regains focus", () => {

@@ -5,6 +5,13 @@ function toFiniteNumber(value) {
 
 const FLOATING_COMPOSER_BREAKPOINT_PX = 1080;
 
+export function shouldUseAppleMobileMotionTuning(windowRef = globalThis.window) {
+  const nav = windowRef?.navigator || {};
+  const ua = String(nav.userAgent || "");
+  const platform = String(nav.platform || "");
+  return /iPhone|iPad|iPod/i.test(ua) || (platform === "MacIntel" && Number(nav.maxTouchPoints || 0) > 1);
+}
+
 export function shouldUseFloatingComposerLayout(windowRef = globalThis.window) {
   if (!windowRef || typeof windowRef !== "object") return false;
   const viewportWidth = Math.max(
@@ -111,6 +118,7 @@ export function installMobileViewportSync({
       "floating-composer-layout",
       floatingComposerLayout || metrics.keyboardOffset > 0
     );
+    documentRef.body?.classList?.toggle?.("apple-mobile-motion", shouldUseAppleMobileMotionTuning(windowRef));
     if (floatingComposerLayout && typeof windowRef.scrollTo === "function") {
       windowRef.scrollTo(0, 0);
     }

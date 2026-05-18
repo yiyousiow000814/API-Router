@@ -121,6 +121,9 @@
       overflow: hidden;
       touch-action: manipulation;
     }
+    body.mobile-keyboard-open.drawer-left-search-open {
+      background: #ffffff;
+    }
 
     .shell {
       min-height: var(--app-height, 100vh);
@@ -5800,6 +5803,48 @@
       opacity: 0.95;
       margin: 0;
     }
+    .drawerSearchHeader {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-height: 28px;
+    }
+    .drawerSearchStage {
+      position: relative;
+    }
+    .threadSearchControls {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .drawerSearchIconBtn {
+      width: 30px;
+      height: 30px;
+      flex: 0 0 auto;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      border-radius: 999px;
+      border: 1px solid rgba(13, 18, 32, 0.12);
+      background: rgba(255, 255, 255, 0.92);
+      color: #435168;
+    }
+    .drawerSearchIconBtn svg {
+      width: 16px;
+      height: 16px;
+      display: block;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    #threadSearchInput {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
     @keyframes threadPullSpin {
       from { transform: rotate(0deg); }
       to { transform: rotate(360deg); }
@@ -6619,7 +6664,10 @@
         width: clamp(260px, 70vw, 320px);
         z-index: var(--z-drawer-panel);
         box-shadow: none;
-        transition: transform var(--motion-drawer, var(--motion-slow, 260ms)) cubic-bezier(.22, .61, .36, 1);
+        transition:
+          transform var(--motion-drawer, var(--motion-slow, 260ms)) cubic-bezier(.22, .61, .36, 1),
+          width 320ms cubic-bezier(.2, .82, .2, 1),
+          max-width 320ms cubic-bezier(.2, .82, .2, 1);
         border-color: #32405b;
       }
       .leftPanel {
@@ -6671,6 +6719,186 @@
       .leftPanel .sectionTitle {
         color: #637188;
       }
+      .leftPanel .drawerSearchHeader {
+        min-height: 32px;
+        transition:
+          transform var(--search-morph-duration, 320ms) cubic-bezier(.2, .82, .2, 1),
+          opacity 220ms ease,
+          filter var(--search-morph-duration, 320ms) ease;
+        transform-origin: top left;
+      }
+      .leftPanel .drawerSearchHeader .drawerSectionTitle {
+        margin: 0;
+      }
+      .leftPanel .drawerSearchStage {
+        min-height: 36px;
+        flex: 0 0 auto;
+      }
+      .leftPanel .drawerSearchIconBtn {
+        display: inline-flex;
+        transition:
+          transform var(--search-morph-duration, 320ms) cubic-bezier(.2, .82, .2, 1),
+          opacity 220ms ease,
+          border-color 220ms ease,
+          box-shadow var(--search-morph-duration, 320ms) ease,
+          background-color 220ms ease;
+      }
+      .leftPanel .threadSearchControls {
+        display: flex;
+        position: absolute;
+        inset: 0;
+        min-height: 32px;
+        opacity: 0;
+        pointer-events: none;
+        transform: translateX(18px) translateY(6px) scale(0.94);
+        transform-origin: top right;
+        filter: blur(1px);
+        transition:
+          transform var(--search-morph-duration, 320ms) cubic-bezier(.2, .82, .2, 1),
+          opacity 220ms ease,
+          filter var(--search-morph-duration, 320ms) ease;
+      }
+      .leftPanel.search-open .threadSearchControls {
+        opacity: 1;
+        pointer-events: auto;
+        transform: translateX(0) translateY(0) scale(1);
+        filter: blur(0);
+      }
+      .leftPanel.search-open .drawerSearchHeader {
+        opacity: 0;
+        pointer-events: none;
+        transform: translateX(-14px) translateY(-10px) scale(0.96);
+        filter: blur(1px);
+      }
+      .leftPanel.search-mobile-mode {
+        width: 100vw;
+        max-width: none;
+        height: var(--app-height, 100vh);
+        max-height: var(--app-height, 100vh);
+      }
+      .leftPanel.search-mobile-mode .panelBody {
+        padding-top: max(4px, calc(env(safe-area-inset-top, 0px) + 2px));
+        padding-bottom: calc(var(--keyboard-offset, 0px) + max(12px, env(safe-area-inset-bottom, 0px)));
+        gap: 6px;
+        background: #ffffff;
+      }
+      .leftPanel .drawerBrandRow,
+      .leftPanel .drawerNewBtn,
+      .leftPanel .drawerSectionTitle,
+      .leftPanel #leftStartDirBtn,
+      .leftPanel #threadPullHint,
+      .leftPanel .panelFooter,
+      .leftPanel #threadList {
+        transition:
+          transform var(--search-morph-duration, 320ms) cubic-bezier(.2, .82, .2, 1),
+          opacity 220ms ease,
+          max-height var(--search-morph-duration, 320ms) cubic-bezier(.2, .82, .2, 1),
+          margin var(--search-morph-duration, 320ms) cubic-bezier(.2, .82, .2, 1);
+      }
+      .leftPanel.search-mobile-mode .drawerBrandRow,
+      .leftPanel.search-mobile-mode .drawerNewBtn,
+      .leftPanel.search-mobile-mode .drawerSectionTitle,
+      .leftPanel.search-mobile-mode #leftStartDirBtn,
+      .leftPanel.search-mobile-mode #threadPullHint,
+      .leftPanel.search-mobile-mode .panelFooter {
+        display: none;
+      }
+      .leftPanel.search-mobile-mode .drawerSearchStage {
+        min-height: 44px;
+        margin: 0;
+      }
+      .leftPanel.search-mobile-mode .threadSearchControls {
+        min-height: 44px;
+        gap: 0;
+      }
+      .leftPanel.search-mobile-mode .drawerSearchIconBtn {
+        width: 42px;
+        height: 42px;
+      }
+      .leftPanel.search-mobile-mode #threadSearchInput {
+        height: 42px;
+        padding: 8px 14px;
+        border-radius: 14px;
+        font-size: 16px;
+        margin-left: 10px;
+        margin-right: 0;
+        flex: 1 1 auto;
+      }
+      .leftPanel.search-mobile-mode #threadSearchClearBtn {
+        width: 0;
+        min-width: 0;
+        margin-left: 0;
+        padding: 0;
+        border-width: 0;
+        opacity: 0;
+        overflow: hidden;
+        transform: scale(0.82);
+        pointer-events: none;
+        transition:
+          width var(--search-morph-duration, 320ms) cubic-bezier(.2, .82, .2, 1),
+          margin-left var(--search-morph-duration, 320ms) cubic-bezier(.2, .82, .2, 1),
+          opacity 180ms ease,
+          transform var(--search-morph-duration, 320ms) cubic-bezier(.2, .82, .2, 1),
+          border-width 180ms ease;
+      }
+      .leftPanel.search-mobile-mode #threadList {
+        padding-right: 0;
+        padding-bottom: max(16px, calc(env(safe-area-inset-bottom, 0px) + 10px));
+      }
+      .leftPanel.search-transition-opening #threadList {
+        transform: translateY(-8px) scale(0.995);
+      }
+      .leftPanel.search-transition-closing #threadList {
+        transform: translateY(6px) scale(0.997);
+      }
+      .leftPanel.search-transition-opening .drawerSearchHeader .drawerSearchIconBtn,
+      .leftPanel.search-open .drawerSearchHeader .drawerSearchIconBtn {
+        transform: translateX(-4px) scale(0.88);
+      }
+      .leftPanel.search-transition-opening .threadSearchControls {
+        opacity: 1;
+        transform: translateX(0) translateY(0) scale(1);
+        filter: blur(0);
+      }
+      .leftPanel.search-transition-closing .drawerSearchHeader {
+        opacity: 1;
+        transform: translateX(0) translateY(0) scale(1);
+        filter: blur(0);
+      }
+      .leftPanel.search-transition-closing .threadSearchControls {
+        opacity: 0;
+        transform: translateX(14px) translateY(4px) scale(0.95);
+        filter: blur(1px);
+      }
+      .leftPanel #threadSearchInput {
+        height: 32px;
+        font-size: 16px;
+        line-height: 22px;
+        padding: 4px 10px;
+        transition:
+          border-radius var(--search-morph-duration, 320ms) cubic-bezier(.2, .82, .2, 1),
+          box-shadow var(--search-morph-duration, 320ms) cubic-bezier(.2, .82, .2, 1),
+          padding var(--search-morph-duration, 320ms) cubic-bezier(.2, .82, .2, 1),
+          border-color 220ms ease;
+      }
+      body.apple-mobile-motion {
+        --search-morph-duration: 440ms;
+      }
+      .leftPanel #threadSearchClearBtn {
+        visibility: hidden;
+      }
+      .leftPanel.search-mobile-mode.search-has-query #threadSearchClearBtn {
+        width: 42px;
+        min-width: 42px;
+        margin-left: 10px;
+        border-width: 1px;
+        opacity: 1;
+        transform: scale(1);
+        pointer-events: auto;
+      }
+      .leftPanel.search-has-query #threadSearchClearBtn {
+        visibility: visible;
+      }
       .leftPanel .itemTitle,
       .leftPanel .drawerLabel {
         color: #0d1220;
@@ -6692,6 +6920,9 @@
       body.drawer-left-open .leftPanel {
         transform: translateX(0);
         box-shadow: 0 24px 20px rgba(0, 0, 0, 0.35);
+      }
+      body.drawer-left-open .leftPanel.search-mobile-mode {
+        box-shadow: none;
       }
       body.drawer-right-open .rightPanel {
         transform: translateX(0);
@@ -6849,7 +7080,7 @@
     </section>
 
     <main id="mainLayout" class="layout">
-      <section class="panel leftPanel">
+      <section id="leftPanel" class="panel leftPanel">
         <div class="panelBody drawerBody">
           <div class="drawerBrandRow">
             <span class="drawerBrandMain"><img class="drawerBrandLogo" src="/ao-icon.png" alt="API Router logo" /><span>API Router</span></span>
@@ -6870,8 +7101,29 @@
               <span id="drawerWorkspaceText">Select folder</span>
             </span>
           </button>
-          <div class="drawerSectionTitle">Chats</div>
-          <input id="threadSearchInput" class="mono" placeholder="Search chats" />
+          <div class="drawerSearchStage">
+            <div id="drawerSearchHeader" class="drawerSearchHeader">
+              <div class="drawerSectionTitle">Chats</div>
+              <button id="threadSearchOpenBtn" class="drawerSearchIconBtn" type="button" aria-label="Search chats">
+                <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                  <path d="M7.2 12.1a4.9 4.9 0 1 1 0-9.8 4.9 4.9 0 0 1 0 9.8Zm3.4-1.1 3.1 3.1"></path>
+                </svg>
+              </button>
+            </div>
+            <div id="threadSearchControls" class="threadSearchControls">
+              <button id="threadSearchCloseBtn" class="drawerSearchIconBtn" type="button" aria-label="Close chat search">
+                <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                  <path d="M10 4 6 8l4 4"></path>
+                </svg>
+              </button>
+              <input id="threadSearchInput" class="mono" placeholder="Search chats" />
+              <button id="threadSearchClearBtn" class="drawerSearchIconBtn" type="button" aria-label="Clear chat search">
+                <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                  <path d="m5 5 6 6m0-6-6 6"></path>
+                </svg>
+              </button>
+            </div>
+          </div>
           <div id="threadPullHint" class="threadPullHint" aria-live="polite">
             <span class="threadPullHintInner">
               <span class="threadPullSpinner" aria-hidden="true"></span>

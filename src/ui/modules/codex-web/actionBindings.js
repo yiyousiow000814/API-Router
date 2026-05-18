@@ -1,6 +1,8 @@
 import { applyActiveThreadGitMetaState, activeComposerWorkspace } from "./threadGitMetaState.js";
 import { resolveBranchPickerSelection } from "./branchPickerState.js";
 import { resolveCurrentThreadId } from "./runtimeState.js";
+import { shouldUseAppleMobileMotionTuning } from "./mobileViewport.js";
+import { resetThreadSearchUiState, syncThreadSearchUiState } from "./threadSearchUiState.js";
 
 export const PROVIDER_SWITCHBOARD_AUTO_REFRESH_MS = 15_000;
 export const PROVIDER_SWITCHBOARD_STALE_MS = 15_000;
@@ -39,6 +41,12 @@ export function providerRuntimeRefreshErrorMessage(workspaceLabel, refreshErrors
   return details
     ? `Web Codex ${workspaceLabel} provider saved, but runtime refresh failed: ${details}`
     : `Web Codex ${workspaceLabel} provider saved, but runtime refresh failed.`;
+}
+
+function isCompactSearchViewport(windowRef) {
+  if (windowRef?.matchMedia) return windowRef.matchMedia("(max-width: 1080px)").matches;
+  if (typeof windowRef?.innerWidth === "number") return windowRef.innerWidth <= 1080;
+  return false;
 }
 
 export function createActionBindingsModule(deps) {
@@ -126,7 +134,15 @@ export function createActionBindingsModule(deps) {
       : typeof globalThis.setInterval === "function"
         ? globalThis.setInterval.bind(globalThis)
         : null;
+  const clearScheduledTimeout =
+    typeof win?.clearTimeout === "function"
+      ? win.clearTimeout.bind(win)
+      : typeof globalThis.clearTimeout === "function"
+        ? globalThis.clearTimeout.bind(globalThis)
+        : () => {};
     const PENDING_FREEFORM_EXIT_MS = 180;
+  const resolveThreadSearchTransitionMs = () =>
+    shouldUseAppleMobileMotionTuning(win) ? 440 : 320;
 
   let pendingBlockedBranchSwitch = null;
   const providerSwitchboardRefreshInFlight = new Map();
@@ -1476,15 +1492,76 @@ export function createActionBindingsModule(deps) {
       updateMobileComposerState();
       syncSlashCommandMenu();
     });
+    const armThreadSearchTransition = (phase) => {
+      state.threadSearchTransitionPhase = phase;
+      if (state.threadSearchTransitionTimer) {
+        clearScheduledTimeout(state.threadSearchTransitionTimer);
+        state.threadSearchTransitionTimer = 0;
+      }
+      state.threadSearchTransitionTimer = scheduleTimeout(() => {
+        state.threadSearchTransitionPhase = "";
+        state.threadSearchTransitionTimer = 0;
+        syncThreadSearchUi();
+      }, resolveThreadSearchTransitionMs());
+    };
+    const syncThreadSearchUi = () => {
+      return syncThreadSearchUiState({
+        state,
+        panel: byId("leftPanel"),
+        input: byId("threadSearchInput"),
+        body: doc?.body,
+        isCompactViewport: () => isCompactSearchViewport(win),
+      });
+    };
     const threadSearchInput = byId("threadSearchInput");
     if (threadSearchInput) {
       threadSearchInput.oninput = (event) => {
         state.threadSearchQuery = String(event?.target?.value || "");
+        state.threadSearchOpen = true;
+        syncThreadSearchUi();
         renderThreads(state.threadItems);
       };
     }
+    syncThreadSearchUi();
+    bindResponsiveClick("threadSearchOpenBtn", (event) => {
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+      state.threadSearchOpen = true;
+      setMobileTab("threads");
+      if (isCompactSearchViewport(win)) armThreadSearchTransition("opening");
+      syncThreadSearchUi();
+      byId("threadSearchInput")?.focus?.();
+    }, { activationEvent: "click" });
+    bindResponsiveClick("threadSearchCloseBtn", (event) => {
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+      const shouldAnimateClosing = state.threadSearchMobileMode;
+      resetThreadSearchUiState({
+        state,
+        panel: byId("leftPanel"),
+        input: byId("threadSearchInput"),
+        body: doc?.body,
+        clearScheduledTimeout,
+        isCompactViewport: () => isCompactSearchViewport(win),
+      });
+      if (shouldAnimateClosing) armThreadSearchTransition("closing");
+      syncThreadSearchUi();
+      renderThreads(state.threadItems);
+    }, { activationEvent: "click" });
+    bindResponsiveClick("threadSearchClearBtn", (event) => {
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+      const input = byId("threadSearchInput");
+      state.threadSearchQuery = "";
+      if (input) input.value = "";
+      state.threadSearchOpen = true;
+      syncThreadSearchUi();
+      renderThreads(state.threadItems);
+      input?.focus?.();
+    }, { activationEvent: "click" });
     wireThreadPullToRefresh();
     win.addEventListener?.("resize", () => {
+      syncThreadSearchUi();
       updateMobileComposerState();
       setMobileTab("chat");
     });
