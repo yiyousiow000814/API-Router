@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   extractNotificationEventId,
   extractNotificationThreadId,
+  inspectNotificationThreadIdentity,
+  inspectProvisionalThreadCandidate,
   synthesizeProvisionalThreadItem,
   shouldRefreshActiveThreadFromNotification,
   shouldRefreshThreadsFromNotification,
@@ -48,11 +50,33 @@ describe("notificationRouting", () => {
     ).toBe("thread-2");
   });
 
+  it("flags parent-thread fallback when notification only exposes parent ids", () => {
+    const identity = inspectNotificationThreadIdentity({
+      method: "codex/event/response_item",
+      params: {
+        source: {
+          parent_thread_id: "parent-thread",
+        },
+      },
+    });
+
+    expect(identity).toMatchObject({
+      threadId: "parent-thread",
+      matchedKey: "source.parent_thread_id",
+      usedParentThreadId: true,
+      parentThreadId: "parent-thread",
+    });
+  });
+
   it("matches refresh-worthy notification methods", () => {
-    expect(shouldRefreshThreadsFromNotification("turn/completed")).toBe(true);
-    expect(shouldRefreshThreadsFromNotification("turn.completed")).toBe(true);
-    expect(shouldRefreshThreadsFromNotification("item_completed")).toBe(true);
+    expect(shouldRefreshThreadsFromNotification("turn/completed")).toBe(false);
+    expect(shouldRefreshThreadsFromNotification("turn.completed")).toBe(false);
+    expect(shouldRefreshThreadsFromNotification("item_completed")).toBe(false);
+    expect(shouldRefreshThreadsFromNotification("item/started")).toBe(false);
     expect(shouldRefreshThreadsFromNotification("thread/status")).toBe(true);
+    expect(shouldRefreshThreadsFromNotification("thread/name/updated")).toBe(true);
+    expect(shouldRefreshThreadsFromNotification("codex/event/user_message")).toBe(true);
+    expect(shouldRefreshThreadsFromNotification("codex/event/response_item")).toBe(false);
     expect(shouldRefreshThreadsFromNotification("noop")).toBe(false);
     expect(shouldRefreshActiveThreadFromNotification("turn/started")).toBe(true);
     expect(shouldRefreshActiveThreadFromNotification("turn/completed")).toBe(true);
@@ -199,6 +223,42 @@ describe("notificationRouting", () => {
     );
 
     expect(item).toBeNull();
+  });
+
+  it("captures parent-thread fallback for rejected subagent provisional candidates", () => {
+    const inspection = inspectProvisionalThreadCandidate(
+      {
+        method: "codex/event/response_item",
+        params: {
+          cwd: "C:\\Users\\yiyou\\API-Router",
+          source: {
+            subagent: {
+              thread_spawn: {
+                parent_thread_id: "parent-thread",
+                agent_role: "explorer",
+              },
+            },
+          },
+          payload: {
+            type: "message",
+            role: "user",
+            thread_id: "thread-subagent",
+            content: [{ type: "input_text", text: "inspect the current branch" }],
+          },
+        },
+      },
+      "windows",
+      1742340000000
+    );
+
+    expect(inspection).toMatchObject({
+      accepted: false,
+      rejectionReason: "subagent-notification",
+      threadId: "parent-thread",
+      matchedKey: "subagent.parent_thread_id",
+      usedParentThreadId: true,
+      parentThreadId: "parent-thread",
+    });
   });
 
   it("drops agent-role live notifications from provisional thread items", () => {

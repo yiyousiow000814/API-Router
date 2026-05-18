@@ -22,6 +22,13 @@ const LOADED_THREAD_OVERLAY_TIMEOUT_MS: u64 = 750;
 const LOADED_THREAD_OVERLAY_MAX_ITEMS: usize = 48;
 const VISIBLE_SESSION_SOURCES: &[&str] = &["cli", "vscode", "exec"];
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) struct SessionFileIdentityHint {
+    pub(super) is_subagent: bool,
+    pub(super) agent_parent_session_id: Option<String>,
+    pub(super) agent_role: Option<String>,
+}
+
 #[derive(Clone)]
 struct SessionFileScanCacheEntry {
     file_len: u64,
@@ -274,6 +281,15 @@ pub(super) fn is_filtered_test_thread_cwd(raw: &str) -> bool {
 
 fn extract_user_preview_from_session_file(path: &Path) -> Option<String> {
     scan_session_file(path).and_then(|scan| scan.preview)
+}
+
+pub(super) fn scan_session_file_identity_hint(path: &Path) -> Option<SessionFileIdentityHint> {
+    let scan = scan_session_file(path)?;
+    Some(SessionFileIdentityHint {
+        is_subagent: scan.is_subagent,
+        agent_parent_session_id: scan.agent_parent_session_id,
+        agent_role: scan.agent_role,
+    })
 }
 
 #[derive(Clone)]

@@ -30,6 +30,12 @@ function isDottedIdentifierPath(value) {
   return /^[A-Za-z_$][A-Za-z0-9_$]*(\.[A-Za-z_$][A-Za-z0-9_$]*)+$/.test(text);
 }
 
+function isSlashSeparatedNumericMetric(value) {
+  const text = String(value || "").trim();
+  if (!text.includes("/")) return false;
+  return /^[+-]?\d+(?:\.\d+)?(?:\/[+-]?\d+(?:\.\d+)?)+$/.test(text);
+}
+
 export function looksLikeFileRef(value) {
   const raw = String(value || "").trim();
   if (!raw) return false;
@@ -38,6 +44,7 @@ export function looksLikeFileRef(value) {
   if (!text) return false;
   if (isHttpUrl(text)) return false;
   if (isDottedIdentifierPath(text)) return false;
+  if (isSlashSeparatedNumericMetric(text)) return false;
   if (/^[\\/]+$/.test(text)) return false;
   if (/^\/[^\/\s.?#]+$/.test(text)) return false;
   if (/^%[A-Za-z0-9_]+%(?:[\\/]+)?$/.test(text)) return false;
@@ -158,10 +165,43 @@ function isMarkdownTableStart(lines, index) {
   return header.length === alignments.length;
 }
 
+function extractMetricDetectionCandidates(value) {
+  const text = String(value || "").trim();
+  if (!text) return [];
+  const candidates = [text];
+  for (const match of text.matchAll(/\[([^\]\n]+)\]\(([^)\n]+)\)/g)) {
+    const label = String(match[1] || "").trim();
+    if (label) candidates.push(label);
+  }
+  let inlineSpan = findNextInlineCodeSpan(text, 0);
+  while (inlineSpan) {
+    const normalized = normalizeCodeSpanContent(inlineSpan.content).trim();
+    if (normalized) candidates.push(normalized);
+    inlineSpan = findNextInlineCodeSpan(text, inlineSpan.end);
+  }
+  return candidates;
+}
+
+function cellLooksLikeMetric(value) {
+  return extractMetricDetectionCandidates(value).some((candidate) =>
+    isSlashSeparatedNumericMetric(candidate)
+  );
+}
+
+function markdownTableLooksMetric(rows) {
+  for (const row of rows) {
+    for (const cell of row || []) {
+      if (cellLooksLikeMetric(cell)) return true;
+    }
+  }
+  return false;
+}
+
 function renderMarkdownTable(rows, alignments) {
   const header = rows[0] || [];
   const bodyRows = rows.slice(1);
   const columnCount = header.length;
+  const isMetricTable = markdownTableLooksMetric(rows);
   const renderCellAttrs = (index) => {
     const align = alignments[index] || "";
     const columnClass = index === 0 ? "msgTableLeadCell" : "msgTableDetailCell";
@@ -178,7 +218,8 @@ function renderMarkdownTable(rows, alignments) {
       return `<tr>${cells.map((cell, index) => `<td${renderCellAttrs(index)}>${renderInlineMessageText(cell)}</td>`).join("")}</tr>`;
     })
     .join("");
-  return `<div class="msgTableWrap"><table class="msgTable" data-msg-table-cols="${columnCount}"><thead><tr>${headerHtml}</tr></thead><tbody>${bodyHtml}</tbody></table></div>`;
+  const metricAttr = isMetricTable ? ' data-msg-table-kind="metric"' : "";
+  return `<div class="msgTableWrap"><table class="msgTable" data-msg-table-cols="${columnCount}"${metricAttr}><thead><tr>${headerHtml}</tr></thead><tbody>${bodyHtml}</tbody></table></div>`;
 }
 
 export function fileRefDisplayLabel(value) {
