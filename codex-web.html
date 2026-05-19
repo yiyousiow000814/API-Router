@@ -816,6 +816,7 @@
       transform-origin: 50% 50%;
       transform: rotate(90deg);
       color: #637188;
+      transition: transform 220ms cubic-bezier(.22, 1, .36, 1);
     }
     .groupChevron.is-collapsed {
       transform: rotate(0deg);
@@ -830,49 +831,30 @@
       stroke-linecap: round;
       stroke-linejoin: round;
     }
-    .groupChevron.anim-open {
-      animation: chevron-open 220ms cubic-bezier(.22, 1, .36, 1);
-    }
-    .groupChevron.anim-close {
-      animation: chevron-close 220ms cubic-bezier(.22, 1, .36, 1);
-    }
-    @keyframes chevron-open {
-      from { transform: rotate(0deg); }
-      to { transform: rotate(90deg); }
-    }
-    @keyframes chevron-close {
-      from { transform: rotate(90deg); }
-      to { transform: rotate(0deg); }
-    }
     .groupBody {
       display: grid;
       gap: 6px;
       padding: 8px;
-    }
-    .groupBody.is-expanding,
-    .groupBody.is-collapsing {
-      pointer-events: none;
+      box-sizing: border-box;
       overflow: hidden;
       transition:
-        height 0.2s ease,
-        opacity 0.2s ease,
-        padding-top 0.2s ease,
-        padding-bottom 0.2s ease;
-      will-change: height, opacity, padding-top, padding-bottom;
-    }
-    .groupBody.is-continuous-expanding {
-      transition:
-        height var(--thread-expand-duration, 240ms) cubic-bezier(.22, 1, .36, 1),
+        height 240ms cubic-bezier(.22, 1, .36, 1),
         opacity 180ms cubic-bezier(.22, 1, .36, 1),
-        padding-top var(--thread-expand-duration, 240ms) cubic-bezier(.22, 1, .36, 1),
-        padding-bottom var(--thread-expand-duration, 240ms) cubic-bezier(.22, 1, .36, 1);
+        transform 240ms cubic-bezier(.22, 1, .36, 1);
+      will-change: height, opacity, transform;
+    }
+    .groupBody.is-animating,
+    .groupBody.collapsed {
+      pointer-events: none;
     }
     .itemCard .row { min-width: 0; width: 100%; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; column-gap: 4px; align-items: center; }
     .itemCard .row .itemTitle { min-width: 0; max-width: 100%; display: block; }
     .itemSub.mono { margin-top: 0; white-space: nowrap; flex: 0 0 auto; }
     .itemCard .row .itemSub.mono { margin-left: 0; text-align: right; }
     .groupBody.collapsed {
-      display: none;
+      height: 0;
+      opacity: 0;
+      transform: translateY(-4px);
     }
 
     .messages {
