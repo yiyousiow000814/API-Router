@@ -1,9 +1,15 @@
 import { invoke } from '@tauri-apps/api/core'
+import { readUiActivitySnapshot } from './uiActivity.js'
 
 declare global {
   interface Window {
     __API_ROUTER_UI_FREEZE_CAPTURE_READY__?: boolean
     __API_ROUTER_ACTIVE_PAGE__?: string
+    __API_ROUTER_UI_ACTIVITY_STACK__?: Array<{
+      kind?: string
+      fields?: Record<string, unknown>
+      startedAtUnixMs?: number
+    }>
   }
 }
 
@@ -25,6 +31,18 @@ function currentVisible(): boolean {
     return true
   }
   return document.visibilityState !== 'hidden'
+}
+
+function currentUiActivity(): {
+  kind: string
+  fields: Record<string, unknown>
+  startedAtUnixMs: number
+  depth: number
+} | null {
+  if (typeof window === 'undefined') {
+    return null
+  }
+  return readUiActivitySnapshot(window)
 }
 
 export function shouldReportFrameStall(deltaMs: number, thresholdMs = FRAME_STALL_THRESHOLD_MS): boolean {
@@ -81,11 +99,20 @@ export function initUiFreezeCapture(): void {
           now - lastFrameStallReportAt >= FRAME_STALL_REPORT_COOLDOWN_MS
         ) {
           lastFrameStallReportAt = now
+          const uiActivity = currentUiActivity()
           void invoke('record_ui_frame_stall', {
             elapsedMs: deltaMs,
             monitorKind: frameMonitorReason,
             activePage: currentActivePage(),
             visible: currentVisible(),
+            activity: uiActivity
+              ? {
+                  kind: uiActivity.kind,
+                  fields: uiActivity.fields,
+                  ageMs: Math.max(0, Math.round(Date.now() - uiActivity.startedAtUnixMs)),
+                  depth: uiActivity.depth,
+                }
+              : null,
           }).catch(() => {})
         }
       }

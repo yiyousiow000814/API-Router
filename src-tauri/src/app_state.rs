@@ -292,6 +292,13 @@ pub struct UiWatchdogPageState<'a> {
     pub visible: bool,
 }
 
+pub struct UiWatchdogActivityState<'a> {
+    pub kind: Option<&'a str>,
+    pub age_ms: Option<u64>,
+    pub fields: Option<serde_json::Value>,
+    pub depth: Option<u64>,
+}
+
 pub struct UiWatchdogInvokeResult<'a> {
     pub command: &'a str,
     pub elapsed_ms: u64,
@@ -699,12 +706,18 @@ impl UiWatchdogState {
         runtime: UiWatchdogRuntime<'_>,
         elapsed_ms: u64,
         monitor_kind: &str,
+        activity: UiWatchdogActivityState<'_>,
         page: UiWatchdogPageState<'_>,
         now_unix_ms: u64,
     ) {
         let heartbeat = self.heartbeat_snapshot();
         let backend_status = self.backend_status_snapshot();
         let monitor_kind = monitor_kind.trim();
+        let activity_kind = activity
+            .kind
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let activity_fields = activity.fields.unwrap_or(serde_json::Value::Null);
         self.append_trace(
             "frame_stall",
             now_unix_ms,
@@ -713,6 +726,10 @@ impl UiWatchdogState {
                 "monitor_kind": monitor_kind,
                 "active_page": page.active_page.trim(),
                 "visible": page.visible,
+                "activity_kind": activity_kind,
+                "activity_age_ms": activity.age_ms,
+                "activity_fields": activity_fields,
+                "activity_depth": activity.depth,
             }),
         );
         runtime.store.events().app().ui_frame_stall_at(
@@ -723,6 +740,10 @@ impl UiWatchdogState {
                 "monitor_kind": monitor_kind,
                 "active_page": page.active_page.trim(),
                 "visible": page.visible,
+                "activity_kind": activity_kind,
+                "activity_age_ms": activity.age_ms,
+                "activity_fields": activity_fields,
+                "activity_depth": activity.depth,
             }),
             now_unix_ms,
         );
@@ -1594,8 +1615,8 @@ mod tests {
     use super::{
         build_state, disable_expired_package_providers, load_or_init_config,
         parse_tasklist_csv_line, parse_tasklist_mem_kb, run_startup_gateway_token_sync,
-        UiWatchdogInvokeResult, UiWatchdogLocalTask, UiWatchdogPageState, UiWatchdogRuntime,
-        UiWatchdogState, UI_WATCHDOG_SLOW_REFRESH_AFTER_MS,
+        UiWatchdogActivityState, UiWatchdogInvokeResult, UiWatchdogLocalTask, UiWatchdogPageState,
+        UiWatchdogRuntime, UiWatchdogState, UI_WATCHDOG_SLOW_REFRESH_AFTER_MS,
     };
     use crate::orchestrator::config::AppConfig;
     use serde_json::json;
@@ -2231,7 +2252,19 @@ mod tests {
         };
         let base_unix_ms = 1_700_000_000_000_u64;
 
-        watchdog.record_frame_stall(runtime, 123, "startup", page, base_unix_ms + 10_000);
+        watchdog.record_frame_stall(
+            runtime,
+            123,
+            "startup",
+            UiWatchdogActivityState {
+                kind: Some("history.render.full"),
+                age_ms: Some(220),
+                fields: Some(serde_json::json!({ "threadId": "thread-1" })),
+                depth: Some(1),
+            },
+            page,
+            base_unix_ms + 10_000,
+        );
         watchdog.record_frame_stall(
             UiWatchdogRuntime {
                 store: &state.gateway.store,
@@ -2239,6 +2272,12 @@ mod tests {
             },
             145,
             "interaction",
+            UiWatchdogActivityState {
+                kind: None,
+                age_ms: None,
+                fields: None,
+                depth: None,
+            },
             UiWatchdogPageState {
                 active_page: "requests",
                 visible: true,
@@ -2252,6 +2291,12 @@ mod tests {
             },
             167,
             "interaction",
+            UiWatchdogActivityState {
+                kind: None,
+                age_ms: None,
+                fields: None,
+                depth: None,
+            },
             UiWatchdogPageState {
                 active_page: "requests",
                 visible: true,

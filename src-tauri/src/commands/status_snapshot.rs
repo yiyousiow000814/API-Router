@@ -1228,6 +1228,15 @@ pub(crate) fn record_ui_long_task(
     );
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UiFrameStallActivityPayload {
+    kind: Option<String>,
+    age_ms: Option<u64>,
+    fields: Option<serde_json::Value>,
+    depth: Option<u64>,
+}
+
 #[tauri::command]
 pub(crate) fn record_ui_frame_stall(
     state: tauri::State<'_, app_state::AppState>,
@@ -1235,7 +1244,14 @@ pub(crate) fn record_ui_frame_stall(
     monitor_kind: String,
     active_page: String,
     visible: bool,
+    activity: Option<UiFrameStallActivityPayload>,
 ) {
+    let activity = activity.unwrap_or(UiFrameStallActivityPayload {
+        kind: None,
+        age_ms: None,
+        fields: None,
+        depth: None,
+    });
     state.ui_watchdog.record_frame_stall(
         app_state::UiWatchdogRuntime {
             store: &state.gateway.store,
@@ -1243,6 +1259,12 @@ pub(crate) fn record_ui_frame_stall(
         },
         elapsed_ms,
         &monitor_kind,
+        app_state::UiWatchdogActivityState {
+            kind: activity.kind.as_deref(),
+            age_ms: activity.age_ms,
+            fields: activity.fields,
+            depth: activity.depth,
+        },
         app_state::UiWatchdogPageState {
             active_page: &active_page,
             visible,

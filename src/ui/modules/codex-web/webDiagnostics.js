@@ -7,6 +7,21 @@ const DEFAULT_LOCAL_TASK_THRESHOLD_MS = 80;
 const DEFAULT_INTERACTION_SAMPLE_COOLDOWN_MS = 600;
 const DEFAULT_INTERACTION_MONITOR_WINDOW_MS = 8000;
 
+function readUiActivitySnapshot(windowRef) {
+  const stack = Array.isArray(windowRef?.__API_ROUTER_UI_ACTIVITY_STACK__)
+    ? windowRef.__API_ROUTER_UI_ACTIVITY_STACK__
+    : [];
+  if (!stack.length) return null;
+  const current = stack[stack.length - 1];
+  if (!current || typeof current !== "object") return null;
+  return {
+    kind: String(current.kind || "").trim(),
+    fields: current.fields && typeof current.fields === "object" ? { ...current.fields } : {},
+    startedAtUnixMs: Math.max(0, Math.round(Number(current.startedAtUnixMs || 0))),
+    depth: stack.length,
+  };
+}
+
 export function normalizeCodexWebActivePage(state) {
   const tab = String(state?.activeMainTab || "").trim();
   if (!tab || tab === "chat") return "codex-web";
@@ -245,9 +260,17 @@ export function createCodexWebDiagnostics(deps) {
 
   function recordFrameStall(elapsedMs, monitorKind) {
     if (elapsedMs < frameStallThresholdMs) return;
+    const uiActivity = readUiActivitySnapshot(windowRef);
     enqueue("frameStalls", {
       elapsedMs: Math.round(elapsedMs),
       monitorKind,
+      activityKind: uiActivity?.kind || null,
+      activityFields: uiActivity?.fields || null,
+      activityAgeMs:
+        uiActivity && uiActivity.startedAtUnixMs > 0
+          ? Math.max(0, Math.round(nowRef() - uiActivity.startedAtUnixMs))
+          : null,
+      activityDepth: uiActivity?.depth || 0,
     });
   }
 

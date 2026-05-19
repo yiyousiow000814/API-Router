@@ -1334,6 +1334,7 @@ export function createHistoryLoaderModule(deps) {
           replayAssistantHistoryMessage,
           finalizeThreadRenderEffects: (nextHistoryCommentary, nextLiveCommentarySnapshot, extra = {}) =>
             finalizeThreadRenderEffects(thread, options, nextHistoryCommentary, nextLiveCommentarySnapshot, extra),
+          windowRef,
         },
       });
       return;
@@ -1375,6 +1376,7 @@ export function createHistoryLoaderModule(deps) {
         scheduleChatLiveFollow,
         finalizeThreadRenderEffects: (nextHistoryCommentary, nextLiveCommentarySnapshot, extra = {}) =>
           finalizeThreadRenderEffects(thread, options, nextHistoryCommentary, nextLiveCommentarySnapshot, extra),
+        windowRef,
       },
     });
   }
