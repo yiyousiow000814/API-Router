@@ -564,6 +564,74 @@ describe("workspaceUi", () => {
     expect(state.activeThreadOpenState.resumeRequired).toBe(false);
   });
 
+  it("does not re-filter the chat list when only the start folder changes", () => {
+    const refreshCalls = [];
+    let applyThreadFilterCalls = 0;
+    const state = {
+      workspaceTarget: "windows",
+      workspaceAvailability: { windowsInstalled: true, wsl2Installed: true },
+      collapsedWorkspaceKeys: new Set(),
+      collapsedWorkspaceKeysByWorkspace: { windows: new Set(), wsl2: new Set() },
+      threadItemsByWorkspace: { windows: [], wsl2: [] },
+      threadWorkspaceHydratedByWorkspace: { windows: false, wsl2: false },
+      threadListRenderSigByWorkspace: { windows: "", wsl2: "" },
+      threadListPendingVisibleAnimationByWorkspace: { windows: false, wsl2: false },
+      startCwdByWorkspace: { windows: "", wsl2: "" },
+      threadItemsAll: [{ id: "thread-1", workspace: "windows" }],
+      threadItems: [{ id: "thread-1", workspace: "windows" }],
+      folderPickerOpen: false,
+    };
+    const module = createWorkspaceUiModule({
+      state,
+      byId() {
+        return null;
+      },
+      api() {
+        return Promise.resolve({});
+      },
+      normalizeWorkspaceTarget(value) {
+        return String(value || "").trim().toLowerCase() === "wsl2" ? "wsl2" : "windows";
+      },
+      localStorageRef: { setItem() {} },
+      WORKSPACE_TARGET_KEY: "workspace",
+      START_CWD_BY_WORKSPACE_KEY: "cwd",
+      detectThreadWorkspaceTarget() {
+        return "unknown";
+      },
+      updateHeaderUi() {},
+      renderFolderPicker() {},
+      setStatus() {},
+      pushThreadAnimDebug() {},
+      isThreadListActuallyVisible() {
+        return false;
+      },
+      buildThreadRenderSig() {
+        return "";
+      },
+      applyThreadFilter() {
+        applyThreadFilterCalls += 1;
+      },
+      refreshThreads(target, options) {
+        refreshCalls.push({ target, options });
+        return Promise.resolve();
+      },
+      syncEventSubscription() {
+        return true;
+      },
+      renderThreads() {},
+    });
+
+    module.setStartCwdForWorkspace("windows", "C:\\repo\\demo");
+
+    expect(applyThreadFilterCalls).toBe(0);
+    expect(refreshCalls).toEqual([
+      {
+        target: "windows",
+        options: { force: false, silent: true },
+      },
+    ]);
+  });
+
   it("resolves thread open state canonically from a single decision function", () => {
     expect(
       resolveThreadOpenState({

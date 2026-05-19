@@ -190,7 +190,7 @@ describe("threadMeta", () => {
     ).toBe(false);
   });
 
-  it("filters threads to the selected folder within the active workspace", () => {
+  it("does not filter threads by the selected start folder", () => {
     const items = [
       { id: "root", cwd: "C:\\repo\\demo", updatedAt: "2026-03-09T00:00:00Z" },
       { id: "child", cwd: "C:\\repo\\demo\\nested", updatedAt: "2026-03-08T00:00:00Z" },
@@ -203,7 +203,7 @@ describe("threadMeta", () => {
         currentTarget: "windows",
         startCwd: "C:\\repo\\demo",
       }).map((item) => item.id)
-    ).toEqual(["root", "child"]);
+    ).toEqual(["root", "child", "other"]);
   });
 
   it("detects workspace availability from thread collections", () => {

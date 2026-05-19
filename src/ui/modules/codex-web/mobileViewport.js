@@ -4,6 +4,46 @@ function toFiniteNumber(value) {
 }
 
 const FLOATING_COMPOSER_BREAKPOINT_PX = 1080;
+const KEYBOARD_MOTION_FRAME_MS = 16;
+const KEYBOARD_MOTION_MIN_STEP_PX = 1;
+const KEYBOARD_MOTION_MAX_STEP_PX = 48;
+const KEYBOARD_MOTION_STEP_RATIO = 0.28;
+
+export function advanceKeyboardMotionOffset(current, target) {
+  const currentValue = Math.max(0, toFiniteNumber(current));
+  const targetValue = Math.max(0, toFiniteNumber(target));
+  const delta = targetValue - currentValue;
+  const distance = Math.abs(delta);
+  if (distance < 0.5) return targetValue;
+  const step = Math.min(
+    KEYBOARD_MOTION_MAX_STEP_PX,
+    Math.max(KEYBOARD_MOTION_MIN_STEP_PX, distance * KEYBOARD_MOTION_STEP_RATIO),
+  );
+  const next = currentValue + Math.sign(delta) * step;
+  if (Math.abs(targetValue - next) < 0.5) return targetValue;
+  return Math.max(0, next);
+}
+
+export function shouldUseAppleMobileMotionTuning(windowRef = globalThis.window) {
+  const nav = windowRef?.navigator || {};
+  const ua = String(nav.userAgent || "");
+  const platform = String(nav.platform || "");
+  return /iPhone|iPad|iPod/i.test(ua) || (platform === "MacIntel" && Number(nav.maxTouchPoints || 0) > 1);
+}
+
+function isTouchTabletViewport(windowRef = globalThis.window) {
+  const nav = windowRef?.navigator || {};
+  const appleTouch = shouldUseAppleMobileMotionTuning(windowRef);
+  const hasTouchPoints = Number(nav.maxTouchPoints || 0) > 0;
+  if (windowRef?.matchMedia?.("(pointer: coarse)")?.matches) return appleTouch || hasTouchPoints;
+  if (windowRef?.matchMedia?.("(hover: none)")?.matches) return appleTouch || hasTouchPoints;
+  return appleTouch;
+}
+
+export function isComposerTextEntryActive(node) {
+  if (!isEditableElement(node)) return false;
+  return String(node?.id || "").trim() === "mobilePromptInput";
+}
 
 export function shouldUseFloatingComposerLayout(windowRef = globalThis.window) {
   if (!windowRef || typeof windowRef !== "object") return false;
@@ -12,7 +52,9 @@ export function shouldUseFloatingComposerLayout(windowRef = globalThis.window) {
     Number(windowRef.innerWidth || 0),
     Number(windowRef.document?.documentElement?.clientWidth || 0)
   );
-  return viewportWidth > 0 && viewportWidth <= FLOATING_COMPOSER_BREAKPOINT_PX;
+  if (viewportWidth > 0 && viewportWidth <= FLOATING_COMPOSER_BREAKPOINT_PX) return true;
+  if (!isTouchTabletViewport(windowRef)) return false;
+  return isComposerTextEntryActive(windowRef.document?.activeElement);
 }
 
 export function isEditableElement(node) {
@@ -72,6 +114,47 @@ export function installMobileViewportSync({
   let disposed = false;
   let lastSignature = "";
   let stableLayoutHeight = 0;
+  let animatedKeyboardOffset = 0;
+  let targetKeyboardOffset = 0;
+  let keyboardMotionTimer = 0;
+
+  const scheduleTimeout = typeof windowRef.setTimeout === "function"
+    ? windowRef.setTimeout.bind(windowRef)
+    : setTimeout;
+
+  const clearKeyboardMotionTimer = () => {
+    if (!keyboardMotionTimer) return;
+    const clear = typeof windowRef.clearTimeout === "function"
+      ? windowRef.clearTimeout.bind(windowRef)
+      : clearTimeout;
+    clear(keyboardMotionTimer);
+    keyboardMotionTimer = 0;
+  };
+
+  const updateKeyboardOffsetCss = () => {
+    root.style.setProperty("--keyboard-offset", `${Math.round(animatedKeyboardOffset)}px`);
+  };
+
+  const tickKeyboardMotion = () => {
+    keyboardMotionTimer = 0;
+    if (disposed) return;
+    animatedKeyboardOffset = advanceKeyboardMotionOffset(animatedKeyboardOffset, targetKeyboardOffset);
+    updateKeyboardOffsetCss();
+    if (Math.round(animatedKeyboardOffset) === Math.round(targetKeyboardOffset)) return;
+    keyboardMotionTimer = scheduleTimeout(tickKeyboardMotion, KEYBOARD_MOTION_FRAME_MS);
+  };
+
+  const setTargetKeyboardOffset = (value) => {
+    targetKeyboardOffset = Math.max(0, Math.round(toFiniteNumber(value)));
+    updateKeyboardOffsetCss();
+    if (Math.round(animatedKeyboardOffset) === targetKeyboardOffset) {
+      clearKeyboardMotionTimer();
+      return;
+    }
+    if (!keyboardMotionTimer) {
+      keyboardMotionTimer = scheduleTimeout(tickKeyboardMotion, 0);
+    }
+  };
 
   const applyMetrics = () => {
     scheduled = false;
@@ -105,12 +188,10 @@ export function installMobileViewportSync({
     lastSignature = signature;
     root.style.setProperty("--app-height", `${Math.round(appHeight)}px`);
     root.style.setProperty("--visual-viewport-height", `${Math.round(metrics.viewportHeight)}px`);
-    root.style.setProperty("--keyboard-offset", `${Math.round(metrics.keyboardOffset)}px`);
+    setTargetKeyboardOffset(metrics.keyboardOffset);
     documentRef.body?.classList?.toggle?.("mobile-keyboard-open", metrics.keyboardOffset > 0);
-    documentRef.body?.classList?.toggle?.(
-      "floating-composer-layout",
-      floatingComposerLayout || metrics.keyboardOffset > 0
-    );
+    documentRef.body?.classList?.toggle?.("floating-composer-layout", floatingComposerLayout);
+    documentRef.body?.classList?.toggle?.("apple-mobile-motion", shouldUseAppleMobileMotionTuning(windowRef));
     if (floatingComposerLayout && typeof windowRef.scrollTo === "function") {
       windowRef.scrollTo(0, 0);
     }
@@ -135,6 +216,7 @@ export function installMobileViewportSync({
 
   return () => {
     disposed = true;
+    clearKeyboardMotionTimer();
     windowRef.removeEventListener?.("resize", scheduleApply);
     visualViewport?.removeEventListener?.("resize", scheduleApply);
     visualViewport?.removeEventListener?.("scroll", scheduleApply);

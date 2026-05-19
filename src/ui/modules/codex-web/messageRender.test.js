@@ -274,6 +274,7 @@ Checked`
     expect(html).toContain("<thead>");
     expect(html).toContain('<th class="msgTableLeadCell">year</th>');
     expect(html).toContain('style="text-align:right">14567.0</td>');
+    expect(html).not.toContain('data-msg-table-kind="metric"');
     expect(html).not.toContain("| year | net_pips");
     expect(html).toContain("<p>Conclusion</p>");
   });
@@ -291,6 +292,47 @@ Checked`
     expect(html).toContain('<code class="msgInlineCode">a|b</code>');
     expect(html).toContain('<td class="msgTableDetailCell">yes</td>');
     expect(html).not.toContain("<tbody></tbody>");
+  });
+
+  it("keeps slash-separated numeric metric cells intact instead of path-linking the last segment", () => {
+    const html = renderMessageRichHtml(
+      [
+        "| 版本 | 20p Net/OOS | DD/DDRT/PRDD/DD(M) | 35p Net/OOS | 35p LM/UW/DD(M) |",
+        "| --- | ---: | ---: | ---: | ---: |",
+        "| 旧主线 combo_ABC2D_q2bounded | 959252.0/645084.1 | 13318.7/16030.2/16346.8/6987.3 | 915542.0/634509.1 | 23/37/7752.3 |",
+        "| 新候选 q1wide_ret240neg | 97/797.0/662144.1 | 13318.7/16030.2/16346.8/6823.3 | 930742.0/651434.1 | 22/34/7588.3 |",
+      ].join("\n")
+    );
+
+    expect(html).toContain("959252.0/645084.1");
+    expect(html).toContain("13318.7/16030.2/16346.8/6987.3");
+    expect(html).toContain("915542.0/634509.1");
+    expect(html).toContain("23/37/7752.3");
+    expect(html).toContain("97/797.0/662144.1");
+    expect(html).toContain("13318.7/16030.2/16346.8/6823.3");
+    expect(html).toContain("930742.0/651434.1");
+    expect(html).toContain("22/34/7588.3");
+    expect(html).toContain('data-msg-table-kind="metric"');
+    expect(html).not.toContain('<span class="msgPseudoLink">645084.1</span>');
+    expect(html).not.toContain('<span class="msgPseudoLink">6987.3</span>');
+    expect(html).not.toContain('<span class="msgPseudoLink">7752.3</span>');
+  });
+
+  it("keeps slash-separated metric labels intact even when cells use markdown links", () => {
+    const html = renderMessageRichHtml(
+      [
+        "| 版本 | 20p Net/OOS | 35p LM/UW/DD(M) |",
+        "| --- | ---: | ---: |",
+        "| [旧主线 combo_ABC2D_q2bounded](https://example.com/main) | [959252.0/645084.1](https://example.com/net) | [23/37/7752.3](https://example.com/lm) |",
+      ].join("\n")
+    );
+
+    expect(html).toContain(">旧主线 combo_ABC2D_q2bounded</a>");
+    expect(html).toContain(">959252.0/645084.1</a>");
+    expect(html).toContain(">23/37/7752.3</a>");
+    expect(html).toContain('data-msg-table-kind="metric"');
+    expect(html).not.toContain(">645084.1</a>");
+    expect(html).not.toContain(">7752.3</a>");
   });
 
   it("marks comparison tables with an explicit label column contract", () => {
