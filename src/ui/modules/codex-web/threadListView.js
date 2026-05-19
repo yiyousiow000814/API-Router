@@ -347,10 +347,12 @@ export function createThreadListViewModule(deps) {
         if (canScroll) {
           list.style.overflowY = "auto";
           list.style.touchAction = "pan-y";
+          list.style.overscrollBehaviorY = "contain";
           return;
         }
         list.style.overflowY = "hidden";
         list.style.touchAction = "none";
+        list.style.overscrollBehaviorY = "none";
         list.scrollTop = 0;
       };
       currentWorkspaceKey = normalizeWorkspaceTarget(getWorkspaceTarget());

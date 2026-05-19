@@ -363,6 +363,7 @@ describe("codex-web runtime layout", () => {
     const threadListMatch = source.match(/\.drawerBody \.itemList\s*\{([^}]+)\}/s);
     expect(threadListMatch).toBeTruthy();
     expect(threadListMatch?.[1] || "").toMatch(/overflow-y:\s*auto/i);
+    expect(threadListMatch?.[1] || "").toMatch(/overscroll-behavior-y:\s*contain/i);
     expect(threadListMatch?.[1] || "").not.toMatch(/overflow:\s*hidden/i);
     const leftGroupBodyMatch = source.match(/\.leftPanel \.groupBody\s*\{([^}]+)\}/s);
     expect(leftGroupBodyMatch).toBeTruthy();
