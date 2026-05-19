@@ -123,14 +123,20 @@ export function createCodexWebDiagnostics(deps) {
 
   async function flush(extra = {}) {
     if (!fetchRef) return;
+    const traces = queue.traces.slice(0, 256);
+    const invokeResults = queue.invokeResults.slice(0, 256);
+    const localTasks = queue.localTasks.slice(0, 128);
+    const longTasks = queue.longTasks.slice(0, 64);
+    const frameStalls = queue.frameStalls.slice(0, 64);
+    const frontendErrors = queue.frontendErrors.slice(0, 64);
     const body = {
       ...extra,
-      traces: queue.traces.splice(0, 256),
-      invokeResults: queue.invokeResults.splice(0, 256),
-      localTasks: queue.localTasks.splice(0, 128),
-      longTasks: queue.longTasks.splice(0, 64),
-      frameStalls: queue.frameStalls.splice(0, 64),
-      frontendErrors: queue.frontendErrors.splice(0, 64),
+      traces,
+      invokeResults,
+      localTasks,
+      longTasks,
+      frameStalls,
+      frontendErrors,
     };
     const hasQueued =
       body.traces.length ||
@@ -147,6 +153,12 @@ export function createCodexWebDiagnostics(deps) {
         headers: authHeaders(),
         body: JSON.stringify(body),
       });
+      queue.traces.splice(0, traces.length);
+      queue.invokeResults.splice(0, invokeResults.length);
+      queue.localTasks.splice(0, localTasks.length);
+      queue.longTasks.splice(0, longTasks.length);
+      queue.frameStalls.splice(0, frameStalls.length);
+      queue.frontendErrors.splice(0, frontendErrors.length);
     } catch {}
   }
 

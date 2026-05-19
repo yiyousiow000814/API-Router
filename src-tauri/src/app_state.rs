@@ -463,6 +463,9 @@ impl UiWatchdogState {
         now_unix_ms: u64,
     ) -> UiWatchdogLiveSnapshot {
         let heartbeat_age_ms = now_unix_ms.saturating_sub(heartbeat.last_heartbeat_unix_ms);
+        let frontend_stalled = heartbeat.visible
+            && heartbeat.last_heartbeat_unix_ms > 0
+            && heartbeat_age_ms > UI_WATCHDOG_UNRESPONSIVE_AFTER_MS;
         let backend_progress_age_ms = backend_status
             .status_command_in_flight
             .then(|| Self::backend_progress_age_ms(backend_status, now_unix_ms));
@@ -475,8 +478,7 @@ impl UiWatchdogState {
                 status_in_flight: heartbeat.status_in_flight,
                 config_in_flight: heartbeat.config_in_flight,
                 provider_switch_in_flight: heartbeat.provider_switch_in_flight,
-                stalled: heartbeat.last_heartbeat_unix_ms > 0
-                    && heartbeat_age_ms > UI_WATCHDOG_UNRESPONSIVE_AFTER_MS,
+                stalled: frontend_stalled,
             },
             backend_status: UiWatchdogBackendStatusSnapshot {
                 in_flight: backend_status.status_command_in_flight,
@@ -983,9 +985,9 @@ impl UiWatchdogState {
         if last_heartbeat == 0 {
             return;
         }
-        let heartbeat_age_ms = now_unix_ms.saturating_sub(last_heartbeat);
         let mut diagnostics = self.diagnostics_meta.lock();
-        if heartbeat_age_ms > UI_WATCHDOG_UNRESPONSIVE_AFTER_MS {
+        if live_snapshot.frontend.stalled {
+            let heartbeat_age_ms = live_snapshot.frontend.heartbeat_age_ms;
             if diagnostics.unresponsive_logged {
                 return;
             }
@@ -1982,6 +1984,19 @@ mod tests {
         );
         assert_eq!(live_snapshot.backend_status.progress_age_ms, Some(7_000));
         assert!(live_snapshot.backend_status.stalled);
+    }
+
+    #[test]
+    fn ui_watchdog_live_snapshot_does_not_mark_hidden_frontend_stalled() {
+        let watchdog = UiWatchdogState::default();
+
+        watchdog.record_heartbeat("dashboard", false, false, false, false, 1_000);
+
+        let live_snapshot = watchdog.live_snapshot(9_000);
+
+        assert!(!live_snapshot.frontend.visible);
+        assert!(!live_snapshot.frontend.stalled);
+        assert_eq!(live_snapshot.frontend.heartbeat_age_ms, 8_000);
     }
 
     #[test]

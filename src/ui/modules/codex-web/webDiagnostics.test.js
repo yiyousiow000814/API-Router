@@ -112,6 +112,57 @@ describe("webDiagnostics", () => {
     });
   });
 
+  it("retries queued diagnostics after a failed flush instead of dropping them", async () => {
+    const requests = [];
+    let shouldFail = true;
+    const diagnostics = createCodexWebDiagnostics({
+      state: {
+        token: "test-token",
+        activeMainTab: "chat",
+      },
+      windowRef: { addEventListener() {} },
+      documentRef: { visibilityState: "visible" },
+      fetchRef: async (_path, options) => {
+        const body = JSON.parse(options.body);
+        requests.push(body);
+        if (shouldFail) throw new Error("network down");
+        return { ok: true };
+      },
+      requestAnimationFrameRef: null,
+      PerformanceObserverRef: null,
+      setTimeoutRef: vi.fn(),
+      clearTimeoutRef: vi.fn(),
+      setIntervalRef: vi.fn(),
+      clearIntervalRef: vi.fn(),
+      nowRef: () => 1000,
+      localTaskThresholdMs: 10,
+    });
+
+    diagnostics.recordLocalTask({
+      command: "thread list render",
+      elapsedMs: 38,
+      fields: { sourceCount: 116, workspace: "windows" },
+    });
+
+    await diagnostics.flush();
+    shouldFail = false;
+    await diagnostics.flush();
+
+    expect(requests).toHaveLength(2);
+    expect(requests[0].localTasks).toEqual([
+      expect.objectContaining({
+        command: "thread list render",
+        elapsedMs: 38,
+      }),
+    ]);
+    expect(requests[1].localTasks).toEqual([
+      expect.objectContaining({
+        command: "thread list render",
+        elapsedMs: 38,
+      }),
+    ]);
+  });
+
   it("keeps monitoring frames after scroll-like interactions", async () => {
     const requests = [];
     const timers = [];
