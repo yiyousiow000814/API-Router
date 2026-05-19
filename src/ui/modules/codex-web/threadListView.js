@@ -104,10 +104,10 @@ export function filterWorkspaceSectionThreads(threads, favoriteSet, query, works
   });
 }
 
-export function shouldStaggerThreadGroupEnter(entries, collapsedKeys) {
+export function shouldStaggerThreadGroupEnter(entries) {
   const groups = Array.isArray(entries) ? entries : [];
-  const collapsed = collapsedKeys instanceof Set ? collapsedKeys : new Set();
-  return !groups.some(([, items, key]) => Array.isArray(items) && items.length > 0 && !collapsed.has(key));
+  const populatedGroupCount = groups.filter(([, items]) => Array.isArray(items) && items.length > 0).length;
+  return populatedGroupCount > 1;
 }
 
 export function buildThreadResumeUrl(threadId, options = {}) {
@@ -386,15 +386,18 @@ export function createThreadListViewModule(deps) {
       body.style.height = expanded ? "" : "0px";
       body.style.opacity = "";
       body.style.transform = "";
+      body.style.transitionDelay = "";
     };
 
-    const animateGroupBody = (body, expanded, { immediate = false } = {}) => {
+    const animateGroupBody = (body, expanded, { immediate = false, fromHeight = null, delayMs = 0 } = {}) => {
       if (!body) return;
       if (immediate) {
         finishGroupBodyAnimation(body, expanded);
         return;
       }
-      const currentHeight = Math.max(0, body.getBoundingClientRect().height);
+      const currentHeight = Number.isFinite(fromHeight)
+        ? Math.max(0, Number(fromHeight))
+        : Math.max(0, body.getBoundingClientRect().height);
       const targetHeight = expanded ? Math.max(0, body.scrollHeight) : 0;
       if (currentHeight === targetHeight) {
         finishGroupBodyAnimation(body, expanded);
@@ -410,6 +413,7 @@ export function createThreadListViewModule(deps) {
       body.style.height = `${currentHeight}px`;
       body.style.opacity = currentHeight > 0 ? "1" : expanded ? "0" : "1";
       body.style.transform = currentHeight > 0 ? "translateY(0)" : "translateY(-4px)";
+      body.style.transitionDelay = `${Math.max(0, Number(delayMs) || 0)}ms`;
 
       const handleTransitionEnd = (event) => {
         if (event?.target !== body || event?.propertyName !== "height") return;
@@ -432,6 +436,35 @@ export function createThreadListViewModule(deps) {
       Array.from(list?.children || []).find(
         (node) => String(node?.getAttribute?.("data-group-key") || "") === String(groupKey)
       ) || null;
+
+    const GROUP_EXPANDED_REVEAL_OFFSET_MS = 220;
+    const resolveGroupEnterDelayMs = () => (animateEnter ? nextGroupEnterDelayMs() : 0);
+    const resolveExpandedGroupRevealDelayMs = (groupEnterDelayMs) =>
+      animateEnter ? groupEnterDelayMs + GROUP_EXPANDED_REVEAL_OFFSET_MS : groupEnterDelayMs;
+
+    const renderExpandedGroupThreads = (body, items, groupEnterDelayMs, groupKey) => {
+      const expandedGroupRevealDelayMs = resolveExpandedGroupRevealDelayMs(groupEnterDelayMs);
+      const animateExpandedGroupCards =
+        !state.collapsedWorkspaceKeys.has(groupKey) &&
+        (animateEnter || expandAnimateGroupKeys.has(String(groupKey)));
+      for (const thread of items) {
+        body.appendChild(
+          renderThreadCard(thread, {
+            expandEnter: animateExpandedGroupCards,
+            expandEnterBaseDelayMs: animateEnter ? expandedGroupRevealDelayMs : 0,
+          })
+        );
+      }
+    };
+
+    const applyInitialGroupBodyState = (body, collapsed, groupEnterDelayMs) => {
+      const expandedGroupRevealDelayMs = resolveExpandedGroupRevealDelayMs(groupEnterDelayMs);
+      animateGroupBody(body, !collapsed, {
+        immediate: !animateEnter || collapsed,
+        fromHeight: animateEnter && !collapsed ? 0 : null,
+        delayMs: animateEnter && !collapsed ? expandedGroupRevealDelayMs : 0,
+      });
+    };
 
     const setRenderedGroupExpanded = (groupKey, expanded, options) => {
       const group = findRenderedGroupByKey(groupKey);
@@ -530,7 +563,7 @@ export function createThreadListViewModule(deps) {
     const query = state.threadSearchQuery.trim().toLowerCase();
     const entries = buildWorkspaceEntries(sourceItems, workspaceKeyOfThread);
     groupCount = entries.length;
-    const staggerGroupEnter = shouldStaggerThreadGroupEnter(entries, state.collapsedWorkspaceKeys);
+    const staggerGroupEnter = shouldStaggerThreadGroupEnter(entries);
     let threadEnterIndex = 0;
     let threadExpandEnterIndex = 0;
     let groupEnterIndex = 0;
@@ -607,7 +640,11 @@ export function createThreadListViewModule(deps) {
       card.className = `itemCard${id && id === state.activeThreadId ? " active" : ""}`;
       if (!!options.expandEnter) {
         card.classList.add("threadExpandEnter");
-        card.style.setProperty("--thread-expand-enter-delay", `${nextThreadExpandEnterDelayMs()}ms`);
+        const baseDelayMs = Math.max(0, Number(options.expandEnterBaseDelayMs) || 0);
+        card.style.setProperty(
+          "--thread-expand-enter-delay",
+          `${baseDelayMs + nextThreadExpandEnterDelayMs()}ms`
+        );
       } else if (animateEnter || !!options.animateEnter || (id && animateThreadIds.has(id))) {
         card.classList.add("threadEnter");
         card.style.setProperty("--thread-enter-delay", `${nextThreadEnterDelayMs()}ms`);
@@ -744,9 +781,10 @@ export function createThreadListViewModule(deps) {
       if (!sectionItems.length) return;
       const group = documentRef.createElement("section");
       group.className = "groupCard";
+      const groupEnterDelayMs = resolveGroupEnterDelayMs();
       if (animateEnter) {
         group.classList.add("groupEnter");
-        group.style.setProperty("--thread-group-enter-delay", `${nextGroupEnterDelayMs()}ms`);
+        group.style.setProperty("--thread-group-enter-delay", `${groupEnterDelayMs}ms`);
       }
       group.setAttribute("data-group-key", String(sectionKey));
       const header = documentRef.createElement("button");
@@ -774,12 +812,9 @@ export function createThreadListViewModule(deps) {
       const body = documentRef.createElement("div");
       body.className = "groupBody";
       if (collapsed) body.classList.add("collapsed");
-      const animateExpandedGroupCards = !collapsed && expandAnimateGroupKeys.has(String(sectionKey));
-      for (const thread of sectionItems) {
-        body.appendChild(renderThreadCard(thread, { expandEnter: animateExpandedGroupCards }));
-      }
+      renderExpandedGroupThreads(body, sectionItems, groupEnterDelayMs, sectionKey);
       group.appendChild(body);
-      animateGroupBody(body, !collapsed, { immediate: true });
+      applyInitialGroupBodyState(body, collapsed, groupEnterDelayMs);
       const prevTop = prevGroupScroll.get(String(sectionKey));
       if (!collapsed && typeof prevTop === "number" && Number.isFinite(prevTop) && prevTop > 0) {
         pendingScrollRestores.push({ node: body, top: prevTop });
@@ -796,9 +831,10 @@ export function createThreadListViewModule(deps) {
       renderedThreads += filtered.length;
       const group = documentRef.createElement("section");
       group.className = "groupCard";
+      const groupEnterDelayMs = resolveGroupEnterDelayMs();
       if (animateEnter) {
         group.classList.add("groupEnter");
-        group.style.setProperty("--thread-group-enter-delay", `${nextGroupEnterDelayMs()}ms`);
+        group.style.setProperty("--thread-group-enter-delay", `${groupEnterDelayMs}ms`);
       }
       group.setAttribute("data-group-key", String(workspaceKey));
       const header = documentRef.createElement("button");
@@ -824,12 +860,9 @@ export function createThreadListViewModule(deps) {
       const body = documentRef.createElement("div");
       body.className = "groupBody";
       if (collapsed) body.classList.add("collapsed");
-      const animateExpandedGroupCards = !collapsed && expandAnimateGroupKeys.has(String(workspaceKey));
-      for (const thread of filtered) {
-        body.appendChild(renderThreadCard(thread, { expandEnter: animateExpandedGroupCards }));
-      }
+      renderExpandedGroupThreads(body, filtered, groupEnterDelayMs, workspaceKey);
       group.appendChild(body);
-      animateGroupBody(body, !collapsed, { immediate: true });
+      applyInitialGroupBodyState(body, collapsed, groupEnterDelayMs);
       const prevTop = prevGroupScroll.get(String(workspaceKey));
       if (!collapsed && typeof prevTop === "number" && Number.isFinite(prevTop) && prevTop > 0) {
         pendingScrollRestores.push({ node: body, top: prevTop });

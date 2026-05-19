@@ -188,13 +188,13 @@ describe("threadListView", () => {
     ]);
   });
 
-  it("disables group stagger when any section is already expanded", () => {
+  it("keeps group stagger for sidebar entry even when a section is already expanded", () => {
     const entries = [
       ["project", [{ id: "1" }], "project"],
       ["yiyou", [{ id: "2" }], "yiyou"],
     ];
     expect(shouldStaggerThreadGroupEnter(entries, new Set(["project", "yiyou"]))).toBe(true);
-    expect(shouldStaggerThreadGroupEnter(entries, new Set(["yiyou"]))).toBe(false);
+    expect(shouldStaggerThreadGroupEnter(entries, new Set(["yiyou"]))).toBe(true);
   });
 
   it("keeps expanded group motion on one body node while staggering expanded chat cards", () => {
@@ -517,6 +517,113 @@ describe("threadListView", () => {
     expect(list.children[1]).toBe(betaGroup);
     expect(betaGroup.children[1]).toBe(betaBody);
     expect(betaBody.classList.contains("collapsed")).toBe(true);
+  });
+
+  it("animates a later expanded group as a continuous reveal during list enter", () => {
+    const list = createFakeElement("div");
+    const body = createFakeElement("body");
+    body.classList.add("drawer-left-open");
+    const state = {
+      threadItems: [],
+      threadItemsAll: [],
+      threadSearchQuery: "",
+      threadListLoading: false,
+      threadListLoadingTarget: "",
+      workspaceAvailability: { windowsInstalled: true, wsl2Installed: true },
+      threadListPendingVisibleAnimationByWorkspace: { windows: true },
+      threadListAnimationHoldUntilByWorkspace: {},
+      threadListVisibleOpenAnimationUntil: 0,
+      threadListAnimateNextRender: false,
+      threadListAnimateThreadIds: new Set(),
+      threadListExpandAnimateGroupKeys: new Set(),
+      threadListCollapseAnimateGroupKeys: new Set(),
+      threadListChevronOpenAnimateKeys: new Set(),
+      threadListChevronCloseAnimateKeys: new Set(),
+      threadListSkipScrollRestoreOnce: false,
+      collapsedWorkspaceKeys: new Set(["alpha"]),
+      threadGroupCollapseInitializedByWorkspace: { windows: true, wsl2: true },
+      favoriteThreadIds: new Set(),
+    };
+    const module = createThreadListViewModule({
+      state,
+      byId(id) {
+        return id === "threadList" ? list : null;
+      },
+      escapeHtml(value) {
+        return String(value || "");
+      },
+      normalizeWorkspaceTarget(value) {
+        return String(value || "").toLowerCase() === "wsl2" ? "wsl2" : "windows";
+      },
+      getWorkspaceTarget() {
+        return "windows";
+      },
+      hasDualWorkspaceTargets() {
+        return true;
+      },
+      pushThreadAnimDebug() {},
+      isThreadListActuallyVisible() {
+        return true;
+      },
+      workspaceKeyOfThread(thread) {
+        return thread.workspace;
+      },
+      truncateLabel(value) {
+        return String(value || "");
+      },
+      relativeTimeLabel() {
+        return "";
+      },
+      pickThreadTimestamp() {
+        return Date.now();
+      },
+      setMainTab() {},
+      setMobileTab() {},
+      setActiveThread() {},
+      setChatOpening() {},
+      detectThreadWorkspaceTarget(thread) {
+        return thread.workspace;
+      },
+      loadThreadMessages: async () => {},
+      api: async () => ({}),
+      setStatus() {},
+      scheduleThreadRefresh() {},
+      scrollToBottomReliable() {},
+      windowRef: { getComputedStyle() { return { paddingTop: "0px", paddingBottom: "0px" }; } },
+      documentRef: {
+        body,
+        createElement(tagName) {
+          return createFakeElement(tagName);
+        },
+      },
+      requestAnimationFrameRef(callback) {
+        callback();
+        return 1;
+      },
+      performanceRef: { now() { return 0; } },
+      localStorageRef: { setItem() {} },
+      FAVORITE_THREADS_KEY: "favorites",
+    });
+    state.threadItems = [
+      { id: "alpha-1", workspace: "alpha", title: "Alpha 1" },
+      { id: "alpha-2", workspace: "alpha", title: "Alpha 2" },
+      { id: "beta-1", workspace: "beta", title: "Beta 1" },
+      { id: "beta-2", workspace: "beta", title: "Beta 2" },
+      { id: "gamma-1", workspace: "gamma", title: "Gamma 1" },
+      { id: "gamma-2", workspace: "gamma", title: "Gamma 2" },
+    ];
+
+    module.renderThreads(state.threadItems);
+
+    const betaGroup = list.children[1];
+    const betaBody = betaGroup.children[1];
+    expect(betaBody.classList.contains("is-animating")).toBe(true);
+    expect(betaBody.style.height).toBe("86px");
+    expect(betaBody.style.transitionDelay).toBe("340ms");
+    expect(betaBody.children[0].classList.contains("threadExpandEnter")).toBe(true);
+    expect(betaBody.children[0].classList.contains("threadEnter")).toBe(false);
+    expect(betaBody.children[0].style["--thread-expand-enter-delay"]).toBe("340ms");
+    expect(betaBody.children[1].style["--thread-expand-enter-delay"]).toBe("360ms");
   });
 
   it("renders grouped threads without touching entries before initialization", () => {
