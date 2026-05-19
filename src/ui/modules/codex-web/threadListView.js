@@ -541,9 +541,16 @@ export function createThreadListViewModule(deps) {
       list.appendChild(plain);
     };
 
-    const skipScrollRestore = !!state.threadListSkipScrollRestoreOnce;
+    const drawerScrollResetActive =
+      documentRef.body.classList.contains("drawer-left-open") ||
+      documentRef.body.classList.contains("drawer-left-opening") ||
+      documentRef.body.classList.contains("drawer-left-previewing");
+    const skipScrollRestore = !!state.threadListSkipScrollRestoreOnce || drawerScrollResetActive;
     state.threadListSkipScrollRestoreOnce = false;
     const prevListScrollTop = list?.scrollTop ?? 0;
+    if (drawerScrollResetActive) {
+      list.scrollTop = 0;
+    }
     const shouldRestoreListScroll = !skipScrollRestore && prevListScrollTop > 0;
     const prevGroupScroll = new Map();
     const pendingScrollRestores = [];

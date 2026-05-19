@@ -385,6 +385,72 @@ describe("historyRenderApply", () => {
     ]);
   });
 
+  it("renders assistant history immediately during resume reconciliation instead of replaying it", async () => {
+    const added = [];
+    const replayed = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRolloutPath: "C:\\repo\\.codex\\sessions\\rollout.jsonl",
+      activeThreadStarted: true,
+      activeThreadMessages: [],
+      chatShouldStickToBottom: false,
+    };
+
+    await applyFullHistoryRender({
+      state,
+      threadId: "thread-1",
+      messages: [
+        { role: "user", text: "hi", kind: "" },
+        { role: "assistant", text: "done", kind: "" },
+      ],
+      prevMessages: [{ role: "user", text: "hi", kind: "" }],
+      box: null,
+      preservedScrollTop: null,
+      inlineCommentaryArchiveCount: 0,
+      renderSig: "thread-1::assistant",
+      toolCount: 0,
+      forceFullRender: false,
+      options: { disableHistoryReplay: true },
+      historyCommentary: null,
+      liveCommentarySnapshot: null,
+      deps: {
+        renderMessageBody() {
+          return "";
+        },
+        addChat(role, text, options = {}) {
+          added.push({ role, text, options });
+          return {};
+        },
+        buildMsgNode() {
+          return {};
+        },
+        clearChatMessages() {},
+        renderChatFull: async () => {},
+        pushLiveDebugEvent() {},
+        scrollChatToBottom() {},
+        canStartChatLiveFollow() {
+          return false;
+        },
+        maybeScheduleChatFollow() {},
+        scrollToBottomReliable() {},
+        scheduleChatLiveFollow() {},
+        replayAssistantHistoryMessage(node, message, options = {}) {
+          replayed.push({
+            text: String(message?.text || ""),
+            fromText: String(options.fromText || ""),
+          });
+          return true;
+        },
+        finalizeThreadRenderEffects() {},
+      },
+    });
+
+    expect(added).toEqual([
+      expect.objectContaining({ role: "assistant", text: "done" }),
+    ]);
+    expect(replayed).toEqual([]);
+  });
+
   it("keeps commentary above the final assistant when history catches up to a live assistant", async () => {
     const userNode = createFakeNode({ className: "msg user", text: "hi" });
     const liveAssistantNode = createFakeNode({ className: "msg assistant", text: "draft final" });

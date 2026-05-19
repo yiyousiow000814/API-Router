@@ -4,8 +4,9 @@ import { reconcileTimelineMessages } from "./historyTimelineReconcile.js";
 import { setActiveTimelineMessages } from "./activeTimelineState.js";
 import { beginUiActivity } from "./uiActivity.js";
 
-function canReplayAssistantHistory({ state, threadId, forceFullRender, previousMessages }) {
+function canReplayAssistantHistory({ state, threadId, forceFullRender, previousMessages, options }) {
   if (forceFullRender) return false;
+  if (options?.disableHistoryReplay === true) return false;
   if (String(state?.activeThreadId || threadId || "").trim() !== String(threadId || "").trim()) return false;
   if (!String(state?.activeThreadRolloutPath || "").trim()) return false;
   if (state?.chatOpening === true) return false;
@@ -126,6 +127,7 @@ export function applyWindowedHistoryRender(params = {}) {
       threadId,
       forceFullRender,
       previousMessages: prevMessages,
+      options,
     }),
     replayAssistantHistoryMessage,
   };
@@ -337,6 +339,7 @@ export async function applyFullHistoryRender(params = {}) {
       threadId,
       forceFullRender,
       previousMessages: prevMessages,
+      options,
     }),
     replayAssistantHistoryMessage,
   };
