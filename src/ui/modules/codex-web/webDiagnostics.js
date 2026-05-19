@@ -63,6 +63,9 @@ export function createCodexWebDiagnostics(deps) {
   let installed = false;
   let flushTimer = 0;
   let heartbeatTimer = 0;
+  let flushInFlight = null;
+  let flushRerunRequested = false;
+  let queuedFlushExtra = null;
   let startupFrameMonitorUntil = 0;
   let interactionFrameMonitorUntil = 0;
   let interactionFrameMonitorScheduled = false;
@@ -108,6 +111,18 @@ export function createCodexWebDiagnostics(deps) {
     }, batchDelayMs);
   }
 
+  function mergeFlushExtra(extra = {}) {
+    if (!extra || typeof extra !== "object") return;
+    if (!queuedFlushExtra) {
+      queuedFlushExtra = { ...extra };
+      return;
+    }
+    queuedFlushExtra = {
+      ...queuedFlushExtra,
+      ...extra,
+    };
+  }
+
   function enqueue(key, value) {
     if (!queue[key]) return;
     queue[key].push({
@@ -123,43 +138,63 @@ export function createCodexWebDiagnostics(deps) {
 
   async function flush(extra = {}) {
     if (!fetchRef) return;
-    const traces = queue.traces.slice(0, 256);
-    const invokeResults = queue.invokeResults.slice(0, 256);
-    const localTasks = queue.localTasks.slice(0, 128);
-    const longTasks = queue.longTasks.slice(0, 64);
-    const frameStalls = queue.frameStalls.slice(0, 64);
-    const frontendErrors = queue.frontendErrors.slice(0, 64);
-    const body = {
-      ...extra,
-      traces,
-      invokeResults,
-      localTasks,
-      longTasks,
-      frameStalls,
-      frontendErrors,
-    };
-    const hasQueued =
-      body.traces.length ||
-      body.invokeResults.length ||
-      body.localTasks.length ||
-      body.longTasks.length ||
-      body.frameStalls.length ||
-      body.frontendErrors.length ||
-      body.heartbeat;
-    if (!hasQueued) return;
-    try {
-      await fetchRef("/codex/ui-diagnostics", {
-        method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify(body),
-      });
-      queue.traces.splice(0, traces.length);
-      queue.invokeResults.splice(0, invokeResults.length);
-      queue.localTasks.splice(0, localTasks.length);
-      queue.longTasks.splice(0, longTasks.length);
-      queue.frameStalls.splice(0, frameStalls.length);
-      queue.frontendErrors.splice(0, frontendErrors.length);
-    } catch {}
+    if (flushInFlight) {
+      flushRerunRequested = true;
+      mergeFlushExtra(extra);
+      return flushInFlight;
+    }
+
+    let nextExtra = extra;
+    flushInFlight = (async () => {
+      do {
+        flushRerunRequested = false;
+        const traces = queue.traces.slice(0, 256);
+        const invokeResults = queue.invokeResults.slice(0, 256);
+        const localTasks = queue.localTasks.slice(0, 128);
+        const longTasks = queue.longTasks.slice(0, 64);
+        const frameStalls = queue.frameStalls.slice(0, 64);
+        const frontendErrors = queue.frontendErrors.slice(0, 64);
+        const body = {
+          ...nextExtra,
+          traces,
+          invokeResults,
+          localTasks,
+          longTasks,
+          frameStalls,
+          frontendErrors,
+        };
+        const hasQueued =
+          body.traces.length ||
+          body.invokeResults.length ||
+          body.localTasks.length ||
+          body.longTasks.length ||
+          body.frameStalls.length ||
+          body.frontendErrors.length ||
+          body.heartbeat;
+        nextExtra = null;
+        if (!hasQueued) continue;
+        try {
+          await fetchRef("/codex/ui-diagnostics", {
+            method: "POST",
+            headers: authHeaders(),
+            body: JSON.stringify(body),
+          });
+          queue.traces.splice(0, traces.length);
+          queue.invokeResults.splice(0, invokeResults.length);
+          queue.localTasks.splice(0, localTasks.length);
+          queue.longTasks.splice(0, longTasks.length);
+          queue.frameStalls.splice(0, frameStalls.length);
+          queue.frontendErrors.splice(0, frontendErrors.length);
+        } catch {}
+        if (queuedFlushExtra) {
+          nextExtra = queuedFlushExtra;
+          queuedFlushExtra = null;
+        }
+      } while (flushRerunRequested || queuedFlushExtra);
+    })().finally(() => {
+      flushInFlight = null;
+    });
+    return flushInFlight;
   }
 
   function recordApiResult({ command, elapsedMs, ok, errorMessage }) {

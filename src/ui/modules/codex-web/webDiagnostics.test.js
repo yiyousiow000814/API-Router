@@ -163,6 +163,71 @@ describe("webDiagnostics", () => {
     ]);
   });
 
+  it("does not duplicate or drop queued diagnostics across overlapping flushes", async () => {
+    const requests = [];
+    const resolvers = [];
+    const diagnostics = createCodexWebDiagnostics({
+      state: {
+        token: "test-token",
+        activeMainTab: "chat",
+      },
+      windowRef: { addEventListener() {} },
+      documentRef: { visibilityState: "visible" },
+      fetchRef: (_path, options) => {
+        const body = JSON.parse(options.body);
+        requests.push(body);
+        return new Promise((resolve) => {
+          resolvers.push(() => resolve({ ok: true }));
+        });
+      },
+      requestAnimationFrameRef: null,
+      PerformanceObserverRef: null,
+      setTimeoutRef: vi.fn(),
+      clearTimeoutRef: vi.fn(),
+      setIntervalRef: vi.fn(),
+      clearIntervalRef: vi.fn(),
+      nowRef: () => 1000,
+      localTaskThresholdMs: 10,
+    });
+
+    diagnostics.recordLocalTask({
+      command: "first event",
+      elapsedMs: 38,
+      fields: { order: 1 },
+    });
+
+    const firstFlush = diagnostics.flush();
+    const overlappingFlush = diagnostics.flush();
+
+    diagnostics.recordLocalTask({
+      command: "second event",
+      elapsedMs: 41,
+      fields: { order: 2 },
+    });
+
+    resolvers.shift()();
+    await Promise.resolve();
+    await Promise.resolve();
+    resolvers.shift()();
+    await firstFlush;
+    await overlappingFlush;
+    await diagnostics.flush();
+
+    expect(requests).toHaveLength(2);
+    expect(requests[0].localTasks).toEqual([
+      expect.objectContaining({
+        command: "first event",
+        elapsedMs: 38,
+      }),
+    ]);
+    expect(requests[1].localTasks).toEqual([
+      expect.objectContaining({
+        command: "second event",
+        elapsedMs: 41,
+      }),
+    ]);
+  });
+
   it("keeps monitoring frames after scroll-like interactions", async () => {
     const requests = [];
     const timers = [];
