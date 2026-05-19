@@ -317,44 +317,77 @@ export function createThreadListViewModule(deps) {
     let currentWorkspaceKey = "";
     let groupCount = 0;
     let renderedThreads = 0;
+    const estimateNodeContentHeight = (node) => {
+      if (!node) return 0;
+      const measuredScrollHeight = Number(node.scrollHeight || 0);
+      if (measuredScrollHeight > 0) return measuredScrollHeight;
+      const measuredClientHeight = Number(node.clientHeight || 0);
+      const children = Array.from(node.children || []);
+      if (!children.length) return measuredClientHeight > 0 ? measuredClientHeight : 0;
+      let maxBottom = 0;
+      for (const child of children) {
+        const childTop = Number(child?.offsetTop || 0);
+        const childHeight = Math.max(
+          Number(child?.scrollHeight || 0),
+          Number(child?.clientHeight || 0),
+          estimateNodeContentHeight(child),
+          38
+        );
+        maxBottom = Math.max(maxBottom, childTop + childHeight);
+      }
+      return Math.max(measuredClientHeight, maxBottom);
+    };
     try {
-    const list = byId("threadList");
-    if (!list) return;
-    currentWorkspaceKey = normalizeWorkspaceTarget(getWorkspaceTarget());
-    const pendingVisibleAnimation =
-      !!state.threadListPendingVisibleAnimationByWorkspace?.[currentWorkspaceKey];
-    const listActuallyVisible = isThreadListActuallyVisible();
-    const openWindowActive =
-      documentRef.body.classList.contains("drawer-left-open") &&
-      sourceItems.length > 0 &&
-      Date.now() < Math.max(0, Number(state.threadListVisibleOpenAnimationUntil || 0));
-    const animateEnter =
-      !!state.threadListAnimateNextRender ||
-      openWindowActive ||
-      (pendingVisibleAnimation && listActuallyVisible && sourceItems.length > 0);
-    if (openWindowActive && animateEnter) {
-      state.threadListVisibleOpenAnimationUntil = 0;
-    }
-    if (animateEnter && sourceItems.length > 0 && documentRef.body.classList.contains("drawer-left-open")) {
-      state.threadListAnimationHoldUntilByWorkspace[currentWorkspaceKey] = Date.now() + 420;
-    }
-    pushThreadAnimDebug("renderThreads", {
-      sourceCount: sourceItems.length,
-      pendingVisibleAnimation,
-      listActuallyVisible,
-      animateEnter,
-      animateNextRender: !!state.threadListAnimateNextRender,
-      holdUntilMs:
-        Math.max(0, Number(state.threadListAnimationHoldUntilByWorkspace[currentWorkspaceKey] || 0)) -
-        Date.now(),
-      visibleOpenUntilMs:
-        Math.max(0, Number(state.threadListVisibleOpenAnimationUntil || 0)) - Date.now(),
-    });
+      const list = byId("threadList");
+      if (!list) return;
+      const applyListScrollability = () => {
+        const contentHeight = estimateNodeContentHeight(list);
+        const viewportHeight = Number(list.clientHeight || 0);
+        const canScroll = viewportHeight > 0 && contentHeight > viewportHeight + 1;
+        if (canScroll) {
+          list.style.overflowY = "auto";
+          list.style.touchAction = "pan-y";
+          return;
+        }
+        list.style.overflowY = "hidden";
+        list.style.touchAction = "none";
+        list.scrollTop = 0;
+      };
+      currentWorkspaceKey = normalizeWorkspaceTarget(getWorkspaceTarget());
+      const pendingVisibleAnimation =
+        !!state.threadListPendingVisibleAnimationByWorkspace?.[currentWorkspaceKey];
+      const listActuallyVisible = isThreadListActuallyVisible();
+      const openWindowActive =
+        documentRef.body.classList.contains("drawer-left-open") &&
+        sourceItems.length > 0 &&
+        Date.now() < Math.max(0, Number(state.threadListVisibleOpenAnimationUntil || 0));
+      const animateEnter =
+        !!state.threadListAnimateNextRender ||
+        openWindowActive ||
+        (pendingVisibleAnimation && listActuallyVisible && sourceItems.length > 0);
+      if (openWindowActive && animateEnter) {
+        state.threadListVisibleOpenAnimationUntil = 0;
+      }
+      if (animateEnter && sourceItems.length > 0 && documentRef.body.classList.contains("drawer-left-open")) {
+        state.threadListAnimationHoldUntilByWorkspace[currentWorkspaceKey] = Date.now() + 420;
+      }
+      pushThreadAnimDebug("renderThreads", {
+        sourceCount: sourceItems.length,
+        pendingVisibleAnimation,
+        listActuallyVisible,
+        animateEnter,
+        animateNextRender: !!state.threadListAnimateNextRender,
+        holdUntilMs:
+          Math.max(0, Number(state.threadListAnimationHoldUntilByWorkspace[currentWorkspaceKey] || 0)) -
+          Date.now(),
+        visibleOpenUntilMs:
+          Math.max(0, Number(state.threadListVisibleOpenAnimationUntil || 0)) - Date.now(),
+      });
 
-    const animateThreadIds =
-      state.threadListAnimateThreadIds instanceof Set ? state.threadListAnimateThreadIds : new Set();
-    const expandAnimateGroupKeys =
-      state.threadListExpandAnimateGroupKeys instanceof Set ? state.threadListExpandAnimateGroupKeys : new Set();
+      const animateThreadIds =
+        state.threadListAnimateThreadIds instanceof Set ? state.threadListAnimateThreadIds : new Set();
+      const expandAnimateGroupKeys =
+        state.threadListExpandAnimateGroupKeys instanceof Set ? state.threadListExpandAnimateGroupKeys : new Set();
     const collapseAnimateGroupKeys =
       state.threadListCollapseAnimateGroupKeys instanceof Set ? state.threadListCollapseAnimateGroupKeys : new Set();
     const chevronOpenAnimateKeys =
@@ -581,6 +614,7 @@ export function createThreadListViewModule(deps) {
     if (!entries.length) {
       if (state.threadListLoading && (!state.threadListLoadingTarget || state.threadListLoadingTarget === getWorkspaceTarget())) {
         renderThreadListState("Loading chats...", "spinner");
+        applyListScrollability();
         state.threadListAnimateNextRender = false;
         state.threadListAnimateThreadIds = new Set();
         state.threadListExpandAnimateGroupKeys = new Set();
@@ -590,6 +624,7 @@ export function createThreadListViewModule(deps) {
         !state.workspaceAvailability.windowsInstalled && !state.workspaceAvailability.wsl2Installed;
       if (waitingWorkspaceDetection) {
         renderThreadListState("Waiting for WIN/WSL2...", "spinner");
+        applyListScrollability();
         state.threadListAnimateNextRender = false;
         state.threadListAnimateThreadIds = new Set();
         state.threadListExpandAnimateGroupKeys = new Set();
@@ -600,6 +635,7 @@ export function createThreadListViewModule(deps) {
       } else {
         renderThreadListState("No threads yet.");
       }
+      applyListScrollability();
       state.threadListAnimateNextRender = false;
       state.threadListAnimateThreadIds = new Set();
       state.threadListExpandAnimateGroupKeys = new Set();
@@ -882,6 +918,7 @@ export function createThreadListViewModule(deps) {
       if (state.threadListLoading) renderThreadListState("Loading chats...", "spinner");
       else renderThreadListState("Waiting for chats...", "spinner");
     }
+    applyListScrollability();
     if (pendingVisibleAnimation && listActuallyVisible && sourceItems.length > 0) {
       state.threadListPendingVisibleAnimationByWorkspace[currentWorkspaceKey] = false;
     }
