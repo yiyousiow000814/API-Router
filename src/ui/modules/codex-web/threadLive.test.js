@@ -10,6 +10,29 @@ import {
 import { ACTIVE_THREAD_LIVE_POLL_WS_FALLBACK_MS } from "./appState.js";
 
 describe("threadLive", () => {
+  function createFakeEventTarget() {
+    const listeners = new Map();
+    return {
+      style: {},
+      scrollTop: 0,
+      scrollHeight: 0,
+      clientHeight: 0,
+      contains(node) {
+        return node === this;
+      },
+      addEventListener(type, handler) {
+        const key = String(type || "");
+        const current = listeners.get(key) || [];
+        current.push(handler);
+        listeners.set(key, current);
+      },
+      dispatch(type, event = {}) {
+        const entries = listeners.get(String(type || "")) || [];
+        for (const handler of entries) handler(event);
+      },
+    };
+  }
+
   it("prefers connected interval only when ws is open and subscribed", () => {
     expect(resolveThreadAutoRefreshInterval(true, true, 20000, 3500)).toBe(20000);
     expect(resolveThreadAutoRefreshInterval(true, false, 20000, 3500)).toBe(3500);
@@ -694,6 +717,80 @@ describe("threadLive", () => {
       expect(refreshThreadCalls[0][0]).toBe("windows");
     } finally {
       Date.now = realNow;
+    }
+  });
+
+  it("does not arm pull-to-refresh when the mobile thread list is not scrollable", () => {
+    class FakeElement {}
+    const realElement = globalThis.Element;
+    globalThis.Element = FakeElement;
+    const list = Object.assign(new FakeElement(), createFakeEventTarget(), {
+      scrollTop: 0,
+      scrollHeight: 280,
+      clientHeight: 280,
+    });
+    const hint = Object.assign(new FakeElement(), createFakeEventTarget(), {
+      classList: {
+        add() {},
+        remove() {},
+      },
+    });
+    const hintText = Object.assign(new FakeElement(), createFakeEventTarget(), {
+      textContent: "",
+    });
+    const module = createThreadLiveModule({
+      state: {
+        threadPullRefreshing: false,
+      },
+      byId(id) {
+        if (id === "threadList") return list;
+        if (id === "threadPullHint") return hint;
+        if (id === "threadPullHintText") return hintText;
+        return null;
+      },
+      waitMs: async () => {},
+      setStatus() {},
+      refreshThreads: async () => {
+        throw new Error("refresh should not run for a non-scrollable list");
+      },
+      getWorkspaceTarget() {
+        return "windows";
+      },
+      loadThreadMessages: async () => {},
+      THREAD_PULL_REFRESH_TRIGGER_PX: 44,
+      THREAD_PULL_REFRESH_MAX_PX: 84,
+      THREAD_PULL_REFRESH_MIN_MS: 520,
+      THREAD_PULL_HINT_CLEAR_DELAY_MS: 160,
+      THREAD_AUTO_REFRESH_CONNECTED_MS: 20000,
+      THREAD_AUTO_REFRESH_DISCONNECTED_MS: 3500,
+      ACTIVE_THREAD_LIVE_POLL_MS: 1500,
+      WebSocketRef: { OPEN: 1 },
+    });
+
+    try {
+      module.wireThreadPullToRefresh();
+      const touchTarget = Object.assign(new FakeElement(), {
+        closest() {
+          return null;
+        },
+      });
+      list.dispatch("touchstart", {
+        touches: [{ clientY: 100 }],
+        target: touchTarget,
+      });
+      list.dispatch("touchmove", {
+        touches: [{ clientY: 164 }],
+        target: touchTarget,
+        preventDefault() {
+          throw new Error("preventDefault should not run when the list cannot scroll");
+        },
+      });
+      list.dispatch("touchend", {});
+
+      expect(list.style.transform || "").toBe("");
+      expect(hintText.textContent).toBe("");
+    } finally {
+      globalThis.Element = realElement;
     }
   });
 });
