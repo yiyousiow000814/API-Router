@@ -2,7 +2,7 @@ import { summarizeChatTimeline } from "./chatTimeline.js";
 import { decideHistoryRenderStrategy } from "./historyRenderStrategy.js";
 import { reconcileTimelineMessages } from "./historyTimelineReconcile.js";
 import { setActiveTimelineMessages } from "./activeTimelineState.js";
-import { beginUiActivity } from "../../uiActivity.js";
+import { beginUiActivity } from "./uiActivity.js";
 
 function canReplayAssistantHistory({ state, threadId, forceFullRender, previousMessages }) {
   if (forceFullRender) return false;

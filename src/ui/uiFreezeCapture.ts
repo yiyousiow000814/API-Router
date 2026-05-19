@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import { readUiActivitySnapshot } from './uiActivity.js'
+import { readUiActivitySnapshot } from './modules/codex-web/uiActivity.js'
 
 declare global {
   interface Window {

@@ -32,6 +32,14 @@ function isVisible(documentRef) {
   return String(documentRef?.visibilityState || "visible").trim().toLowerCase() !== "hidden";
 }
 
+function hasDocumentFocus(documentRef) {
+  try {
+    return documentRef?.hasFocus?.() !== false;
+  } catch {
+    return true;
+  }
+}
+
 function truncateMessage(value, maxLength = 500) {
   const text = String(value || "").trim();
   return text.length > maxLength ? text.slice(0, maxLength) : text;
@@ -85,6 +93,7 @@ export function createCodexWebDiagnostics(deps) {
   let interactionFrameMonitorUntil = 0;
   let interactionFrameMonitorScheduled = false;
   let lastInteractionSampleAt = 0;
+  let lastInteractionContext = null;
 
   function activePage() {
     return normalizeCodexWebActivePage(state);
@@ -261,16 +270,33 @@ export function createCodexWebDiagnostics(deps) {
   function recordFrameStall(elapsedMs, monitorKind) {
     if (elapsedMs < frameStallThresholdMs) return;
     const uiActivity = readUiActivitySnapshot(windowRef);
+    let activityKind = uiActivity?.kind || null;
+    let activityFields = uiActivity?.fields || null;
+    let activityAgeMs =
+      uiActivity && uiActivity.startedAtUnixMs > 0
+        ? Math.max(0, Math.round(nowRef() - uiActivity.startedAtUnixMs))
+        : null;
+    let activityDepth = uiActivity?.depth || 0;
+    if (!activityKind && monitorKind === "interaction" && lastInteractionContext) {
+      const ageMs = Math.max(0, Math.round(nowRef() - lastInteractionContext.atUnixMs));
+      activityKind = `interaction.${lastInteractionContext.eventType}`;
+      activityFields = {
+        source: "last_interaction",
+        eventType: lastInteractionContext.eventType,
+        ageMs,
+        visible: visible(),
+        hasFocus: hasDocumentFocus(documentRef),
+      };
+      activityAgeMs = ageMs;
+      activityDepth = 1;
+    }
     enqueue("frameStalls", {
       elapsedMs: Math.round(elapsedMs),
       monitorKind,
-      activityKind: uiActivity?.kind || null,
-      activityFields: uiActivity?.fields || null,
-      activityAgeMs:
-        uiActivity && uiActivity.startedAtUnixMs > 0
-          ? Math.max(0, Math.round(nowRef() - uiActivity.startedAtUnixMs))
-          : null,
-      activityDepth: uiActivity?.depth || 0,
+      activityKind,
+      activityFields,
+      activityAgeMs,
+      activityDepth,
     });
   }
 
@@ -310,10 +336,14 @@ export function createCodexWebDiagnostics(deps) {
 
   function installInteractionFrameMonitor() {
     if (!windowRef || !requestAnimationFrameRef) return;
-    const handler = () => {
+    const buildHandler = (eventName) => () => {
       const now = nowRef();
       if (now - lastInteractionSampleAt < interactionSampleCooldownMs) return;
       lastInteractionSampleAt = now;
+      lastInteractionContext = {
+        eventType: String(eventName || "unknown").trim() || "unknown",
+        atUnixMs: now,
+      };
       interactionFrameMonitorUntil = Math.max(
         interactionFrameMonitorUntil,
         now + interactionMonitorWindowMs
@@ -321,7 +351,7 @@ export function createCodexWebDiagnostics(deps) {
       startInteractionFrameMonitor();
     };
     for (const eventName of ["pointerdown", "keydown", "wheel", "touchstart"]) {
-      windowRef.addEventListener?.(eventName, handler, { passive: true });
+      windowRef.addEventListener?.(eventName, buildHandler(eventName), { passive: true });
     }
   }
 

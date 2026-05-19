@@ -1,4 +1,4 @@
-import { beginUiActivity } from "../../uiActivity.js";
+import { beginUiActivity } from "./uiActivity.js";
 
 export function chatDistanceFromMetrics(scrollHeight, scrollTop, clientHeight) {
   return Math.max(
@@ -188,6 +188,8 @@ export function createChatViewportModule(deps) {
 
     state.chatLiveFollowToken = (Number(state.chatLiveFollowToken || 0) + 1) | 0;
     const token = state.chatLiveFollowToken;
+    let lastPinnedKey = "";
+    let stablePinnedFrames = 0;
     const step = () => {
       state.chatLiveFollowRaf = 0;
       if (token !== state.chatLiveFollowToken) return;
@@ -204,6 +206,12 @@ export function createChatViewportModule(deps) {
       const targetTop = Math.max(0, box.scrollHeight - box.clientHeight);
       const dist = targetTop - box.scrollTop;
       if (dist <= 0.5) {
+        const pinnedKey = `${Math.round(box.scrollHeight)}:${Math.round(
+          box.clientHeight
+        )}:${Math.round(box.scrollTop)}`;
+        if (pinnedKey === lastPinnedKey) stablePinnedFrames += 1;
+        else stablePinnedFrames = 0;
+        lastPinnedKey = pinnedKey;
         if (
           now2 - Number(state.chatLiveFollowLastBtnMs || 0) >=
           CHAT_LIVE_FOLLOW_BTN_THROTTLE_MS
@@ -211,9 +219,15 @@ export function createChatViewportModule(deps) {
           state.chatLiveFollowLastBtnMs = now2;
           updateScrollToBottomBtn();
         }
+        if (stablePinnedFrames >= 6) {
+          stopChatLiveFollow();
+          return;
+        }
         state.chatLiveFollowRaf = requestAnimationFrameRef(step);
         return;
       }
+      stablePinnedFrames = 0;
+      lastPinnedKey = "";
 
       const rawStep = Math.max(1, dist * 0.22);
       const maxStep = Math.min(

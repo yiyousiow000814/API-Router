@@ -1,4 +1,4 @@
-import { beginUiActivity } from "../../uiActivity.js";
+import { beginUiActivity } from "./uiActivity.js";
 
 export function beginHistoryLoad(state = {}) {
   const reqSeq = (Number(state.activeThreadHistoryReqSeq || 0) + 1) | 0;

@@ -356,6 +356,74 @@ describe("webDiagnostics", () => {
     );
   });
 
+  it("falls back to the last interaction context when no UI activity is active", async () => {
+    const requests = [];
+    const listeners = {};
+    const rafCallbacks = [];
+    let now = 1000;
+    const diagnostics = createCodexWebDiagnostics({
+      state: {
+        token: "test-token",
+        activeMainTab: "chat",
+      },
+      windowRef: {
+        addEventListener(name, handler) {
+          listeners[name] = handler;
+        },
+      },
+      documentRef: {
+        visibilityState: "visible",
+        hasFocus() {
+          return true;
+        },
+      },
+      fetchRef: async (path, options) => {
+        requests.push({ path, body: JSON.parse(options.body), headers: options.headers });
+        return { ok: true };
+      },
+      requestAnimationFrameRef: vi.fn((fn) => {
+        rafCallbacks.push(fn);
+        return rafCallbacks.length;
+      }),
+      PerformanceObserverRef: null,
+      setTimeoutRef: vi.fn(),
+      clearTimeoutRef: vi.fn(),
+      setIntervalRef: vi.fn(),
+      clearIntervalRef: vi.fn(),
+      nowRef: () => now,
+      frameStallThresholdMs: 50,
+      interactionSampleCooldownMs: 0,
+      interactionMonitorWindowMs: 1000,
+    });
+
+    diagnostics.install();
+    requests.length = 0;
+    listeners.pointerdown();
+
+    now += 90;
+    rafCallbacks[1]();
+    await diagnostics.flush();
+
+    expect(requests.at(-1).body.frameStalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          activePage: "codex-web",
+          elapsedMs: 90,
+          monitorKind: "interaction",
+          activityKind: "interaction.pointerdown",
+          activityDepth: 1,
+          activityFields: expect.objectContaining({
+            source: "last_interaction",
+            eventType: "pointerdown",
+            ageMs: 90,
+            visible: true,
+            hasFocus: true,
+          }),
+        }),
+      ])
+    );
+  });
+
   it("captures visible sub-second animation jank by default", async () => {
     const requests = [];
     const listeners = {};
