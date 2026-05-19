@@ -51,6 +51,43 @@ describe("historyPageState", () => {
     expect(state.activeThreadHistoryStatusType).toBe("completed");
   });
 
+  it("preserves completed final turns when a running incomplete page is missing them", () => {
+    const completedTurn = {
+      id: "turn-final",
+      items: [
+        { type: "userMessage", content: [{ type: "input_text", text: "previous request" }] },
+        { type: "assistantMessage", phase: "final_answer", text: "previous final answer" },
+      ],
+    };
+    const state = {
+      activeThreadHistoryTurns: [
+        { id: "turn-old", items: [{ type: "userMessage" }] },
+        completedTurn,
+      ],
+      activeThreadHistoryThreadId: "thread-1",
+      activeThreadHistoryIncomplete: false,
+    };
+
+    const result = applyHistoryPageToState(state, "thread-1", {
+      page: { hasMore: false, incomplete: true, beforeCursor: "", totalTurns: 3 },
+      thread: {
+        id: "thread-1",
+        status: { type: "running" },
+        turns: [
+          { id: "turn-old", items: [{ type: "userMessage" }] },
+          { id: "turn-current", items: [{ type: "userMessage", content: [{ type: "input_text", text: "next" }] }] },
+        ],
+      },
+    });
+
+    expect(result.mergedTurns).toEqual([
+      { id: "turn-old", items: [{ type: "userMessage" }] },
+      completedTurn,
+      { id: "turn-current", items: [{ type: "userMessage", content: [{ type: "input_text", text: "next" }] }] },
+    ]);
+    expect(state.activeThreadHistoryIncomplete).toBe(true);
+  });
+
   it("treats terminal failed history as complete even when the page is still incomplete", () => {
     const state = {
       activeThreadHistoryTurns: [],
