@@ -4,6 +4,37 @@ export function shouldOpenDrawerWithAnimation(tab, wasThreadsOpen) {
   return tab === "threads" && !wasThreadsOpen;
 }
 
+export function applyMobileDrawerTabDom({
+  tab,
+  documentRef,
+  byId,
+  clearOpeningTimer,
+  scheduleOpeningClear,
+  openingMs = 220,
+  animateOpening = true,
+}) {
+  const body = documentRef?.body;
+  if (!body?.classList) return 0;
+  body.classList.remove("drawer-left-dragging", "drawer-left-previewing");
+  body?.style?.removeProperty?.("--drawer-left-drag-translate");
+  body?.style?.removeProperty?.("--drawer-left-backdrop-opacity");
+  body.classList.remove("drawer-left-open", "drawer-right-open");
+  body.classList.remove("drawer-left-opening", "drawer-right-opening");
+  clearOpeningTimer?.();
+  if (tab === "threads") body.classList.add("drawer-left-open");
+  if (tab === "tools") body.classList.add("drawer-right-open");
+  if (animateOpening && tab === "threads") body.classList.add("drawer-left-opening");
+  if (animateOpening && tab === "tools") body.classList.add("drawer-right-opening");
+  byId?.("mobileDrawerBackdrop")?.classList?.toggle?.("show", tab === "threads" || tab === "tools");
+  if (animateOpening && (tab === "threads" || tab === "tools")) {
+    const scheduler = scheduleOpeningClear || setTimeout;
+    return scheduler(() => {
+      body.classList.remove("drawer-left-opening", "drawer-right-opening");
+    }, openingMs);
+  }
+  return 0;
+}
+
 const EDGE_SWIPE_COMMIT_DELTA_PX = 12;
 const EDGE_SWIPE_VERTICAL_TOLERANCE_PX = 40;
 const EDGE_SWIPE_HORIZONTAL_LOCK_PX = 16;
@@ -180,31 +211,45 @@ export function createMobileShellModule(deps) {
     hideSlashCommandMenu();
     const wasThreadsOpen = documentRef.body.classList.contains("drawer-left-open");
     pushThreadAnimDebug("setMobileTab:start", { tab, wasThreadsOpen });
-    clearDrawerDragVisual();
-    documentRef.body.classList.remove("drawer-left-open", "drawer-right-open");
-    documentRef.body.classList.remove("drawer-left-opening", "drawer-right-opening");
-    if (state.drawerOpenPhaseTimer) {
+    const shouldAnimateOpen = shouldOpenDrawerWithAnimation(tab, wasThreadsOpen);
+    if (shouldAnimateOpen) {
+      state.threadListVisibleOpenAnimationUntil = Date.now() + 520;
+    }
+    const applySharedDrawerTab =
+      windowRef?.__webCodexApplyMobileDrawerTab ||
+      ((nextTab, options = {}) =>
+        applyMobileDrawerTabDom({
+          tab: nextTab,
+          documentRef,
+          byId,
+          clearOpeningTimer: options.clearOpeningTimer,
+          scheduleOpeningClear: options.scheduleOpeningClear,
+          openingMs: options.openingMs,
+          animateOpening: options.animateOpening,
+        }));
+    state.drawerOpenPhaseTimer =
+      applySharedDrawerTab(tab, {
+        clearOpeningTimer() {
+          if (!state.drawerOpenPhaseTimer) return;
+          clearTimeout(state.drawerOpenPhaseTimer);
+          state.drawerOpenPhaseTimer = 0;
+        },
+        scheduleOpeningClear(callback, ms) {
+          return setTimeout(() => {
+            callback();
+            if (state.drawerOpenPhaseTimer) state.drawerOpenPhaseTimer = 0;
+          }, ms);
+        },
+        openingMs: 220,
+        animateOpening: tab === "tools" || shouldAnimateOpen,
+      }) || 0;
+    if (tab !== "threads" && tab !== "tools" && state.drawerOpenPhaseTimer) {
       clearTimeout(state.drawerOpenPhaseTimer);
       state.drawerOpenPhaseTimer = 0;
     }
-    if (tab === "threads") documentRef.body.classList.add("drawer-left-open");
-    if (tab === "tools") documentRef.body.classList.add("drawer-right-open");
-    if (shouldOpenDrawerWithAnimation(tab, wasThreadsOpen)) {
-      state.threadListVisibleOpenAnimationUntil = Date.now() + 520;
-      documentRef.body.classList.add("drawer-left-opening");
-      state.drawerOpenPhaseTimer = setTimeout(() => {
-        documentRef.body.classList.remove("drawer-left-opening");
-        state.drawerOpenPhaseTimer = 0;
-      }, 220);
+    if (tab === "chat") {
+      clearDrawerDragVisual();
     }
-    if (tab === "tools") {
-      documentRef.body.classList.add("drawer-right-opening");
-      state.drawerOpenPhaseTimer = setTimeout(() => {
-        documentRef.body.classList.remove("drawer-right-opening");
-        state.drawerOpenPhaseTimer = 0;
-      }, 220);
-    }
-    byId("mobileDrawerBackdrop").classList.toggle("show", tab === "threads" || tab === "tools");
     if (tab !== "threads") {
       state.threadListPendingSidebarOpenAnimation = false;
       state.threadListVisibleOpenAnimationUntil = 0;
@@ -220,7 +265,7 @@ export function createMobileShellModule(deps) {
         clearScheduledTimeout: clearTimeout,
       });
     }
-    if (shouldOpenDrawerWithAnimation(tab, wasThreadsOpen)) {
+    if (shouldAnimateOpen) {
       const currentWorkspaceKey = normalizeWorkspaceTarget(getWorkspaceTarget());
       const hasThreadItems = Array.isArray(state.threadItems) && state.threadItems.length > 0;
       const animateVisibleThreadListNow = () => {
