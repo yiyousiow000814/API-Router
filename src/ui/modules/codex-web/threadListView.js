@@ -585,6 +585,7 @@ export function createThreadListViewModule(deps) {
     };
 
     const drawerScrollResetActive =
+      documentRef.body.classList.contains("drawer-left-open") ||
       documentRef.body.classList.contains("drawer-left-opening") ||
       documentRef.body.classList.contains("drawer-left-previewing");
     const skipScrollRestore = !!state.threadListSkipScrollRestoreOnce || drawerScrollResetActive;

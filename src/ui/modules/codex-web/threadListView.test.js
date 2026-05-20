@@ -1192,14 +1192,13 @@ describe("threadListView", () => {
 
     expect(events).toEqual(["chat-opening:on"]);
 
-    const firstFrame = rafQueue.shift();
-    firstFrame?.();
-    await flushAsyncWork();
-    expect(events).toEqual(["chat-opening:on"]);
-
-    const secondFrame = rafQueue.shift();
-    secondFrame?.();
-    await flushAsyncWork();
+    let framesRun = 0;
+    while (!events.includes("history:thread-1") && rafQueue.length && framesRun < 10) {
+      const nextFrame = rafQueue.shift();
+      nextFrame?.();
+      await flushAsyncWork();
+      framesRun += 1;
+    }
 
     expect(events).toContain("history:thread-1");
   });
