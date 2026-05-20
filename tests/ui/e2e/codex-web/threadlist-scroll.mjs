@@ -441,7 +441,35 @@ async function main() {
         if (shortList) shortList.scrollTop = 80;
         await sleep(80);
         const shortAfterSet = snapshot();
-        done({ ok: true, longBefore, longScrolled, longAfterRefresh, shortBefore, shortAfterSet });
+        if (typeof h.installFetchRecorder === 'function') h.installFetchRecorder();
+        const fetchCountBefore = typeof h.getFetchCalls === 'function' ? h.getFetchCalls().length : 0;
+        const originalFetch = window.fetch;
+        window.fetch = async (input, init) => {
+          const url = String(typeof input === 'string' ? input : input?.url || '');
+          if (/\\/codex\\/threads(?:\\?|$)/.test(url)) {
+            return new Response(JSON.stringify({ items: shortItems }), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            });
+          }
+          return originalFetch(input, init);
+        };
+        try {
+          const touchTarget = shortList.querySelector('.itemCard') || shortList;
+          const start = new Touch({ identifier: 1, target: touchTarget, clientX: 120, clientY: 120 });
+          const move = new Touch({ identifier: 1, target: touchTarget, clientX: 120, clientY: 230 });
+          shortList.dispatchEvent(new TouchEvent('touchstart', { bubbles: true, cancelable: true, touches: [start], targetTouches: [start], changedTouches: [start] }));
+          shortList.dispatchEvent(new TouchEvent('touchmove', { bubbles: true, cancelable: true, touches: [move], targetTouches: [move], changedTouches: [move] }));
+          shortList.dispatchEvent(new TouchEvent('touchend', { bubbles: true, cancelable: true, touches: [], targetTouches: [], changedTouches: [move] }));
+          await sleep(720);
+        } finally {
+          window.fetch = originalFetch;
+        }
+        const shortAfterPullRefresh = snapshot();
+        const fetchCalls = typeof h.getFetchCalls === 'function' ? h.getFetchCalls() : [];
+        const fetchCountAfter = fetchCalls.length;
+        const threadFetches = fetchCalls.slice(fetchCountBefore).filter((call) => /\\/codex\\/threads(?:\\?|$)/.test(String(call?.url || '')));
+        done({ ok: true, longBefore, longScrolled, longAfterRefresh, shortBefore, shortAfterSet, shortAfterPullRefresh, fetchCountBefore, fetchCountAfter, threadFetches });
       } catch (error) {
         done({ ok: false, error: String(error && error.message ? error.message : error) });
       }
@@ -449,7 +477,7 @@ async function main() {
     if (!refreshAndShortList?.ok) {
       throw new Error(`refresh/short-list matrix failed: ${refreshAndShortList?.error || 'unknown'}`)
     }
-    const { longBefore, longScrolled, longAfterRefresh, shortBefore, shortAfterSet } = refreshAndShortList
+    const { longBefore, longScrolled, longAfterRefresh, shortBefore, shortAfterSet, shortAfterPullRefresh } = refreshAndShortList
     if (!(Number(longBefore?.max || 0) > 40) || !/auto|scroll/i.test(String(longBefore?.overflowY || ''))) {
       throw new Error(`expanded long list should be scrollable before refresh: ${JSON.stringify(longBefore)}`)
     }
@@ -469,6 +497,9 @@ async function main() {
     }
     if (Number(shortAfterSet?.scrollTop || 0) !== 0 || Number(shortAfterSet?.max || 0) !== 0) {
       throw new Error(`short list accepted fake scroll: ${JSON.stringify(shortAfterSet)}`)
+    }
+    if (!Array.isArray(refreshAndShortList.threadFetches) || refreshAndShortList.threadFetches.length < 1) {
+      throw new Error(`short list pull-to-refresh did not trigger refresh: ${JSON.stringify(refreshAndShortList)}`)
     }
 
     console.log('[ui:e2e:codex-threadlist-scroll] PASS')

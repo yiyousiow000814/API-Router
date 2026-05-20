@@ -720,10 +720,11 @@ describe("threadLive", () => {
     }
   });
 
-  it("suppresses native panning without arming pull-to-refresh when the mobile thread list is not scrollable", () => {
+  it("allows pull-to-refresh when the mobile thread list fits without scrolling", () => {
     class FakeElement {}
     const realElement = globalThis.Element;
     globalThis.Element = FakeElement;
+    const refreshCalls = [];
     const list = Object.assign(new FakeElement(), createFakeEventTarget(), {
       scrollTop: 0,
       scrollHeight: 280,
@@ -750,8 +751,8 @@ describe("threadLive", () => {
       },
       waitMs: async () => {},
       setStatus() {},
-      refreshThreads: async () => {
-        throw new Error("refresh should not run for a non-scrollable list");
+      refreshThreads: async (...args) => {
+        refreshCalls.push(args);
       },
       getWorkspaceTarget() {
         return "windows";
@@ -780,7 +781,7 @@ describe("threadLive", () => {
         target: touchTarget,
       });
       list.dispatch("touchmove", {
-        touches: [{ clientY: 164 }],
+        touches: [{ clientY: 190 }],
         target: touchTarget,
         preventDefault() {
           preventedMoves += 1;
@@ -789,8 +790,8 @@ describe("threadLive", () => {
       list.dispatch("touchend", {});
 
       expect(preventedMoves).toBe(1);
-      expect(list.style.transform || "").toBe("");
-      expect(hintText.textContent).toBe("");
+      expect(refreshCalls).toEqual([["windows", { force: true }]]);
+      expect(hintText.textContent).toBe("Refreshing chats...");
     } finally {
       globalThis.Element = realElement;
     }

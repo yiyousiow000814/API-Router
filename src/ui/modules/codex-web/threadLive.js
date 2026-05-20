@@ -141,8 +141,7 @@ export function createThreadLiveModule(deps) {
     const hint = byId("threadPullHint");
     const hintText = byId("threadPullHintText");
     if (!list || !hint || !hintText) return;
-    const listCanPull = () =>
-      Math.max(0, Number(list.scrollHeight || 0) - Number(list.clientHeight || 0)) > 1;
+    const listCanPull = () => Number(list.clientHeight || 0) > 0;
     let startY = 0;
     let pullPx = 0;
     let tracking = false;
