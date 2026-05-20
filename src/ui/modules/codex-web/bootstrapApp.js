@@ -264,7 +264,12 @@ export function createBootstrapModule(deps) {
 
     startThreadAutoRefreshLoop();
     startActiveThreadLivePollLoop();
-    setMobileTab("chat");
+    const initialMobileMenuOpened =
+      documentRef.body?.dataset?.webCodexInitialMobileMenuOpened === "true" &&
+      documentRef.body?.classList?.contains?.("drawer-left-open");
+    if (!initialMobileMenuOpened) {
+      setMobileTab("chat");
+    }
     documentRef.body.classList.add("thread-list-bootstrapped");
     if (transportMode === "mock") {
       setStatus("Mock preview mode: local-only simulation on this device.");
