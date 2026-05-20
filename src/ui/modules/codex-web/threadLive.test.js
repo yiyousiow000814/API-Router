@@ -720,7 +720,7 @@ describe("threadLive", () => {
     }
   });
 
-  it("does not arm pull-to-refresh when the mobile thread list is not scrollable", () => {
+  it("suppresses native panning without arming pull-to-refresh when the mobile thread list is not scrollable", () => {
     class FakeElement {}
     const realElement = globalThis.Element;
     globalThis.Element = FakeElement;
@@ -768,6 +768,7 @@ describe("threadLive", () => {
     });
 
     try {
+      let preventedMoves = 0;
       module.wireThreadPullToRefresh();
       const touchTarget = Object.assign(new FakeElement(), {
         closest() {
@@ -782,11 +783,12 @@ describe("threadLive", () => {
         touches: [{ clientY: 164 }],
         target: touchTarget,
         preventDefault() {
-          throw new Error("preventDefault should not run when the list cannot scroll");
+          preventedMoves += 1;
         },
       });
       list.dispatch("touchend", {});
 
+      expect(preventedMoves).toBe(1);
       expect(list.style.transform || "").toBe("");
       expect(hintText.textContent).toBe("");
     } finally {

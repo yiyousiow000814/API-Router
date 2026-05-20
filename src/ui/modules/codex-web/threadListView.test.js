@@ -822,6 +822,7 @@ describe("threadListView", () => {
     expect(list.style.overflowY).toBe("hidden");
     expect(list.style.touchAction).toBe("none");
     expect(list.style.overscrollBehaviorY).toBe("none");
+    expect(list.style.webkitOverflowScrolling).toBe("auto");
   });
 
   it("renders grouped threads without touching entries before initialization", () => {

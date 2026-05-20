@@ -193,6 +193,7 @@ export function createThreadLiveModule(deps) {
       (event) => {
         if (state.threadPullRefreshing) return;
         if (!listCanPull()) {
+          event.preventDefault?.();
           tracking = false;
           nestedScrollSource = null;
           waitingNestedReachTop = false;

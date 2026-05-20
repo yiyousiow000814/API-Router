@@ -348,11 +348,13 @@ export function createThreadListViewModule(deps) {
           list.style.overflowY = "auto";
           list.style.touchAction = "pan-y";
           list.style.overscrollBehaviorY = "contain";
+          list.style.webkitOverflowScrolling = "touch";
           return;
         }
         list.style.overflowY = "hidden";
         list.style.touchAction = "none";
         list.style.overscrollBehaviorY = "none";
+        list.style.webkitOverflowScrolling = "auto";
         list.scrollTop = 0;
       };
       currentWorkspaceKey = normalizeWorkspaceTarget(getWorkspaceTarget());
