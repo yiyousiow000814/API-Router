@@ -141,6 +141,7 @@ export function createThreadLiveModule(deps) {
     const hint = byId("threadPullHint");
     const hintText = byId("threadPullHintText");
     if (!list || !hint || !hintText) return;
+    const listCanPull = () => Number(list.clientHeight || 0) > 0;
     let startY = 0;
     let pullPx = 0;
     let tracking = false;
@@ -163,6 +164,13 @@ export function createThreadLiveModule(deps) {
       (event) => {
         if (state.threadPullRefreshing) return;
         if (event.touches.length !== 1) return;
+        if (!listCanPull()) {
+          resetPull();
+          tracking = false;
+          nestedScrollSource = null;
+          waitingNestedReachTop = false;
+          return;
+        }
         const target = event.target instanceof Element ? event.target : null;
         const innerGroupBody = target?.closest?.(".groupBody");
         startY = event.touches[0].clientY;
@@ -183,6 +191,14 @@ export function createThreadLiveModule(deps) {
       "touchmove",
       (event) => {
         if (state.threadPullRefreshing) return;
+        if (!listCanPull()) {
+          event.preventDefault?.();
+          tracking = false;
+          nestedScrollSource = null;
+          waitingNestedReachTop = false;
+          resetPull();
+          return;
+        }
         const y = event.touches[0]?.clientY ?? startY;
         if (!tracking && waitingNestedReachTop && nestedScrollSource) {
           if (nestedScrollSource.scrollTop > 0) return;

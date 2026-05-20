@@ -1553,7 +1553,8 @@ function WebTransportMetricCard({
 
 export function getWatchdogStatusPresentation(summary: WatchdogSummary | null | undefined): StatusPresentation | null {
   if (!summary) return null
-  if (summary.live_frontend?.stalled || summary.live_backend_status?.stalled) {
+  const visibleFrontendStalled = !!(summary.live_frontend?.visible !== false && summary.live_frontend?.stalled)
+  if (visibleFrontendStalled || summary.live_backend_status?.stalled) {
     return { tone: 'degraded', label: 'Degraded' }
   }
   const latestBucketCount = getWatchdogLatestActivityBucketCount(summary)

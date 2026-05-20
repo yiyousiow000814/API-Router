@@ -1,3 +1,5 @@
+import { beginUiActivity } from "./uiActivity.js";
+
 export function beginHistoryLoad(state = {}) {
   const reqSeq = (Number(state.activeThreadHistoryReqSeq || 0) + 1) | 0;
   state.activeThreadHistoryReqSeq = reqSeq;
@@ -42,28 +44,78 @@ export async function fetchAndApplyThreadHistory(threadId, options = {}, deps = 
     windowRef = {},
   } = deps;
   const limit = Number(options.limit || state.historyWindowSize || 160) || 160;
-  const history = await api(buildThreadHistoryUrl(threadId, {
-    workspace: options.workspace,
-    rolloutPath: options.rolloutPath,
+  const endFetchActivity = beginUiActivity(windowRef, "history.load.fetch", {
+    threadId: String(threadId || ""),
+    workspace: String(options.workspace || state.activeThreadWorkspace || ""),
     limit,
-  }, state.activeThreadWorkspace), {
-    signal: options.signal,
   });
+  pushLiveDebugEvent("history.load:fetch:start", {
+    threadId: String(threadId || ""),
+    workspace: String(options.workspace || state.activeThreadWorkspace || ""),
+    limit,
+  });
+  let history;
+  try {
+    history = await api(buildThreadHistoryUrl(threadId, {
+      workspace: options.workspace,
+      rolloutPath: options.rolloutPath,
+      limit,
+    }, state.activeThreadWorkspace), {
+      signal: options.signal,
+    });
+  } finally {
+    endFetchActivity();
+    pushLiveDebugEvent("history.load:fetch:end", {
+      threadId: String(threadId || ""),
+      workspace: String(options.workspace || state.activeThreadWorkspace || ""),
+      limit,
+    });
+  }
   if (reqSeq !== state.activeThreadHistoryReqSeq) return;
   if (state.activeThreadId && state.activeThreadId !== threadId) return;
-  const { page, mergedTurns, thread } = applyHistoryPageToState(state, threadId, history);
-  if (!thread) return;
-  try { windowRef.__webCodexE2E_lastHistorySource = "history"; } catch {}
-  await applyThreadToChat(thread, {
-    ...options,
-    forceHistoryWindow: !!page?.hasMore,
-    historyReqSeq: reqSeq,
+  const endApplyActivity = beginUiActivity(windowRef, "history.load.apply", {
+    threadId: String(threadId || ""),
+    workspace: String(options.workspace || state.activeThreadWorkspace || ""),
+    turns: Array.isArray(history?.turns) ? history.turns.length : 0,
   });
+  pushLiveDebugEvent("history.load:apply:start", {
+    threadId: String(threadId || ""),
+    workspace: String(options.workspace || state.activeThreadWorkspace || ""),
+  });
+  let applySummary = {
+    turns: 0,
+    hasMore: false,
+    skipped: false,
+  };
+  try {
+    const { page, mergedTurns, thread } = applyHistoryPageToState(state, threadId, history);
+    applySummary = {
+      turns: mergedTurns.length,
+      hasMore: !!page?.hasMore,
+      skipped: !thread,
+    };
+    if (!thread) {
+      return;
+    }
+    try { windowRef.__webCodexE2E_lastHistorySource = "history"; } catch {}
+    await applyThreadToChat(thread, {
+      ...options,
+      forceHistoryWindow: !!page?.hasMore,
+      historyReqSeq: reqSeq,
+    });
+  } finally {
+    endApplyActivity();
+    pushLiveDebugEvent("history.load:apply:end", {
+      threadId: String(threadId || ""),
+      workspace: String(options.workspace || state.activeThreadWorkspace || ""),
+      ...applySummary,
+    });
+  }
   pushLiveDebugEvent("history.load:success", {
     threadId: String(threadId || ""),
     workspace: String(options.workspace || state.activeThreadWorkspace || ""),
-    turns: mergedTurns.length,
-    hasMore: !!page?.hasMore,
+    turns: applySummary.turns,
+    hasMore: applySummary.hasMore,
   });
 }
 

@@ -292,6 +292,13 @@ pub struct UiWatchdogPageState<'a> {
     pub visible: bool,
 }
 
+pub struct UiWatchdogActivityState<'a> {
+    pub kind: Option<&'a str>,
+    pub age_ms: Option<u64>,
+    pub fields: Option<serde_json::Value>,
+    pub depth: Option<u64>,
+}
+
 pub struct UiWatchdogInvokeResult<'a> {
     pub command: &'a str,
     pub elapsed_ms: u64,
@@ -463,6 +470,9 @@ impl UiWatchdogState {
         now_unix_ms: u64,
     ) -> UiWatchdogLiveSnapshot {
         let heartbeat_age_ms = now_unix_ms.saturating_sub(heartbeat.last_heartbeat_unix_ms);
+        let frontend_stalled = heartbeat.visible
+            && heartbeat.last_heartbeat_unix_ms > 0
+            && heartbeat_age_ms > UI_WATCHDOG_UNRESPONSIVE_AFTER_MS;
         let backend_progress_age_ms = backend_status
             .status_command_in_flight
             .then(|| Self::backend_progress_age_ms(backend_status, now_unix_ms));
@@ -475,8 +485,7 @@ impl UiWatchdogState {
                 status_in_flight: heartbeat.status_in_flight,
                 config_in_flight: heartbeat.config_in_flight,
                 provider_switch_in_flight: heartbeat.provider_switch_in_flight,
-                stalled: heartbeat.last_heartbeat_unix_ms > 0
-                    && heartbeat_age_ms > UI_WATCHDOG_UNRESPONSIVE_AFTER_MS,
+                stalled: frontend_stalled,
             },
             backend_status: UiWatchdogBackendStatusSnapshot {
                 in_flight: backend_status.status_command_in_flight,
@@ -697,12 +706,18 @@ impl UiWatchdogState {
         runtime: UiWatchdogRuntime<'_>,
         elapsed_ms: u64,
         monitor_kind: &str,
+        activity: UiWatchdogActivityState<'_>,
         page: UiWatchdogPageState<'_>,
         now_unix_ms: u64,
     ) {
         let heartbeat = self.heartbeat_snapshot();
         let backend_status = self.backend_status_snapshot();
         let monitor_kind = monitor_kind.trim();
+        let activity_kind = activity
+            .kind
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let activity_fields = activity.fields.unwrap_or(serde_json::Value::Null);
         self.append_trace(
             "frame_stall",
             now_unix_ms,
@@ -711,6 +726,10 @@ impl UiWatchdogState {
                 "monitor_kind": monitor_kind,
                 "active_page": page.active_page.trim(),
                 "visible": page.visible,
+                "activity_kind": activity_kind,
+                "activity_age_ms": activity.age_ms,
+                "activity_fields": activity_fields,
+                "activity_depth": activity.depth,
             }),
         );
         runtime.store.events().app().ui_frame_stall_at(
@@ -721,6 +740,10 @@ impl UiWatchdogState {
                 "monitor_kind": monitor_kind,
                 "active_page": page.active_page.trim(),
                 "visible": page.visible,
+                "activity_kind": activity_kind,
+                "activity_age_ms": activity.age_ms,
+                "activity_fields": activity_fields,
+                "activity_depth": activity.depth,
             }),
             now_unix_ms,
         );
@@ -983,9 +1006,9 @@ impl UiWatchdogState {
         if last_heartbeat == 0 {
             return;
         }
-        let heartbeat_age_ms = now_unix_ms.saturating_sub(last_heartbeat);
         let mut diagnostics = self.diagnostics_meta.lock();
-        if heartbeat_age_ms > UI_WATCHDOG_UNRESPONSIVE_AFTER_MS {
+        if live_snapshot.frontend.stalled {
+            let heartbeat_age_ms = live_snapshot.frontend.heartbeat_age_ms;
             if diagnostics.unresponsive_logged {
                 return;
             }
@@ -1592,8 +1615,8 @@ mod tests {
     use super::{
         build_state, disable_expired_package_providers, load_or_init_config,
         parse_tasklist_csv_line, parse_tasklist_mem_kb, run_startup_gateway_token_sync,
-        UiWatchdogInvokeResult, UiWatchdogLocalTask, UiWatchdogPageState, UiWatchdogRuntime,
-        UiWatchdogState, UI_WATCHDOG_SLOW_REFRESH_AFTER_MS,
+        UiWatchdogActivityState, UiWatchdogInvokeResult, UiWatchdogLocalTask, UiWatchdogPageState,
+        UiWatchdogRuntime, UiWatchdogState, UI_WATCHDOG_SLOW_REFRESH_AFTER_MS,
     };
     use crate::orchestrator::config::AppConfig;
     use serde_json::json;
@@ -1985,6 +2008,19 @@ mod tests {
     }
 
     #[test]
+    fn ui_watchdog_live_snapshot_does_not_mark_hidden_frontend_stalled() {
+        let watchdog = UiWatchdogState::default();
+
+        watchdog.record_heartbeat("dashboard", false, false, false, false, 1_000);
+
+        let live_snapshot = watchdog.live_snapshot(9_000);
+
+        assert!(!live_snapshot.frontend.visible);
+        assert!(!live_snapshot.frontend.stalled);
+        assert_eq!(live_snapshot.frontend.heartbeat_age_ms, 8_000);
+    }
+
+    #[test]
     fn ui_watchdog_live_snapshot_clears_started_time_after_backend_status_finishes() {
         let watchdog = UiWatchdogState::default();
 
@@ -2216,7 +2252,19 @@ mod tests {
         };
         let base_unix_ms = 1_700_000_000_000_u64;
 
-        watchdog.record_frame_stall(runtime, 123, "startup", page, base_unix_ms + 10_000);
+        watchdog.record_frame_stall(
+            runtime,
+            123,
+            "startup",
+            UiWatchdogActivityState {
+                kind: Some("history.render.full"),
+                age_ms: Some(220),
+                fields: Some(serde_json::json!({ "threadId": "thread-1" })),
+                depth: Some(1),
+            },
+            page,
+            base_unix_ms + 10_000,
+        );
         watchdog.record_frame_stall(
             UiWatchdogRuntime {
                 store: &state.gateway.store,
@@ -2224,6 +2272,12 @@ mod tests {
             },
             145,
             "interaction",
+            UiWatchdogActivityState {
+                kind: None,
+                age_ms: None,
+                fields: None,
+                depth: None,
+            },
             UiWatchdogPageState {
                 active_page: "requests",
                 visible: true,
@@ -2237,6 +2291,12 @@ mod tests {
             },
             167,
             "interaction",
+            UiWatchdogActivityState {
+                kind: None,
+                age_ms: None,
+                fields: None,
+                depth: None,
+            },
             UiWatchdogPageState {
                 active_page: "requests",
                 visible: true,

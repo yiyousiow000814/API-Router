@@ -1160,8 +1160,10 @@ export function createHistoryLoaderModule(deps) {
     const next = {
       threadId,
       animateBadge: !!(previous?.animateBadge || options.animateBadge),
+      disableHistoryReplay: !!(previous?.disableHistoryReplay || options.disableHistoryReplay),
       forceRender: !!(previous?.forceRender || options.forceRender),
       forceHistoryWindow: !!(previous?.forceHistoryWindow || options.forceHistoryWindow),
+      refreshReason: String(options.refreshReason || previous?.refreshReason || "").trim(),
       workspace: String(options.workspace || previous?.workspace || state.activeThreadWorkspace || "").trim(),
       rolloutPath: String(options.rolloutPath || previous?.rolloutPath || state.activeThreadRolloutPath || "").trim(),
     };
@@ -1334,6 +1336,7 @@ export function createHistoryLoaderModule(deps) {
           replayAssistantHistoryMessage,
           finalizeThreadRenderEffects: (nextHistoryCommentary, nextLiveCommentarySnapshot, extra = {}) =>
             finalizeThreadRenderEffects(thread, options, nextHistoryCommentary, nextLiveCommentarySnapshot, extra),
+          windowRef,
         },
       });
       return;
@@ -1375,6 +1378,7 @@ export function createHistoryLoaderModule(deps) {
         scheduleChatLiveFollow,
         finalizeThreadRenderEffects: (nextHistoryCommentary, nextLiveCommentarySnapshot, extra = {}) =>
           finalizeThreadRenderEffects(thread, options, nextHistoryCommentary, nextLiveCommentarySnapshot, extra),
+        windowRef,
       },
     });
   }

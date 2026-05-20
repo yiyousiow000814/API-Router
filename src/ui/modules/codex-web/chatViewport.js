@@ -1,3 +1,5 @@
+import { beginUiActivity } from "./uiActivity.js";
+
 export function chatDistanceFromMetrics(scrollHeight, scrollTop, clientHeight) {
   return Math.max(
     0,
@@ -29,6 +31,8 @@ export function createChatViewportModule(deps) {
     CHAT_LIVE_FOLLOW_MAX_STEP_PX,
     CHAT_LIVE_FOLLOW_BTN_THROTTLE_MS,
   } = deps;
+  let chatLiveFollowActivityEnd = null;
+  let chatSmoothScrollActivityEnd = null;
 
   function isChatNearBottom() {
     const box = byId("chatBox");
@@ -141,6 +145,10 @@ export function createChatViewportModule(deps) {
   function stopChatLiveFollow() {
     state.chatLiveFollowUntil = 0;
     state.chatLiveFollowToken = (Number(state.chatLiveFollowToken || 0) + 1) | 0;
+    if (typeof chatLiveFollowActivityEnd === "function") {
+      chatLiveFollowActivityEnd();
+      chatLiveFollowActivityEnd = null;
+    }
     if (state.chatLiveFollowRaf) {
       try {
         cancelAnimationFrameRef(state.chatLiveFollowRaf);
@@ -170,20 +178,40 @@ export function createChatViewportModule(deps) {
       Number(state.chatLiveFollowUntil || 0),
       now + Math.max(0, Number(extraMs || 0))
     );
+    if (!chatLiveFollowActivityEnd) {
+      chatLiveFollowActivityEnd = beginUiActivity(windowRef, "chat.live_follow", {
+        extraMs: Math.max(0, Number(extraMs || 0)),
+        sticky: !!state.chatShouldStickToBottom,
+      });
+    }
     if (state.chatLiveFollowRaf) return;
 
     state.chatLiveFollowToken = (Number(state.chatLiveFollowToken || 0) + 1) | 0;
     const token = state.chatLiveFollowToken;
+    let lastPinnedKey = "";
+    let stablePinnedFrames = 0;
     const step = () => {
       state.chatLiveFollowRaf = 0;
       if (token !== state.chatLiveFollowToken) return;
       const now2 = Date.now();
-      if (now2 > Number(state.chatLiveFollowUntil || 0)) return;
+      if (now2 > Number(state.chatLiveFollowUntil || 0)) {
+        if (typeof chatLiveFollowActivityEnd === "function") {
+          chatLiveFollowActivityEnd();
+          chatLiveFollowActivityEnd = null;
+        }
+        return;
+      }
       if (now2 <= Number(state.chatSmoothScrollUntil || 0)) return;
 
       const targetTop = Math.max(0, box.scrollHeight - box.clientHeight);
       const dist = targetTop - box.scrollTop;
       if (dist <= 0.5) {
+        const pinnedKey = `${Math.round(box.scrollHeight)}:${Math.round(
+          box.clientHeight
+        )}:${Math.round(box.scrollTop)}`;
+        if (pinnedKey === lastPinnedKey) stablePinnedFrames += 1;
+        else stablePinnedFrames = 0;
+        lastPinnedKey = pinnedKey;
         if (
           now2 - Number(state.chatLiveFollowLastBtnMs || 0) >=
           CHAT_LIVE_FOLLOW_BTN_THROTTLE_MS
@@ -191,9 +219,15 @@ export function createChatViewportModule(deps) {
           state.chatLiveFollowLastBtnMs = now2;
           updateScrollToBottomBtn();
         }
+        if (stablePinnedFrames >= 6) {
+          stopChatLiveFollow();
+          return;
+        }
         state.chatLiveFollowRaf = requestAnimationFrameRef(step);
         return;
       }
+      stablePinnedFrames = 0;
+      lastPinnedKey = "";
 
       const rawStep = Math.max(1, dist * 0.22);
       const maxStep = Math.min(
@@ -237,6 +271,14 @@ export function createChatViewportModule(deps) {
         : Math.max(1, Math.round(Number(durationMs)));
 
     let startedAt = null;
+    if (typeof chatSmoothScrollActivityEnd === "function") {
+      chatSmoothScrollActivityEnd();
+      chatSmoothScrollActivityEnd = null;
+    }
+    chatSmoothScrollActivityEnd = beginUiActivity(windowRef, "chat.smooth_scroll", {
+      durationMs: dur,
+      distancePx,
+    });
     state.chatSmoothScrollToken = (Number(state.chatSmoothScrollToken || 0) + 1) | 0;
     const token = state.chatSmoothScrollToken;
     state.chatSmoothScrollUntil = Date.now() + Math.max(0, dur + 250);
@@ -290,6 +332,10 @@ export function createChatViewportModule(deps) {
         lastSmoothScrollTail: tail.slice(),
       });
       if (token === state.chatSmoothScrollToken) state.chatSmoothScrollUntil = 0;
+      if (typeof chatSmoothScrollActivityEnd === "function") {
+        chatSmoothScrollActivityEnd();
+        chatSmoothScrollActivityEnd = null;
+      }
     };
     requestAnimationFrameRef(step);
   }

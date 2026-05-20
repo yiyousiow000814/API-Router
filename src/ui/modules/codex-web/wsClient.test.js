@@ -1939,8 +1939,8 @@ describe("wsClient", () => {
         return false;
       },
       scheduleThreadRefresh() {},
-      scheduleActiveThreadRefresh(threadId, delay) {
-        scheduledThreadRefreshes.push({ threadId, delay });
+      scheduleActiveThreadRefresh(threadId, delay, options) {
+        scheduledThreadRefreshes.push({ threadId, delay, options });
       },
       renderLiveNotification() {},
       applyPendingPayloads() {},
@@ -1976,13 +1976,13 @@ describe("wsClient", () => {
     docHandlers.get("visibilitychange")?.();
 
     expect(scheduledThreadRefreshes).toEqual([
-      { threadId: "thread-1", delay: 0 },
+      { threadId: "thread-1", delay: 0, options: { disableHistoryReplay: true, refreshReason: "visibility-resume" } },
     ]);
 
     now += 50;
     pageHandlers.get("pageshow")?.();
     expect(scheduledThreadRefreshes).toEqual([
-      { threadId: "thread-1", delay: 0 },
+      { threadId: "thread-1", delay: 0, options: { disableHistoryReplay: true, refreshReason: "visibility-resume" } },
     ]);
   });
 

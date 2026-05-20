@@ -15,7 +15,8 @@ use self::web_codex_auth::{api_error, is_codex_ws_authorized, require_codex_auth
 use self::web_codex_home::{parse_workspace_target, WorkspaceTarget};
 use self::web_codex_session_manager::CodexSessionManager;
 use crate::app_state::{
-    UiWatchdogInvokeResult, UiWatchdogLocalTask, UiWatchdogPageState, UiWatchdogRuntime,
+    UiWatchdogActivityState, UiWatchdogInvokeResult, UiWatchdogLocalTask, UiWatchdogPageState,
+    UiWatchdogRuntime,
 };
 
 const BACKEND_LIVE_DEBUG_MAX_EVENTS: usize = 160;
@@ -1168,6 +1169,12 @@ pub(super) struct WebCodexUiFrameStallRecord {
     pub monitor_kind: Option<String>,
     pub active_page: Option<String>,
     pub visible: Option<bool>,
+    #[serde(default)]
+    pub activity_kind: Option<String>,
+    #[serde(default)]
+    pub activity_fields: Value,
+    pub activity_age_ms: Option<u64>,
+    pub activity_depth: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1322,6 +1329,12 @@ pub(super) async fn codex_ui_diagnostics(
             },
             item.elapsed_ms,
             &monitor_kind,
+            UiWatchdogActivityState {
+                kind: item.activity_kind.as_deref(),
+                age_ms: item.activity_age_ms,
+                fields: Some(item.activity_fields),
+                depth: item.activity_depth,
+            },
             UiWatchdogPageState {
                 active_page: &active_page,
                 visible: item.visible.unwrap_or(true),
