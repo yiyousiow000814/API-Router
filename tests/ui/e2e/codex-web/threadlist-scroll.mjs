@@ -375,6 +375,102 @@ async function main() {
       )
     }
 
+    const refreshAndShortList = await driver.executeAsyncScript(`
+      const done = arguments[arguments.length - 1];
+      const h = window.__webCodexE2E;
+      if (!h || typeof h.refreshThreadsWithMock !== 'function') {
+        done({ ok: false, error: 'refreshThreadsWithMock missing' });
+        return;
+      }
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const pathFor = (name) => 'C:\\\\Users\\\\yiyou\\\\' + name;
+      const makeItems = (count, cwdName) => Array.from({ length: count }, (_, i) => ({
+        id: cwdName + '_refresh_' + i,
+        title: 'Refresh Thread ' + i,
+        updatedAt: Date.now() - i * 1000,
+        workspace: 'windows',
+        cwd: pathFor(cwdName),
+      }));
+      const snapshot = () => {
+        const list = document.getElementById('threadList');
+        const header = list ? list.querySelector('.groupHeader') : null;
+        const listRect = list ? list.getBoundingClientRect() : null;
+        const headerRect = header ? header.getBoundingClientRect() : null;
+        return {
+          ok: !!list,
+          scrollTop: list ? list.scrollTop : -1,
+          max: list ? Math.max(0, list.scrollHeight - list.clientHeight) : -1,
+          scrollHeight: list ? list.scrollHeight : -1,
+          clientHeight: list ? list.clientHeight : -1,
+          overflowY: list ? getComputedStyle(list).overflowY : '',
+          touchAction: list ? getComputedStyle(list).touchAction : '',
+          cards: list ? list.querySelectorAll('.itemCard').length : -1,
+          openBodies: list ? Array.from(list.querySelectorAll('.groupBody')).filter((node) => node.offsetHeight > 0).length : -1,
+          headerDelta: listRect && headerRect ? headerRect.top - listRect.top : null,
+        };
+      };
+      const expandFirstGroup = async () => {
+        const list = document.getElementById('threadList');
+        const header = list ? list.querySelector('.groupHeader') : null;
+        if (header && header.classList.contains('is-collapsed')) header.click();
+        await sleep(380);
+      };
+      try {
+        if (typeof h.pauseThreadRefreshForE2E === 'function') h.pauseThreadRefreshForE2E(false);
+        if (typeof h.setMobileTabForE2E === 'function') h.setMobileTabForE2E('threads');
+        const longItems = makeItems(120, 'XAUUSD-Calendar-Agent');
+        const shortItems = makeItems(3, 'API-Router');
+        await h.refreshThreadsWithMock('windows', longItems);
+        await expandFirstGroup();
+        const list = document.getElementById('threadList');
+        const longBefore = snapshot();
+        if (!list) {
+          done({ ok: false, error: 'threadList missing after long refresh', longBefore });
+          return;
+        }
+        list.scrollTop = Math.max(0, Math.floor((list.scrollHeight - list.clientHeight) * 0.5));
+        await sleep(80);
+        const longScrolled = snapshot();
+        await h.refreshThreadsWithMock('windows', longItems);
+        await sleep(420);
+        const longAfterRefresh = snapshot();
+        await h.refreshThreadsWithMock('windows', shortItems);
+        await expandFirstGroup();
+        const shortBefore = snapshot();
+        const shortList = document.getElementById('threadList');
+        if (shortList) shortList.scrollTop = 80;
+        await sleep(80);
+        const shortAfterSet = snapshot();
+        done({ ok: true, longBefore, longScrolled, longAfterRefresh, shortBefore, shortAfterSet });
+      } catch (error) {
+        done({ ok: false, error: String(error && error.message ? error.message : error) });
+      }
+    `)
+    if (!refreshAndShortList?.ok) {
+      throw new Error(`refresh/short-list matrix failed: ${refreshAndShortList?.error || 'unknown'}`)
+    }
+    const { longBefore, longScrolled, longAfterRefresh, shortBefore, shortAfterSet } = refreshAndShortList
+    if (!(Number(longBefore?.max || 0) > 40) || !/auto|scroll/i.test(String(longBefore?.overflowY || ''))) {
+      throw new Error(`expanded long list should be scrollable before refresh: ${JSON.stringify(longBefore)}`)
+    }
+    if (!(Number(longScrolled?.scrollTop || 0) > 40)) {
+      throw new Error(`expanded long list did not accept vertical scrolling: ${JSON.stringify(longScrolled)}`)
+    }
+    if (Math.abs(Number(longAfterRefresh?.scrollTop || 0) - Number(longScrolled?.scrollTop || 0)) > 24) {
+      throw new Error(
+        `expanded long list refresh changed scroll position: before=${longScrolled?.scrollTop} after=${longAfterRefresh?.scrollTop} ${JSON.stringify(longAfterRefresh)}`,
+      )
+    }
+    if (!(Number(longAfterRefresh?.max || 0) > 40) || !/auto|scroll/i.test(String(longAfterRefresh?.overflowY || ''))) {
+      throw new Error(`expanded long list should remain scrollable after refresh: ${JSON.stringify(longAfterRefresh)}`)
+    }
+    if (Number(shortBefore?.max || 0) !== 0 || !/hidden/i.test(String(shortBefore?.overflowY || '')) || !/none/i.test(String(shortBefore?.touchAction || ''))) {
+      throw new Error(`short list should not be scrollable: ${JSON.stringify(shortBefore)}`)
+    }
+    if (Number(shortAfterSet?.scrollTop || 0) !== 0 || Number(shortAfterSet?.max || 0) !== 0) {
+      throw new Error(`short list accepted fake scroll: ${JSON.stringify(shortAfterSet)}`)
+    }
+
     console.log('[ui:e2e:codex-threadlist-scroll] PASS')
   } finally {
     try {

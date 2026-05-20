@@ -357,6 +357,11 @@ export function createThreadListViewModule(deps) {
         list.style.webkitOverflowScrolling = "auto";
         list.scrollTop = 0;
       };
+      const scheduleListScrollabilityRefresh = () => {
+        requestAnimationFrameRef(() => {
+          applyListScrollability();
+        });
+      };
       currentWorkspaceKey = normalizeWorkspaceTarget(getWorkspaceTarget());
       const pendingVisibleAnimation =
         !!state.threadListPendingVisibleAnimationByWorkspace?.[currentWorkspaceKey];
@@ -424,6 +429,7 @@ export function createThreadListViewModule(deps) {
       body.style.opacity = "";
       body.style.transform = "";
       body.style.transitionDelay = "";
+      scheduleListScrollabilityRefresh();
     };
 
     const animateGroupBody = (body, expanded, { immediate = false, fromHeight = null, delayMs = 0 } = {}) => {
