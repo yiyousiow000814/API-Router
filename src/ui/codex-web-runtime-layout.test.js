@@ -417,4 +417,14 @@ describe("codex-web runtime layout", () => {
     expect(source).toContain("webCodexInitialMobileMenuOpened");
     expect(source).toMatch(/addEventListener\("pointerdown",\s*open,\s*\{\s*passive:\s*false\s*\}\)/);
   });
+
+  it("delegates pre-bootstrap drawer state to the shared mobile drawer helper", () => {
+    const openerIndex = source.indexOf("installInitialMobileMenuOpen");
+    const moduleIndex = source.indexOf('<script type="module" src="/codex-web/app.js"></script>');
+    const preBootstrapSource = source.slice(openerIndex, moduleIndex);
+    expect(preBootstrapSource).toContain("__webCodexApplyMobileDrawerTab");
+    expect(preBootstrapSource).toContain('__webCodexApplyMobileDrawerTab("threads"');
+    expect(preBootstrapSource).not.toContain('classList.add("drawer-left-open"');
+    expect(preBootstrapSource).not.toContain('classList.remove("drawer-right-open"');
+  });
 });

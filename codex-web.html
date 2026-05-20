@@ -7123,6 +7123,41 @@
         }
       } catch {}
     })();
+    (function installMobileDrawerTabHelper() {
+      try {
+        window.__webCodexApplyMobileDrawerTab = function applyMobileDrawerTab(tab, options) {
+          const body = document.body;
+          if (!body || !body.classList) return 0;
+          const opts = options || {};
+          const clearOpeningTimer = opts.clearOpeningTimer;
+          const scheduleOpeningClear = opts.scheduleOpeningClear || window.setTimeout.bind(window);
+          const openingMs = Number(opts.openingMs || 220);
+          const animateOpening = opts.animateOpening !== false;
+          body.classList.remove("drawer-left-dragging", "drawer-left-previewing");
+          if (body.style) {
+            body.style.removeProperty("--drawer-left-drag-translate");
+            body.style.removeProperty("--drawer-left-backdrop-opacity");
+          }
+          body.classList.remove("drawer-left-open", "drawer-right-open");
+          body.classList.remove("drawer-left-opening", "drawer-right-opening");
+          if (typeof clearOpeningTimer === "function") clearOpeningTimer();
+          if (tab === "threads") body.classList.add("drawer-left-open");
+          if (tab === "tools") body.classList.add("drawer-right-open");
+          if (animateOpening && tab === "threads") body.classList.add("drawer-left-opening");
+          if (animateOpening && tab === "tools") body.classList.add("drawer-right-opening");
+          const backdrop = document.getElementById("mobileDrawerBackdrop");
+          if (backdrop && backdrop.classList) {
+            backdrop.classList.toggle("show", tab === "threads" || tab === "tools");
+          }
+          if (animateOpening && (tab === "threads" || tab === "tools")) {
+            return scheduleOpeningClear(function clearDrawerOpening() {
+              body.classList.remove("drawer-left-opening", "drawer-right-opening");
+            }, Number.isFinite(openingMs) ? openingMs : 220);
+          }
+          return 0;
+        };
+      } catch {}
+    })();
     (function installInitialMobileMenuOpen() {
       try {
         const suppressKey = "__webCodexInitialMobileMenuSuppressClickUntil";
@@ -7146,22 +7181,11 @@
           event.stopPropagation();
           const body = document.body;
           if (!body || !body.classList) return;
-          body.classList.remove(
-            "drawer-right-open",
-            "drawer-right-opening",
-            "drawer-left-dragging",
-            "drawer-left-previewing"
-          );
-          body.classList.add("drawer-left-open", "drawer-left-opening");
+          if (typeof window.__webCodexApplyMobileDrawerTab === "function") {
+            window.__webCodexApplyMobileDrawerTab("threads", { animateOpening: true, openingMs: 260 });
+          }
           body.dataset.webCodexInitialMobileMenuOpened = "true";
           window[suppressKey] = Date.now() + 700;
-          const backdrop = document.getElementById("mobileDrawerBackdrop");
-          if (backdrop && backdrop.classList) backdrop.classList.add("show");
-          window.setTimeout(function clearInitialDrawerOpening() {
-            if (document.body && document.body.classList) {
-              document.body.classList.remove("drawer-left-opening");
-            }
-          }, 260);
         };
         document.addEventListener("pointerdown", open, { passive: false });
         document.addEventListener("click", open);
