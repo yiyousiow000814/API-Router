@@ -369,6 +369,13 @@ describe("codex-web runtime layout", () => {
     expect(leftGroupBodyMatch).toBeTruthy();
     expect(leftGroupBodyMatch?.[1] || "").toMatch(/max-height:\s*none/i);
     expect(leftGroupBodyMatch?.[1] || "").toMatch(/overflow:\s*visible/i);
+    const leftCollapsedGroupBodyMatch = source.match(/\.leftPanel \.groupBody\.collapsed\s*\{([^}]+)\}/s);
+    expect(leftCollapsedGroupBodyMatch).toBeTruthy();
+    expect(leftCollapsedGroupBodyMatch?.[1] || "").toMatch(/overflow:\s*hidden/i);
+    const leftGroupHeaderMatch = source.match(/\.leftPanel \.groupHeader\s*\{([^}]+)\}/s);
+    expect(leftGroupHeaderMatch).toBeTruthy();
+    expect(leftGroupHeaderMatch?.[1] || "").toMatch(/position:\s*sticky/i);
+    expect(leftGroupHeaderMatch?.[1] || "").toMatch(/top:\s*0/i);
   });
 
   it("defines shared motion tokens and slows them for phone-like layouts", () => {
@@ -388,8 +395,6 @@ describe("codex-web runtime layout", () => {
     expect(source).toMatch(/\.itemCard\.threadExpandEnter\s*\{[\s\S]*?transform:\s*translate3d\(0,\s*6px,\s*0\)/i);
     expect(source).toMatch(/\.itemCard\.threadExpandEnter\s*\{[\s\S]*?animation:\s*thread-card-expand-enter 220ms cubic-bezier\(\.22, 1, \.36, 1\) both/i);
     expect(source).toMatch(/\.itemCard\.threadExpandEnter\s*\{[\s\S]*?animation-delay:\s*var\(--thread-expand-enter-delay,\s*0ms\)/i);
-    expect(source).toMatch(/\.groupBody\.is-continuous-expanding\s*\{[\s\S]*?height var\(--thread-expand-duration,\s*260ms\) cubic-bezier\(\.22, 1, \.36, 1\)/i);
-    expect(source).toMatch(/animation:\s*chevron-open var\(--motion-fast,\s*160ms\) ease/i);
     expect(source).toMatch(/animation:\s*settings-card-in var\(--motion-base,\s*220ms\) cubic-bezier\(\.22, 1, \.36, 1\) both/i);
     expect(source).toMatch(/animation:\s*settings-section-in var\(--motion-base,\s*220ms\) cubic-bezier\(\.22, 1, \.36, 1\) both/i);
     expect(source).toMatch(/animation:\s*runtime-panel-in var\(--motion-fast,\s*160ms\) cubic-bezier\(\.22,1,\.36,1\)/i);

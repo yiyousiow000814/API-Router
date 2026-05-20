@@ -336,6 +336,45 @@ async function main() {
       throw new Error(`bottom group not reachable; text=${bottom.lastGroupText} visible=${bottom.lastGroupVisible} scrollTop=${bottom.scrollTop} max=${bottom.max}`)
     }
 
+    const collapsed = await driver.executeScript(`
+      const list = document.getElementById('threadList');
+      if (!list) return { ok: false, error: 'threadList missing' };
+      const headers = Array.from(list.querySelectorAll('.groupHeader'));
+      const target = headers.find((node) => /XAUUSD-Calendar-Agent/i.test(node.textContent || '')) ||
+        headers.find((node) => !node.classList.contains('is-collapsed')) ||
+        headers[0];
+      if (!target) return { ok: false, error: 'group header missing' };
+      const group = target.closest('.groupCard');
+      const body = group ? group.querySelector('.groupBody') : null;
+      if (!body) return { ok: false, error: 'group body missing' };
+      list.scrollTop = 0;
+      if (!target.classList.contains('is-collapsed')) target.click();
+      return new Promise((resolve) => {
+        setTimeout(() => {
+          const max = Math.max(0, list.scrollHeight - list.clientHeight);
+          resolve({
+            ok: true,
+            bodyCollapsed: body.classList.contains('collapsed'),
+            bodyOverflowY: getComputedStyle(body).overflowY,
+            bodyHeight: body.getBoundingClientRect().height,
+            max,
+            scrollHeight: list.scrollHeight,
+            clientHeight: list.clientHeight,
+            cards: body.querySelectorAll('.itemCard').length,
+          });
+        }, 320);
+      });
+    `)
+    if (!collapsed?.ok) throw new Error(`collapsed check failed: ${collapsed?.error || 'unknown'}`)
+    if (!collapsed.bodyCollapsed || !/hidden/i.test(String(collapsed.bodyOverflowY || ''))) {
+      throw new Error(`collapsed group body should hide overflowing cards; collapsed=${collapsed.bodyCollapsed} overflowY=${collapsed.bodyOverflowY}`)
+    }
+    if (Number(collapsed.cards || 0) > 40 && Number(collapsed.max || 0) > 600) {
+      throw new Error(
+        `collapsed group still inflates drawer scroll range; max=${collapsed.max} scrollHeight=${collapsed.scrollHeight} clientHeight=${collapsed.clientHeight} bodyHeight=${collapsed.bodyHeight} cards=${collapsed.cards}`,
+      )
+    }
+
     console.log('[ui:e2e:codex-threadlist-scroll] PASS')
   } finally {
     try {
