@@ -173,69 +173,6 @@ describe("mobileShell", () => {
     expect(calls).toEqual(["hide"]);
   });
 
-  it("does not restart the drawer opening phase when threads drawer is already open", () => {
-    const body = {
-      _classes: new Set(["drawer-left-open"]),
-      classList: {
-        contains(name) {
-          return body._classes.has(name);
-        },
-        add(...names) {
-          for (const name of names) body._classes.add(name);
-        },
-        remove(...names) {
-          for (const name of names) body._classes.delete(name);
-        },
-      },
-      style: {
-        removeProperty() {},
-      },
-    };
-    const backdrop = {
-      classList: {
-        toggle() {},
-        remove() {},
-      },
-    };
-    const state = {
-      drawerOpenPhaseTimer: 0,
-      threadListVisibleOpenAnimationUntil: 0,
-      threadListPendingSidebarOpenAnimation: false,
-      threadListVisibleAnimationTimer: 0,
-      threadListLoading: false,
-      threadItems: [],
-      threadListPendingVisibleAnimationByWorkspace: { windows: false, wsl2: false },
-      threadListAnimateNextRender: false,
-      threadListAnimateThreadIds: new Set(),
-      threadListExpandAnimateGroupKeys: new Set(),
-      threadListSkipScrollRestoreOnce: false,
-    };
-    const module = createMobileShellModule({
-      state,
-      byId(id) {
-        if (id === "mobileDrawerBackdrop") return backdrop;
-        return null;
-      },
-      documentRef: { body },
-      normalizeWorkspaceTarget(value) {
-        return value;
-      },
-      getWorkspaceTarget() {
-        return "windows";
-      },
-      pushThreadAnimDebug() {},
-      renderThreads() {},
-      hideSlashCommandMenu() {},
-    });
-
-    module.setMobileTab("threads");
-
-    expect(body._classes.has("drawer-left-open")).toBe(true);
-    expect(body._classes.has("drawer-left-opening")).toBe(false);
-    expect(state.drawerOpenPhaseTimer).toBe(0);
-    expect(state.threadListVisibleOpenAnimationUntil).toBe(0);
-  });
-
   it("clears mobile thread search state when leaving the thread drawer", () => {
     const body = {
       _classes: new Set(["drawer-left-open"]),

@@ -685,13 +685,13 @@
     }
     .itemCard.threadExpandEnter {
       opacity: 0;
-      transform: translate3d(0, 6px, 0);
-      animation: thread-card-expand-enter 220ms cubic-bezier(.22, 1, .36, 1) both;
+      transform: translate3d(0, 4px, 0);
+      animation: thread-card-expand-enter 200ms cubic-bezier(.22, 1, .36, 1) both;
       animation-delay: var(--thread-expand-enter-delay, 0ms);
       will-change: opacity, transform;
     }
     @keyframes thread-card-expand-enter {
-      from { opacity: 0; transform: translate3d(0, 6px, 0); }
+      from { opacity: 0; transform: translate3d(0, 4px, 0); }
       to { opacity: 1; transform: translate3d(0, 0, 0); }
     }
     @keyframes thread-header-enter {
@@ -5716,7 +5716,6 @@
       position: relative;
       overflow-y: auto;
       overflow-x: hidden;
-      overscroll-behavior-y: contain;
       padding-right: 2px;
       -webkit-overflow-scrolling: touch;
       touch-action: pan-y;
@@ -6436,9 +6435,6 @@
       overflow: visible;
       scrollbar-gutter: stable;
     }
-    .leftPanel .groupBody.collapsed {
-      overflow: hidden;
-    }
     .leftPanel .groupCard {
       border: none;
       border-radius: 0;
@@ -6447,12 +6443,9 @@
     }
     .leftPanel .groupHeader {
       border: none;
-      background: #ffffff;
+      background: transparent;
       border-radius: 0;
       padding: 8px 10px;
-      position: sticky;
-      top: 0;
-      z-index: var(--z-chat-opening);
     }
     .leftPanel .panelFooter {
       pointer-events: none;
@@ -7121,75 +7114,6 @@
           root.style.setProperty("--visual-viewport-height", viewportHeight + "px");
           root.style.setProperty("--keyboard-offset", "0px");
         }
-      } catch {}
-    })();
-    (function installMobileDrawerTabHelper() {
-      try {
-        window.__webCodexApplyMobileDrawerTab = function applyMobileDrawerTab(tab, options) {
-          const body = document.body;
-          if (!body || !body.classList) return 0;
-          const opts = options || {};
-          const clearOpeningTimer = opts.clearOpeningTimer;
-          const scheduleOpeningClear = opts.scheduleOpeningClear || window.setTimeout.bind(window);
-          const openingMs = Number(opts.openingMs || 220);
-          const animateOpening = opts.animateOpening !== false;
-          body.classList.remove("drawer-left-dragging", "drawer-left-previewing");
-          if (body.style) {
-            body.style.removeProperty("--drawer-left-drag-translate");
-            body.style.removeProperty("--drawer-left-backdrop-opacity");
-          }
-          body.classList.remove("drawer-left-open", "drawer-right-open");
-          body.classList.remove("drawer-left-opening", "drawer-right-opening");
-          if (typeof clearOpeningTimer === "function") clearOpeningTimer();
-          if (tab === "threads") body.classList.add("drawer-left-open");
-          if (tab === "tools") body.classList.add("drawer-right-open");
-          if (animateOpening && tab === "threads") body.classList.add("drawer-left-opening");
-          if (animateOpening && tab === "tools") body.classList.add("drawer-right-opening");
-          const backdrop = document.getElementById("mobileDrawerBackdrop");
-          if (backdrop && backdrop.classList) {
-            backdrop.classList.toggle("show", tab === "threads" || tab === "tools");
-          }
-          if (animateOpening && (tab === "threads" || tab === "tools")) {
-            return scheduleOpeningClear(function clearDrawerOpening() {
-              body.classList.remove("drawer-left-opening", "drawer-right-opening");
-            }, Number.isFinite(openingMs) ? openingMs : 220);
-          }
-          return 0;
-        };
-      } catch {}
-    })();
-    (function installInitialMobileMenuOpen() {
-      try {
-        const suppressKey = "__webCodexInitialMobileMenuSuppressClickUntil";
-        const isMenuTarget = (event) => {
-          const target = event && event.target;
-          return !!(target && target.closest && target.closest("#mobileMenuBtn"));
-        };
-        const suppressSyntheticBackdropClick = (event) => {
-          if (String(event && event.type || "") !== "click") return;
-          const until = Number(window[suppressKey] || 0);
-          if (!until || Date.now() > until) return;
-          const backdrop = document.getElementById("mobileDrawerBackdrop");
-          if (event && event.target === backdrop) {
-            event.preventDefault();
-            event.stopPropagation();
-          }
-        };
-        const open = (event) => {
-          if (!isMenuTarget(event)) return;
-          event.preventDefault();
-          event.stopPropagation();
-          const body = document.body;
-          if (!body || !body.classList) return;
-          if (typeof window.__webCodexApplyMobileDrawerTab === "function") {
-            window.__webCodexApplyMobileDrawerTab("threads", { animateOpening: true, openingMs: 260 });
-          }
-          body.dataset.webCodexInitialMobileMenuOpened = "true";
-          window[suppressKey] = Date.now() + 700;
-        };
-        document.addEventListener("pointerdown", open, { passive: false });
-        document.addEventListener("click", open);
-        document.addEventListener("click", suppressSyntheticBackdropClick, true);
       } catch {}
     })();
   </script>

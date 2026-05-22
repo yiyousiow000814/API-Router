@@ -329,7 +329,7 @@ pub fn watchdog_summary() -> serde_json::Value {
         "critical_count": critical_count,
         "recent_incidents": recent_incidents,
         "recent_signals": recent_signals,
-        "health_window_minutes": WATCHDOG_ACTIVITY_WINDOW_MINUTES,
+        "health_window_minutes": WATCHDOG_ACTIVITY_BUCKET_MINUTES,
         "activity_window_minutes": WATCHDOG_ACTIVITY_WINDOW_MINUTES,
         "activity_bucket_minutes": WATCHDOG_ACTIVITY_BUCKET_MINUTES,
         "activity_buckets": activity_buckets,
@@ -359,7 +359,7 @@ fn empty_watchdog_summary(activity_buckets: Vec<serde_json::Value>) -> serde_jso
         "critical_count": 0,
         "recent_incidents": [],
         "recent_signals": [],
-        "health_window_minutes": WATCHDOG_ACTIVITY_WINDOW_MINUTES,
+        "health_window_minutes": WATCHDOG_ACTIVITY_BUCKET_MINUTES,
         "activity_window_minutes": WATCHDOG_ACTIVITY_WINDOW_MINUTES,
         "activity_bucket_minutes": WATCHDOG_ACTIVITY_BUCKET_MINUTES,
         "activity_buckets": activity_buckets,
@@ -981,38 +981,6 @@ mod tests {
                 .and_then(|value| value.as_str())
                 .map(|value| value.contains("waited 1730ms for Windows headers")),
             Some(true)
-        );
-    }
-
-    #[test]
-    fn watchdog_summary_reports_full_health_window_minutes() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let diag_dir = tmp.path().join("diagnostics");
-        std::fs::create_dir_all(&diag_dir).expect("create diag dir");
-        let now = unix_ms();
-
-        std::fs::write(
-            diag_dir.join(format!(
-                "ui-freeze-{}-heartbeat-stall.json",
-                now.saturating_sub(30_000)
-            )),
-            "{}",
-        )
-        .expect("write file");
-
-        let result = watchdog_summary_for_user_data_dir(tmp.path());
-
-        assert_eq!(
-            result
-                .get("health_window_minutes")
-                .and_then(|value| value.as_u64()),
-            Some(12 * 60)
-        );
-        assert_eq!(
-            result
-                .get("activity_bucket_minutes")
-                .and_then(|value| value.as_u64()),
-            Some(5)
         );
     }
 

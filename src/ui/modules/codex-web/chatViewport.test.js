@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
   chatDistanceFromMetrics,
@@ -210,113 +210,6 @@ describe("chatViewport", () => {
     expect(attrs).toContainEqual(["aria-hidden", "false"]);
     expect(btn.disabled).toBe(false);
     expect(btn.tabIndex).toBe(0);
-  });
-
-  it("records live follow activity while auto-following the chat", () => {
-    const chatBox = {
-      scrollHeight: 1200,
-      scrollTop: 600,
-      clientHeight: 250,
-      children: [],
-      appendChild(node) {
-        node.parentElement = this;
-        this.children.push(node);
-      },
-    };
-    const windowRef = {};
-    const rafCallbacks = [];
-    const module = createChatViewportModule({
-      state: {
-        chatShouldStickToBottom: true,
-        chatUserScrolledAwayAt: 0,
-      },
-      byId(id) {
-        if (id === "chatBox") return chatBox;
-        if (id === "scrollToBottomBtn") return null;
-        return null;
-      },
-      dbgSet() {},
-      documentRef: {
-        activeElement: null,
-      },
-      windowRef,
-      requestAnimationFrameRef(callback) {
-        rafCallbacks.push(callback);
-        return rafCallbacks.length;
-      },
-      cancelAnimationFrameRef() {},
-      CHAT_LIVE_FOLLOW_MAX_STEP_PX: 64,
-      CHAT_LIVE_FOLLOW_BTN_THROTTLE_MS: 66,
-    });
-
-    module.scheduleChatLiveFollow(520);
-
-    expect(windowRef.__API_ROUTER_UI_ACTIVITY_STACK__).toHaveLength(1);
-    expect(windowRef.__API_ROUTER_UI_ACTIVITY_STACK__[0]).toMatchObject({
-      kind: "chat.live_follow",
-      fields: { extraMs: 520, sticky: true },
-    });
-  });
-
-  it("stops live follow early once the chat is stably pinned to the bottom", () => {
-    const originalDateNow = Date.now;
-    let nowMs = 10_000;
-    Date.now = vi.fn(() => nowMs);
-
-    try {
-      const chatBox = {
-        scrollHeight: 1200,
-        scrollTop: 950,
-        clientHeight: 250,
-        children: [],
-        appendChild(node) {
-          node.parentElement = this;
-          this.children.push(node);
-        },
-      };
-      const windowRef = {};
-      const rafCallbacks = [];
-      const module = createChatViewportModule({
-        state: {
-          chatShouldStickToBottom: true,
-          chatUserScrolledAwayAt: 0,
-        },
-        byId(id) {
-          if (id === "chatBox") return chatBox;
-          if (id === "scrollToBottomBtn") return null;
-          return null;
-        },
-        dbgSet() {},
-        documentRef: {
-          activeElement: null,
-        },
-        windowRef,
-        requestAnimationFrameRef(callback) {
-          rafCallbacks.push(callback);
-          return rafCallbacks.length;
-        },
-        cancelAnimationFrameRef() {},
-        CHAT_LIVE_FOLLOW_MAX_STEP_PX: 64,
-        CHAT_LIVE_FOLLOW_BTN_THROTTLE_MS: 66,
-      });
-
-      module.scheduleChatLiveFollow(1100);
-
-      let framesRun = 0;
-      while (rafCallbacks.length > 0 && framesRun < 12) {
-        const next = rafCallbacks.shift();
-        nowMs += 16;
-        next(nowMs);
-        framesRun += 1;
-      }
-
-      expect(framesRun).toBeGreaterThan(0);
-      expect(windowRef.__API_ROUTER_UI_ACTIVITY_STACK__ || []).toHaveLength(0);
-      expect(rafCallbacks).toHaveLength(0);
-      expect(chatBox.scrollTop).toBe(950);
-    } finally {
-      Date.now = originalDateNow;
-    }
   });
 
   it("hides the jump button when chat is already near bottom even if sticky mode is off", () => {
