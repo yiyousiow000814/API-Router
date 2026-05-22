@@ -83,6 +83,9 @@ describe("threadListView", () => {
       querySelectorAll() {
         return [];
       },
+      closest() {
+        return null;
+      },
       get firstElementChild() {
         return this.children[0] || null;
       },
@@ -517,6 +520,113 @@ describe("threadListView", () => {
     expect(list.children[1]).toBe(betaGroup);
     expect(betaGroup.children[1]).toBe(betaBody);
     expect(betaBody.classList.contains("collapsed")).toBe(true);
+  });
+
+  it("opens left sidebar groups without height tweening the chat list", () => {
+    const list = createFakeElement("div");
+    const body = createFakeElement("body");
+    const leftPanel = createFakeElement("section");
+    const state = {
+      threadItems: [],
+      threadItemsAll: [],
+      threadSearchQuery: "",
+      threadListLoading: false,
+      threadListLoadingTarget: "",
+      workspaceAvailability: { windowsInstalled: true, wsl2Installed: true },
+      threadListPendingVisibleAnimationByWorkspace: {},
+      threadListAnimationHoldUntilByWorkspace: {},
+      threadListVisibleOpenAnimationUntil: 0,
+      threadListAnimateNextRender: false,
+      threadListAnimateThreadIds: new Set(),
+      threadListExpandAnimateGroupKeys: new Set(),
+      threadListCollapseAnimateGroupKeys: new Set(),
+      threadListChevronOpenAnimateKeys: new Set(),
+      threadListChevronCloseAnimateKeys: new Set(),
+      threadListSkipScrollRestoreOnce: false,
+      collapsedWorkspaceKeys: new Set(["windows"]),
+      threadGroupCollapseInitializedByWorkspace: { windows: true, wsl2: true },
+      favoriteThreadIds: new Set(),
+    };
+    const module = createThreadListViewModule({
+      state,
+      byId(id) {
+        return id === "threadList" ? list : null;
+      },
+      escapeHtml(value) {
+        return String(value || "");
+      },
+      normalizeWorkspaceTarget(value) {
+        return String(value || "").toLowerCase() === "wsl2" ? "wsl2" : "windows";
+      },
+      getWorkspaceTarget() {
+        return "windows";
+      },
+      hasDualWorkspaceTargets() {
+        return true;
+      },
+      pushThreadAnimDebug() {},
+      isThreadListActuallyVisible() {
+        return true;
+      },
+      workspaceKeyOfThread(thread) {
+        return thread.workspace;
+      },
+      truncateLabel(value) {
+        return String(value || "");
+      },
+      relativeTimeLabel() {
+        return "";
+      },
+      pickThreadTimestamp() {
+        return Date.now();
+      },
+      setMainTab() {},
+      setMobileTab() {},
+      setActiveThread() {},
+      setChatOpening() {},
+      detectThreadWorkspaceTarget(thread) {
+        return thread.workspace;
+      },
+      loadThreadMessages: async () => {},
+      api: async () => ({}),
+      setStatus() {},
+      scheduleThreadRefresh() {},
+      scrollToBottomReliable() {},
+      windowRef: { getComputedStyle() { return { paddingTop: "0px", paddingBottom: "0px" }; } },
+      documentRef: {
+        body,
+        createElement(tagName) {
+          const element = createFakeElement(tagName);
+          element.closest = (selector) =>
+            selector === ".leftPanel" && String(element.className || "").includes("groupBody")
+              ? leftPanel
+              : null;
+          return element;
+        },
+      },
+      requestAnimationFrameRef(callback) {
+        callback();
+        return 1;
+      },
+      performanceRef: { now() { return 0; } },
+      localStorageRef: { setItem() {} },
+      FAVORITE_THREADS_KEY: "favorites",
+    });
+
+    module.renderThreads([
+      { id: "thread-1", workspace: "windows", title: "Alpha" },
+      { id: "thread-2", workspace: "windows", title: "Beta" },
+    ]);
+    const group = list.children[0];
+    const header = group.children[0];
+    const groupBody = group.children[1];
+    expect(groupBody.classList.contains("collapsed")).toBe(true);
+
+    header.onclick();
+
+    expect(groupBody.classList.contains("collapsed")).toBe(false);
+    expect(groupBody.classList.contains("is-animating")).toBe(false);
+    expect(groupBody.style.height || "").toBe("");
   });
 
   it("animates a later expanded group as a continuous reveal during list enter", () => {

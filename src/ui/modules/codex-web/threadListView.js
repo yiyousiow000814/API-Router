@@ -391,7 +391,14 @@ export function createThreadListViewModule(deps) {
 
     const animateGroupBody = (body, expanded, { immediate = false, fromHeight = null, delayMs = 0 } = {}) => {
       if (!body) return;
-      if (immediate) {
+      const isLeftPanelBody = (() => {
+        try {
+          return !!body.closest?.(".leftPanel");
+        } catch {
+          return false;
+        }
+      })();
+      if (immediate || isLeftPanelBody) {
         finishGroupBodyAnimation(body, expanded);
         return;
       }

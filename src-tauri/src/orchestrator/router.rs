@@ -282,6 +282,21 @@ impl RouterState {
         }
     }
 
+    pub fn reset_provider_health(&self, provider: &str, now_ms: u64) -> bool {
+        let reset = {
+            let mut health = self.health.write();
+            let Some(existing) = health.get_mut(provider) else {
+                return false;
+            };
+            *existing = ProviderHealth::new(now_ms);
+            true
+        };
+        if reset {
+            self.persist_shared_health_state(now_ms);
+        }
+        reset
+    }
+
     pub fn record_quota_closed_states(&self, states: &HashMap<String, bool>) -> Vec<String> {
         let mut quota_closed = self.quota_closed_by_provider.write();
         let mut reopened = Vec::new();

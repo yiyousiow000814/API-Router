@@ -370,6 +370,38 @@ describe("codex-web runtime layout", () => {
     expect(leftGroupBodyMatch?.[1] || "").toMatch(/overflow:\s*visible/i);
   });
 
+  it("keeps long thread names from widening the sidebar", () => {
+    const threadListMatch = source.match(/\.drawerBody \.itemList\s*\{([^}]+)\}/s);
+    const groupCardMatch = source.match(/\.leftPanel \.groupCard\s*\{([^}]+)\}/s);
+    const groupBodyMatch = source.match(/\.leftPanel \.groupBody\s*\{([^}]+)\}/s);
+    const itemCardMatch = source.match(/\.leftPanel \.itemCard\s*\{([^}]+)\}/s);
+    const rowMatch = source.match(/\.itemCard \.row\s*\{([^}]+)\}/s);
+    const titleBaseMatch = source.match(/\.itemTitle\s*\{([^}]+)\}/s);
+    const titleMatch = source.match(/\.itemCard \.row \.itemTitle\s*\{([^}]+)\}/s);
+
+    expect(threadListMatch?.[1] || "").toMatch(/min-width:\s*0/i);
+    expect(threadListMatch?.[1] || "").toMatch(/max-width:\s*100%/i);
+    expect(groupCardMatch?.[1] || "").toMatch(/min-width:\s*0/i);
+    expect(groupCardMatch?.[1] || "").toMatch(/max-width:\s*100%/i);
+    expect(groupBodyMatch?.[1] || "").toMatch(/min-width:\s*0/i);
+    expect(groupBodyMatch?.[1] || "").toMatch(/max-width:\s*100%/i);
+    expect(itemCardMatch?.[1] || "").toMatch(/min-width:\s*0/i);
+    expect(itemCardMatch?.[1] || "").toMatch(/max-width:\s*100%/i);
+    expect(rowMatch?.[1] || "").toMatch(/grid-template-columns:\s*auto minmax\(0,\s*1fr\) auto/i);
+    expect(titleBaseMatch?.[1] || "").toMatch(/text-overflow:\s*ellipsis/i);
+    expect(titleMatch?.[1] || "").toMatch(/min-width:\s*0/i);
+  });
+
+  it("clips left drawer group contents while expand collapse animation is running", () => {
+    const leftGroupBodyMatch = source.match(/\.leftPanel \.groupBody\s*\{([^}]+)\}/s);
+    const animatedLeftGroupBodyMatch = source.match(
+      /\.leftPanel \.groupBody\.is-animating,\s*[\s\S]*?\.leftPanel \.groupBody\.collapsed\s*\{([^}]+)\}/s
+    );
+
+    expect(leftGroupBodyMatch?.[1] || "").toMatch(/overflow:\s*visible/i);
+    expect(animatedLeftGroupBodyMatch?.[1] || "").toMatch(/overflow:\s*hidden/i);
+  });
+
   it("defines shared motion tokens and slows them for phone-like layouts", () => {
     expect(source).toContain("--motion-fast: 160ms;");
     expect(source).toContain("--motion-base: 220ms;");
