@@ -639,7 +639,7 @@
       gap: 8px;
     }
 
-    .itemList { display: grid; gap: 8px; }
+    .itemList { display: grid; gap: 8px; min-width: 0; max-width: 100%; }
     .itemCard {
       border: 1px solid rgba(13, 18, 32, 0.14);
       background: var(--thread-card-bg);
@@ -649,6 +649,9 @@
       text-align: left;
       cursor: pointer;
       width: 100%;
+      min-width: 0;
+      max-width: 100%;
+      overflow: hidden;
     }
     .groupCard.groupEnter {
       opacity: 0;
@@ -790,9 +793,13 @@
       border-radius: 12px;
       overflow: hidden;
       background: var(--thread-group-bg);
+      min-width: 0;
+      max-width: 100%;
     }
     .groupHeader {
       width: 100%;
+      min-width: 0;
+      max-width: 100%;
       display: flex;
       align-items: center;
       gap: 8px;
@@ -836,6 +843,8 @@
       gap: 6px;
       padding: 8px;
       box-sizing: border-box;
+      min-width: 0;
+      max-width: 100%;
       overflow: hidden;
       transition:
         height 240ms cubic-bezier(.22, 1, .36, 1),
@@ -5712,6 +5721,8 @@
     }
     .drawerBody .itemList {
       min-height: 0;
+      min-width: 0;
+      max-width: 100%;
       flex: 1 1 auto;
       position: relative;
       overflow-y: auto;
@@ -6427,25 +6438,37 @@
       background: var(--thread-card-bg);
       margin: 0;
       padding: 10px 8px;
+      min-width: 0;
+      max-width: 100%;
     }
     .leftPanel .groupBody {
       gap: 0;
       padding: 0 8px 0 0;
+      min-width: 0;
+      max-width: 100%;
       max-height: none;
       overflow: visible;
       scrollbar-gutter: stable;
+    }
+    .leftPanel .groupBody.is-animating,
+    .leftPanel .groupBody.collapsed {
+      overflow: hidden;
     }
     .leftPanel .groupCard {
       border: none;
       border-radius: 0;
       overflow: visible;
       background: transparent;
+      min-width: 0;
+      max-width: 100%;
     }
     .leftPanel .groupHeader {
       border: none;
       background: transparent;
       border-radius: 0;
       padding: 8px 10px;
+      min-width: 0;
+      max-width: 100%;
     }
     .leftPanel .panelFooter {
       pointer-events: none;
