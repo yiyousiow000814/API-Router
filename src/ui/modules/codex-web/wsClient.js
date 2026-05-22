@@ -288,10 +288,7 @@ export function createWsClientModule(deps) {
       pendingRunning: state.activeThreadPendingTurnRunning === true,
       hiddenAt: lastHiddenAt,
     });
-    scheduleActiveThreadRefresh(currentThreadId, 0, {
-      disableHistoryReplay: true,
-      refreshReason: "visibility-resume",
-    });
+    scheduleActiveThreadRefresh(currentThreadId, 0);
   }
 
   function installVisibilityTracking() {

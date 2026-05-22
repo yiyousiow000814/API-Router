@@ -685,13 +685,13 @@
     }
     .itemCard.threadExpandEnter {
       opacity: 0;
-      transform: translate3d(0, 6px, 0);
-      animation: thread-card-expand-enter 220ms cubic-bezier(.22, 1, .36, 1) both;
+      transform: translate3d(0, 4px, 0);
+      animation: thread-card-expand-enter 200ms cubic-bezier(.22, 1, .36, 1) both;
       animation-delay: var(--thread-expand-enter-delay, 0ms);
       will-change: opacity, transform;
     }
     @keyframes thread-card-expand-enter {
-      from { opacity: 0; transform: translate3d(0, 6px, 0); }
+      from { opacity: 0; transform: translate3d(0, 4px, 0); }
       to { opacity: 1; transform: translate3d(0, 0, 0); }
     }
     @keyframes thread-header-enter {
@@ -5716,7 +5716,6 @@
       position: relative;
       overflow-y: auto;
       overflow-x: hidden;
-      overscroll-behavior-y: contain;
       padding-right: 2px;
       -webkit-overflow-scrolling: touch;
       touch-action: pan-y;
@@ -6436,9 +6435,6 @@
       overflow: visible;
       scrollbar-gutter: stable;
     }
-    .leftPanel .groupBody.collapsed {
-      overflow: hidden;
-    }
     .leftPanel .groupCard {
       border: none;
       border-radius: 0;
@@ -6447,12 +6443,9 @@
     }
     .leftPanel .groupHeader {
       border: none;
-      background: #ffffff;
+      background: transparent;
       border-radius: 0;
       padding: 8px 10px;
-      position: sticky;
-      top: 0;
-      z-index: var(--z-chat-opening);
     }
     .leftPanel .panelFooter {
       pointer-events: none;

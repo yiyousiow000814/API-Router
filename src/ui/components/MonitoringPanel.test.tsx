@@ -344,40 +344,6 @@ describe('MonitoringPanel', () => {
     })
   })
 
-  it('does not degrade when only a hidden frontend heartbeat is stale', () => {
-    const summary: WatchdogSummary = {
-      healthy: true,
-      incident_count: 0,
-      activity_window_minutes: 720,
-      activity_bucket_minutes: 5,
-      activity_buckets: [
-        { bucket_start_unix_ms: 1_700_000_000_000, bucket_end_unix_ms: 1_700_000_300_000, count: 0 },
-      ],
-      last_incident_kind: null,
-      recent_incidents: [],
-      live_frontend: {
-        active_page: 'codex-web',
-        last_heartbeat_unix_ms: 1_700_000_000_000,
-        heartbeat_age_ms: 30_000,
-        visible: false,
-        status_in_flight: false,
-        config_in_flight: false,
-        provider_switch_in_flight: false,
-        stalled: true,
-      },
-      live_backend_status: {
-        in_flight: false,
-        stalled: false,
-      },
-    }
-
-    expect(getWatchdogStatusPresentation(summary)).toEqual({
-      tone: 'healthy',
-      label: 'healthy',
-      pulse: true,
-    })
-  })
-
   it('formats incident kinds into human-readable labels', () => {
     expect(formatIncidentKind('heartbeat-stall')).toBe('UI heartbeat stalled')
     expect(formatIncidentKind('slow-refresh')).toBe('Remote diagnostics refresh too slow')

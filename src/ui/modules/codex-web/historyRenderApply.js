@@ -2,11 +2,9 @@ import { summarizeChatTimeline } from "./chatTimeline.js";
 import { decideHistoryRenderStrategy } from "./historyRenderStrategy.js";
 import { reconcileTimelineMessages } from "./historyTimelineReconcile.js";
 import { setActiveTimelineMessages } from "./activeTimelineState.js";
-import { beginUiActivity } from "./uiActivity.js";
 
-function canReplayAssistantHistory({ state, threadId, forceFullRender, previousMessages, options }) {
+function canReplayAssistantHistory({ state, threadId, forceFullRender, previousMessages }) {
   if (forceFullRender) return false;
-  if (options?.disableHistoryReplay === true) return false;
   if (String(state?.activeThreadId || threadId || "").trim() !== String(threadId || "").trim()) return false;
   if (!String(state?.activeThreadRolloutPath || "").trim()) return false;
   if (state?.chatOpening === true) return false;
@@ -118,7 +116,6 @@ export function applyWindowedHistoryRender(params = {}) {
     maybeScheduleChatFollow,
     replayAssistantHistoryMessage,
     finalizeThreadRenderEffects,
-    windowRef = null,
   } = deps;
   const alreadyWindowed = state.historyWindowEnabled && state.historyWindowThreadId === threadId;
   const replayContext = {
@@ -127,22 +124,9 @@ export function applyWindowedHistoryRender(params = {}) {
       threadId,
       forceFullRender,
       previousMessages: prevMessages,
-      options,
     }),
     replayAssistantHistoryMessage,
   };
-  const endActivity = beginUiActivity(windowRef, "history.render.window", {
-    threadId: String(threadId || ""),
-    messages: Array.isArray(messages) ? messages.length : 0,
-    prevMessages: Array.isArray(prevMessages) ? prevMessages.length : 0,
-    forceFullRender: !!forceFullRender,
-  });
-  pushLiveDebugEvent("history.render:start", {
-    variant: "window",
-    threadId,
-    messages: Array.isArray(messages) ? messages.length : 0,
-  });
-  try {
 
   const doWindowedRender = () => {
     const size = Math.max(40, Number(state.historyWindowSize || 160) | 0);
@@ -291,14 +275,6 @@ export function applyWindowedHistoryRender(params = {}) {
 
   doWindowedRender();
   return true;
-  } finally {
-    endActivity();
-    pushLiveDebugEvent("history.render:end", {
-      variant: "window",
-      threadId,
-      messages: Array.isArray(messages) ? messages.length : 0,
-    });
-  }
 }
 
 export async function applyFullHistoryRender(params = {}) {
@@ -331,7 +307,6 @@ export async function applyFullHistoryRender(params = {}) {
     maybeScheduleChatFollow,
     replayAssistantHistoryMessage,
     finalizeThreadRenderEffects,
-    windowRef = null,
   } = deps;
   const replayContext = {
     enabled: canReplayAssistantHistory({
@@ -339,22 +314,9 @@ export async function applyFullHistoryRender(params = {}) {
       threadId,
       forceFullRender,
       previousMessages: prevMessages,
-      options,
     }),
     replayAssistantHistoryMessage,
   };
-  const endActivity = beginUiActivity(windowRef, "history.render.full", {
-    threadId: String(threadId || ""),
-    messages: Array.isArray(messages) ? messages.length : 0,
-    prevMessages: Array.isArray(prevMessages) ? prevMessages.length : 0,
-    forceFullRender: !!forceFullRender,
-  });
-  pushLiveDebugEvent("history.render:start", {
-    variant: "full",
-    threadId,
-    messages: Array.isArray(messages) ? messages.length : 0,
-  });
-  try {
 
   const strategy = forceFullRender
     ? "full_rerender"
@@ -472,12 +434,4 @@ export async function applyFullHistoryRender(params = {}) {
   finalizeThreadRenderEffects(historyCommentary, liveCommentarySnapshot, {
     updateScrollButton: true,
   });
-  } finally {
-    endActivity();
-    pushLiveDebugEvent("history.render:end", {
-      variant: "full",
-      threadId,
-      messages: Array.isArray(messages) ? messages.length : 0,
-    });
-  }
 }

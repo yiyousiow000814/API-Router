@@ -118,8 +118,6 @@ const WEB_CODEX_TRANSPORT_MODE_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/transportMode.js");
 const WEB_CODEX_TURN_ACTIONS_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/turnActions.js");
-const WEB_CODEX_UI_ACTIVITY_JS: &str =
-    include_str!("../../../../src/ui/modules/codex-web/uiActivity.js");
 const WEB_CODEX_UI_HELPERS_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/uiHelpers.js");
 const WEB_CODEX_WEB_DIAGNOSTICS_JS: &str =
@@ -242,7 +240,6 @@ fn resolve_web_codex_module_asset(module_path: &str) -> Option<WebCodexModuleAss
         "codex-web/threadSearchUiState.js" => WEB_CODEX_THREAD_SEARCH_UI_STATE_JS,
         "codex-web/transportMode.js" => WEB_CODEX_TRANSPORT_MODE_JS,
         "codex-web/turnActions.js" => WEB_CODEX_TURN_ACTIONS_JS,
-        "codex-web/uiActivity.js" => WEB_CODEX_UI_ACTIVITY_JS,
         "codex-web/uiHelpers.js" => WEB_CODEX_UI_HELPERS_JS,
         "codex-web/webDiagnostics.js" => WEB_CODEX_WEB_DIAGNOSTICS_JS,
         "codex-web/workspaceUi.js" => WEB_CODEX_WORKSPACE_UI_JS,
@@ -458,7 +455,6 @@ mod tests {
         assert!(resolve_web_codex_module_body("codex-web/threadOpenState.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/transportMode.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/turnActions.js").is_some());
-        assert!(resolve_web_codex_module_body("codex-web/uiActivity.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/uiHelpers.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/workspaceUi.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/wsClient.js").is_some());

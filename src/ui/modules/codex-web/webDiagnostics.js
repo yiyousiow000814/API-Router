@@ -7,21 +7,6 @@ const DEFAULT_LOCAL_TASK_THRESHOLD_MS = 80;
 const DEFAULT_INTERACTION_SAMPLE_COOLDOWN_MS = 600;
 const DEFAULT_INTERACTION_MONITOR_WINDOW_MS = 8000;
 
-function readUiActivitySnapshot(windowRef) {
-  const stack = Array.isArray(windowRef?.__API_ROUTER_UI_ACTIVITY_STACK__)
-    ? windowRef.__API_ROUTER_UI_ACTIVITY_STACK__
-    : [];
-  if (!stack.length) return null;
-  const current = stack[stack.length - 1];
-  if (!current || typeof current !== "object") return null;
-  return {
-    kind: String(current.kind || "").trim(),
-    fields: current.fields && typeof current.fields === "object" ? { ...current.fields } : {},
-    startedAtUnixMs: Math.max(0, Math.round(Number(current.startedAtUnixMs || 0))),
-    depth: stack.length,
-  };
-}
-
 export function normalizeCodexWebActivePage(state) {
   const tab = String(state?.activeMainTab || "").trim();
   if (!tab || tab === "chat") return "codex-web";
@@ -30,14 +15,6 @@ export function normalizeCodexWebActivePage(state) {
 
 function isVisible(documentRef) {
   return String(documentRef?.visibilityState || "visible").trim().toLowerCase() !== "hidden";
-}
-
-function hasDocumentFocus(documentRef) {
-  try {
-    return documentRef?.hasFocus?.() !== false;
-  } catch {
-    return true;
-  }
 }
 
 function truncateMessage(value, maxLength = 500) {
@@ -86,14 +63,10 @@ export function createCodexWebDiagnostics(deps) {
   let installed = false;
   let flushTimer = 0;
   let heartbeatTimer = 0;
-  let flushInFlight = null;
-  let flushRerunRequested = false;
-  let queuedFlushExtra = null;
   let startupFrameMonitorUntil = 0;
   let interactionFrameMonitorUntil = 0;
   let interactionFrameMonitorScheduled = false;
   let lastInteractionSampleAt = 0;
-  let lastInteractionContext = null;
 
   function activePage() {
     return normalizeCodexWebActivePage(state);
@@ -135,18 +108,6 @@ export function createCodexWebDiagnostics(deps) {
     }, batchDelayMs);
   }
 
-  function mergeFlushExtra(extra = {}) {
-    if (!extra || typeof extra !== "object") return;
-    if (!queuedFlushExtra) {
-      queuedFlushExtra = { ...extra };
-      return;
-    }
-    queuedFlushExtra = {
-      ...queuedFlushExtra,
-      ...extra,
-    };
-  }
-
   function enqueue(key, value) {
     if (!queue[key]) return;
     queue[key].push({
@@ -162,63 +123,31 @@ export function createCodexWebDiagnostics(deps) {
 
   async function flush(extra = {}) {
     if (!fetchRef) return;
-    if (flushInFlight) {
-      flushRerunRequested = true;
-      mergeFlushExtra(extra);
-      return flushInFlight;
-    }
-
-    let nextExtra = extra;
-    flushInFlight = (async () => {
-      do {
-        flushRerunRequested = false;
-        const traces = queue.traces.slice(0, 256);
-        const invokeResults = queue.invokeResults.slice(0, 256);
-        const localTasks = queue.localTasks.slice(0, 128);
-        const longTasks = queue.longTasks.slice(0, 64);
-        const frameStalls = queue.frameStalls.slice(0, 64);
-        const frontendErrors = queue.frontendErrors.slice(0, 64);
-        const body = {
-          ...nextExtra,
-          traces,
-          invokeResults,
-          localTasks,
-          longTasks,
-          frameStalls,
-          frontendErrors,
-        };
-        const hasQueued =
-          body.traces.length ||
-          body.invokeResults.length ||
-          body.localTasks.length ||
-          body.longTasks.length ||
-          body.frameStalls.length ||
-          body.frontendErrors.length ||
-          body.heartbeat;
-        nextExtra = null;
-        if (!hasQueued) continue;
-        try {
-          await fetchRef("/codex/ui-diagnostics", {
-            method: "POST",
-            headers: authHeaders(),
-            body: JSON.stringify(body),
-          });
-          queue.traces.splice(0, traces.length);
-          queue.invokeResults.splice(0, invokeResults.length);
-          queue.localTasks.splice(0, localTasks.length);
-          queue.longTasks.splice(0, longTasks.length);
-          queue.frameStalls.splice(0, frameStalls.length);
-          queue.frontendErrors.splice(0, frontendErrors.length);
-        } catch {}
-        if (queuedFlushExtra) {
-          nextExtra = queuedFlushExtra;
-          queuedFlushExtra = null;
-        }
-      } while (flushRerunRequested || queuedFlushExtra);
-    })().finally(() => {
-      flushInFlight = null;
-    });
-    return flushInFlight;
+    const body = {
+      ...extra,
+      traces: queue.traces.splice(0, 256),
+      invokeResults: queue.invokeResults.splice(0, 256),
+      localTasks: queue.localTasks.splice(0, 128),
+      longTasks: queue.longTasks.splice(0, 64),
+      frameStalls: queue.frameStalls.splice(0, 64),
+      frontendErrors: queue.frontendErrors.splice(0, 64),
+    };
+    const hasQueued =
+      body.traces.length ||
+      body.invokeResults.length ||
+      body.localTasks.length ||
+      body.longTasks.length ||
+      body.frameStalls.length ||
+      body.frontendErrors.length ||
+      body.heartbeat;
+    if (!hasQueued) return;
+    try {
+      await fetchRef("/codex/ui-diagnostics", {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify(body),
+      });
+    } catch {}
   }
 
   function recordApiResult({ command, elapsedMs, ok, errorMessage }) {
@@ -269,34 +198,9 @@ export function createCodexWebDiagnostics(deps) {
 
   function recordFrameStall(elapsedMs, monitorKind) {
     if (elapsedMs < frameStallThresholdMs) return;
-    const uiActivity = readUiActivitySnapshot(windowRef);
-    let activityKind = uiActivity?.kind || null;
-    let activityFields = uiActivity?.fields || null;
-    let activityAgeMs =
-      uiActivity && uiActivity.startedAtUnixMs > 0
-        ? Math.max(0, Math.round(nowRef() - uiActivity.startedAtUnixMs))
-        : null;
-    let activityDepth = uiActivity?.depth || 0;
-    if (!activityKind && monitorKind === "interaction" && lastInteractionContext) {
-      const ageMs = Math.max(0, Math.round(nowRef() - lastInteractionContext.atUnixMs));
-      activityKind = `interaction.${lastInteractionContext.eventType}`;
-      activityFields = {
-        source: "last_interaction",
-        eventType: lastInteractionContext.eventType,
-        ageMs,
-        visible: visible(),
-        hasFocus: hasDocumentFocus(documentRef),
-      };
-      activityAgeMs = ageMs;
-      activityDepth = 1;
-    }
     enqueue("frameStalls", {
       elapsedMs: Math.round(elapsedMs),
       monitorKind,
-      activityKind,
-      activityFields,
-      activityAgeMs,
-      activityDepth,
     });
   }
 
@@ -336,14 +240,10 @@ export function createCodexWebDiagnostics(deps) {
 
   function installInteractionFrameMonitor() {
     if (!windowRef || !requestAnimationFrameRef) return;
-    const buildHandler = (eventName) => () => {
+    const handler = () => {
       const now = nowRef();
       if (now - lastInteractionSampleAt < interactionSampleCooldownMs) return;
       lastInteractionSampleAt = now;
-      lastInteractionContext = {
-        eventType: String(eventName || "unknown").trim() || "unknown",
-        atUnixMs: now,
-      };
       interactionFrameMonitorUntil = Math.max(
         interactionFrameMonitorUntil,
         now + interactionMonitorWindowMs
@@ -351,7 +251,7 @@ export function createCodexWebDiagnostics(deps) {
       startInteractionFrameMonitor();
     };
     for (const eventName of ["pointerdown", "keydown", "wheel", "touchstart"]) {
-      windowRef.addEventListener?.(eventName, buildHandler(eventName), { passive: true });
+      windowRef.addEventListener?.(eventName, handler, { passive: true });
     }
   }
 

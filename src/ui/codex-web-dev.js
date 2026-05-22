@@ -266,7 +266,7 @@ function scheduleThreadRefresh(delayMs = THREAD_REFRESH_DEBOUNCE_MS) {
   }, delayMs);
 }
 
-function scheduleActiveThreadRefresh(threadId, delayMs = ACTIVE_THREAD_REFRESH_DEBOUNCE_MS, options = {}) {
+function scheduleActiveThreadRefresh(threadId, delayMs = ACTIVE_THREAD_REFRESH_DEBOUNCE_MS) {
   if (!threadId || threadId !== state.activeThreadId) return;
   if (state.activeThreadRefreshTimer) clearTimeout(state.activeThreadRefreshTimer);
   state.activeThreadRefreshTimer = setTimeout(() => {
@@ -274,8 +274,6 @@ function scheduleActiveThreadRefresh(threadId, delayMs = ACTIVE_THREAD_REFRESH_D
     if (!threadId || threadId !== state.activeThreadId) return;
     loadThreadMessages(threadId, {
       animateBadge: false,
-      disableHistoryReplay: options?.disableHistoryReplay === true,
-      refreshReason: String(options?.refreshReason || "").trim(),
       workspace: state.activeThreadWorkspace,
       rolloutPath: state.activeThreadRolloutPath,
     }).catch(() => {});
