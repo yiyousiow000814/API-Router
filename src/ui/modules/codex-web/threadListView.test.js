@@ -519,6 +519,212 @@ describe("threadListView", () => {
     expect(betaBody.classList.contains("collapsed")).toBe(true);
   });
 
+  it("renders collapsed group cards lazily when the group expands", () => {
+    const list = createFakeElement("div");
+    const body = createFakeElement("body");
+    const state = {
+      threadItems: [],
+      threadItemsAll: [],
+      threadSearchQuery: "",
+      threadListLoading: false,
+      threadListLoadingTarget: "",
+      workspaceAvailability: { windowsInstalled: true, wsl2Installed: true },
+      threadListPendingVisibleAnimationByWorkspace: {},
+      threadListAnimationHoldUntilByWorkspace: {},
+      threadListVisibleOpenAnimationUntil: 0,
+      threadListAnimateNextRender: false,
+      threadListAnimateThreadIds: new Set(),
+      threadListExpandAnimateGroupKeys: new Set(),
+      threadListCollapseAnimateGroupKeys: new Set(),
+      threadListChevronOpenAnimateKeys: new Set(),
+      threadListChevronCloseAnimateKeys: new Set(),
+      threadListSkipScrollRestoreOnce: false,
+      collapsedWorkspaceKeys: new Set(["beta"]),
+      threadGroupCollapseInitializedByWorkspace: { windows: true, wsl2: true },
+      favoriteThreadIds: new Set(),
+    };
+    const module = createThreadListViewModule({
+      state,
+      byId(id) {
+        return id === "threadList" ? list : null;
+      },
+      escapeHtml(value) {
+        return String(value || "");
+      },
+      normalizeWorkspaceTarget(value) {
+        return String(value || "").toLowerCase() === "wsl2" ? "wsl2" : "windows";
+      },
+      getWorkspaceTarget() {
+        return "windows";
+      },
+      hasDualWorkspaceTargets() {
+        return true;
+      },
+      pushThreadAnimDebug() {},
+      isThreadListActuallyVisible() {
+        return true;
+      },
+      workspaceKeyOfThread(thread) {
+        return thread.workspace;
+      },
+      truncateLabel(value) {
+        return String(value || "");
+      },
+      relativeTimeLabel() {
+        return "";
+      },
+      pickThreadTimestamp() {
+        return Date.now();
+      },
+      setMainTab() {},
+      setMobileTab() {},
+      setActiveThread() {},
+      setChatOpening() {},
+      detectThreadWorkspaceTarget(thread) {
+        return thread.workspace;
+      },
+      loadThreadMessages: async () => {},
+      api: async () => ({}),
+      setStatus() {},
+      scheduleThreadRefresh() {},
+      scrollToBottomReliable() {},
+      windowRef: { getComputedStyle() { return { paddingTop: "0px", paddingBottom: "0px" }; } },
+      documentRef: {
+        body,
+        createElement(tagName) {
+          return createFakeElement(tagName);
+        },
+      },
+      requestAnimationFrameRef(callback) {
+        callback();
+        return 1;
+      },
+      performanceRef: { now() { return 0; } },
+      localStorageRef: { setItem() {} },
+      FAVORITE_THREADS_KEY: "favorites",
+    });
+    state.threadItems = [
+      { id: "alpha-1", workspace: "alpha", title: "Alpha 1" },
+      { id: "beta-1", workspace: "beta", title: "Beta 1" },
+      { id: "beta-2", workspace: "beta", title: "Beta 2" },
+    ];
+
+    module.renderThreads(state.threadItems);
+
+    const betaGroup = list.children[1];
+    const betaHeader = betaGroup.children[0];
+    const betaBody = betaGroup.children[1];
+    expect(betaBody.classList.contains("collapsed")).toBe(true);
+    expect(betaBody.children).toHaveLength(0);
+
+    betaHeader.onclick();
+
+    expect(betaBody.classList.contains("collapsed")).toBe(false);
+    expect(betaBody.children).toHaveLength(2);
+    expect(betaBody.children[0].textContent || betaBody.children[0].innerHTML).toContain("Beta 1");
+  });
+
+  it("renders user-expanded group cards visibly before the height animation starts", () => {
+    const list = createFakeElement("div");
+    const body = createFakeElement("body");
+    const state = {
+      threadItems: [],
+      threadItemsAll: [],
+      threadSearchQuery: "",
+      threadListLoading: false,
+      threadListLoadingTarget: "",
+      workspaceAvailability: { windowsInstalled: true, wsl2Installed: true },
+      threadListPendingVisibleAnimationByWorkspace: {},
+      threadListAnimationHoldUntilByWorkspace: {},
+      threadListVisibleOpenAnimationUntil: 0,
+      threadListAnimateNextRender: false,
+      threadListAnimateThreadIds: new Set(),
+      threadListExpandAnimateGroupKeys: new Set(["beta"]),
+      threadListCollapseAnimateGroupKeys: new Set(),
+      threadListChevronOpenAnimateKeys: new Set(),
+      threadListChevronCloseAnimateKeys: new Set(),
+      threadListSkipScrollRestoreOnce: false,
+      collapsedWorkspaceKeys: new Set(["beta"]),
+      threadGroupCollapseInitializedByWorkspace: { windows: true, wsl2: true },
+      favoriteThreadIds: new Set(),
+    };
+    const module = createThreadListViewModule({
+      state,
+      byId(id) {
+        return id === "threadList" ? list : null;
+      },
+      escapeHtml(value) {
+        return String(value || "");
+      },
+      normalizeWorkspaceTarget(value) {
+        return String(value || "").toLowerCase() === "wsl2" ? "wsl2" : "windows";
+      },
+      getWorkspaceTarget() {
+        return "windows";
+      },
+      hasDualWorkspaceTargets() {
+        return true;
+      },
+      pushThreadAnimDebug() {},
+      isThreadListActuallyVisible() {
+        return true;
+      },
+      workspaceKeyOfThread(thread) {
+        return thread.workspace;
+      },
+      truncateLabel(value) {
+        return String(value || "");
+      },
+      relativeTimeLabel() {
+        return "";
+      },
+      pickThreadTimestamp() {
+        return Date.now();
+      },
+      setMainTab() {},
+      setMobileTab() {},
+      setActiveThread() {},
+      setChatOpening() {},
+      detectThreadWorkspaceTarget(thread) {
+        return thread.workspace;
+      },
+      loadThreadMessages: async () => {},
+      api: async () => ({}),
+      setStatus() {},
+      scheduleThreadRefresh() {},
+      scrollToBottomReliable() {},
+      windowRef: { getComputedStyle() { return { paddingTop: "0px", paddingBottom: "0px" }; } },
+      documentRef: {
+        body,
+        createElement(tagName) {
+          return createFakeElement(tagName);
+        },
+      },
+      requestAnimationFrameRef(callback) {
+        callback();
+        return 1;
+      },
+      performanceRef: { now() { return 0; } },
+      localStorageRef: { setItem() {} },
+      FAVORITE_THREADS_KEY: "favorites",
+    });
+    state.threadItems = [
+      { id: "alpha-1", workspace: "alpha", title: "Alpha 1" },
+      { id: "beta-1", workspace: "beta", title: "Beta 1" },
+      { id: "beta-2", workspace: "beta", title: "Beta 2" },
+    ];
+
+    module.renderThreads(state.threadItems);
+    const betaHeader = list.children[1].children[0];
+    betaHeader.onclick();
+
+    const betaBody = list.children[1].children[1];
+    expect(betaBody.classList.contains("is-animating")).toBe(true);
+    expect(betaBody.children).toHaveLength(2);
+    expect(betaBody.children[0].classList.contains("threadExpandEnter")).toBe(false);
+    expect(betaBody.children[1].classList.contains("threadExpandEnter")).toBe(false);
+  });
+
   it("animates a later expanded group as a continuous reveal during list enter", () => {
     const list = createFakeElement("div");
     const body = createFakeElement("body");
@@ -626,13 +832,13 @@ describe("threadListView", () => {
     expect(betaBody.children[1].style["--thread-expand-enter-delay"]).toBe("360ms");
   });
 
-  it("does not restore a stale thread list scroll offset while the mobile drawer is open", () => {
+  it("does not restore a stale thread list scroll offset while the mobile drawer is opening", () => {
     const list = createFakeElement("div");
     list.scrollTop = 84;
     list.clientHeight = 320;
     list.mockScrollHeight = 1200;
     const body = createFakeElement("body");
-    body.classList.add("drawer-left-open");
+    body.classList.add("drawer-left-opening");
     const state = {
       threadItems: [],
       threadItemsAll: [],
@@ -649,7 +855,7 @@ describe("threadListView", () => {
       threadListCollapseAnimateGroupKeys: new Set(),
       threadListChevronOpenAnimateKeys: new Set(),
       threadListChevronCloseAnimateKeys: new Set(),
-      threadListSkipScrollRestoreOnce: false,
+      threadListSkipScrollRestoreOnce: true,
       collapsedWorkspaceKeys: new Set(),
       threadGroupCollapseInitializedByWorkspace: { windows: true, wsl2: true },
       favoriteThreadIds: new Set(),
@@ -723,6 +929,210 @@ describe("threadListView", () => {
     module.renderThreads(state.threadItems);
 
     expect(list.scrollTop).toBe(0);
+  });
+
+  it("preserves thread list scroll during idle refresh while the mobile drawer is already open", () => {
+    const list = createFakeElement("div");
+    list.scrollTop = 84;
+    list.clientHeight = 320;
+    list.mockScrollHeight = 1200;
+    const body = createFakeElement("body");
+    body.classList.add("drawer-left-open");
+    const state = {
+      threadItems: [],
+      threadItemsAll: [],
+      threadSearchQuery: "",
+      threadListLoading: false,
+      threadListLoadingTarget: "",
+      workspaceAvailability: { windowsInstalled: true, wsl2Installed: true },
+      threadListPendingVisibleAnimationByWorkspace: {},
+      threadListAnimationHoldUntilByWorkspace: {},
+      threadListVisibleOpenAnimationUntil: 0,
+      threadListAnimateNextRender: false,
+      threadListAnimateThreadIds: new Set(),
+      threadListExpandAnimateGroupKeys: new Set(),
+      threadListCollapseAnimateGroupKeys: new Set(),
+      threadListChevronOpenAnimateKeys: new Set(),
+      threadListChevronCloseAnimateKeys: new Set(),
+      threadListSkipScrollRestoreOnce: false,
+      collapsedWorkspaceKeys: new Set(),
+      threadGroupCollapseInitializedByWorkspace: { windows: true, wsl2: true },
+      favoriteThreadIds: new Set(),
+    };
+    const module = createThreadListViewModule({
+      state,
+      byId(id) {
+        return id === "threadList" ? list : null;
+      },
+      escapeHtml(value) {
+        return String(value || "");
+      },
+      normalizeWorkspaceTarget(value) {
+        return String(value || "").toLowerCase() === "wsl2" ? "wsl2" : "windows";
+      },
+      getWorkspaceTarget() {
+        return "windows";
+      },
+      hasDualWorkspaceTargets() {
+        return true;
+      },
+      pushThreadAnimDebug() {},
+      isThreadListActuallyVisible() {
+        return true;
+      },
+      workspaceKeyOfThread(thread) {
+        return thread.workspace;
+      },
+      truncateLabel(value) {
+        return String(value || "");
+      },
+      relativeTimeLabel() {
+        return "";
+      },
+      pickThreadTimestamp() {
+        return Date.now();
+      },
+      setMainTab() {},
+      setMobileTab() {},
+      setActiveThread() {},
+      setChatOpening() {},
+      detectThreadWorkspaceTarget(thread) {
+        return thread.workspace;
+      },
+      loadThreadMessages: async () => {},
+      api: async () => ({}),
+      setStatus() {},
+      scheduleThreadRefresh() {},
+      scrollToBottomReliable() {},
+      windowRef: { innerHeight: 720, getComputedStyle() { return { paddingTop: "0px", paddingBottom: "0px" }; } },
+      documentRef: {
+        body,
+        createElement(tagName) {
+          return createFakeElement(tagName);
+        },
+      },
+      requestAnimationFrameRef(callback) {
+        callback();
+        return 1;
+      },
+      performanceRef: { now() { return 0; } },
+      localStorageRef: { setItem() {} },
+      FAVORITE_THREADS_KEY: "favorites",
+    });
+    state.threadItems = Array.from({ length: 20 }, (_, index) => ({
+      id: `alpha-${index}`,
+      workspace: "alpha",
+      title: `Alpha ${index}`,
+    }));
+
+    module.renderThreads(state.threadItems);
+
+    expect(list.scrollTop).toBe(84);
+  });
+
+  it("preserves thread list scroll after an expanded group is refreshed", () => {
+    const list = createFakeElement("div");
+    list.clientHeight = 320;
+    list.mockScrollHeight = 1200;
+    const body = createFakeElement("body");
+    body.classList.add("drawer-left-open");
+    const state = {
+      threadItems: [],
+      threadItemsAll: [],
+      threadSearchQuery: "",
+      threadListLoading: false,
+      threadListLoadingTarget: "",
+      workspaceAvailability: { windowsInstalled: true, wsl2Installed: true },
+      threadListPendingVisibleAnimationByWorkspace: {},
+      threadListAnimationHoldUntilByWorkspace: {},
+      threadListVisibleOpenAnimationUntil: 0,
+      threadListAnimateNextRender: false,
+      threadListAnimateThreadIds: new Set(),
+      threadListExpandAnimateGroupKeys: new Set(),
+      threadListCollapseAnimateGroupKeys: new Set(),
+      threadListChevronOpenAnimateKeys: new Set(),
+      threadListChevronCloseAnimateKeys: new Set(),
+      threadListSkipScrollRestoreOnce: false,
+      collapsedWorkspaceKeys: new Set(["alpha", "beta"]),
+      threadGroupCollapseInitializedByWorkspace: { windows: true, wsl2: true },
+      favoriteThreadIds: new Set(),
+    };
+    const module = createThreadListViewModule({
+      state,
+      byId(id) {
+        return id === "threadList" ? list : null;
+      },
+      escapeHtml(value) {
+        return String(value || "");
+      },
+      normalizeWorkspaceTarget(value) {
+        return String(value || "").toLowerCase() === "wsl2" ? "wsl2" : "windows";
+      },
+      getWorkspaceTarget() {
+        return "windows";
+      },
+      hasDualWorkspaceTargets() {
+        return true;
+      },
+      pushThreadAnimDebug() {},
+      isThreadListActuallyVisible() {
+        return true;
+      },
+      workspaceKeyOfThread(thread) {
+        return thread.workspace;
+      },
+      truncateLabel(value) {
+        return String(value || "");
+      },
+      relativeTimeLabel() {
+        return "";
+      },
+      pickThreadTimestamp() {
+        return Date.now();
+      },
+      setMainTab() {},
+      setMobileTab() {},
+      setActiveThread() {},
+      setChatOpening() {},
+      detectThreadWorkspaceTarget(thread) {
+        return thread.workspace;
+      },
+      loadThreadMessages: async () => {},
+      api: async () => ({}),
+      setStatus() {},
+      scheduleThreadRefresh() {},
+      scrollToBottomReliable() {},
+      windowRef: { innerHeight: 720, getComputedStyle() { return { paddingTop: "0px", paddingBottom: "0px" }; } },
+      documentRef: {
+        body,
+        createElement(tagName) {
+          return createFakeElement(tagName);
+        },
+      },
+      requestAnimationFrameRef(callback) {
+        callback();
+        return 1;
+      },
+      performanceRef: { now() { return 0; } },
+      localStorageRef: { setItem() {} },
+      FAVORITE_THREADS_KEY: "favorites",
+    });
+    state.threadItems = [
+      { id: "alpha-1", workspace: "alpha", title: "Alpha 1" },
+      ...Array.from({ length: 20 }, (_, index) => ({
+        id: `beta-${index}`,
+        workspace: "beta",
+        title: `Beta ${index}`,
+      })),
+    ];
+
+    module.renderThreads(state.threadItems);
+    list.children[1].children[0].onclick();
+    list.scrollTop = 84;
+
+    module.renderThreads(state.threadItems);
+
+    expect(list.scrollTop).toBe(84);
   });
 
   it("disables thread list scrolling when the rendered chats do not exceed the drawer height", () => {
@@ -823,6 +1233,224 @@ describe("threadListView", () => {
     expect(list.style.touchAction).toBe("none");
     expect(list.style.overscrollBehaviorY).toBe("none");
     expect(list.style.webkitOverflowScrolling).toBe("auto");
+  });
+
+  it("does not synchronously measure full thread list height while rendering", () => {
+    const list = createFakeElement("div");
+    let scrollHeightReads = 0;
+    Object.defineProperty(list, "scrollHeight", {
+      configurable: true,
+      get() {
+        scrollHeightReads += 1;
+        return 12000;
+      },
+    });
+    const body = createFakeElement("body");
+    body.classList.add("drawer-left-open");
+    const state = {
+      threadItems: [],
+      threadItemsAll: [],
+      threadSearchQuery: "",
+      threadListLoading: false,
+      threadListLoadingTarget: "",
+      workspaceAvailability: { windowsInstalled: true, wsl2Installed: true },
+      threadListPendingVisibleAnimationByWorkspace: {},
+      threadListAnimationHoldUntilByWorkspace: {},
+      threadListVisibleOpenAnimationUntil: 0,
+      threadListAnimateNextRender: false,
+      threadListAnimateThreadIds: new Set(),
+      threadListExpandAnimateGroupKeys: new Set(),
+      threadListCollapseAnimateGroupKeys: new Set(),
+      threadListChevronOpenAnimateKeys: new Set(),
+      threadListChevronCloseAnimateKeys: new Set(),
+      threadListSkipScrollRestoreOnce: false,
+      collapsedWorkspaceKeys: new Set(),
+      threadGroupCollapseInitializedByWorkspace: { windows: false, wsl2: true },
+      favoriteThreadIds: new Set(),
+    };
+    const module = createThreadListViewModule({
+      state,
+      byId(id) {
+        return id === "threadList" ? list : null;
+      },
+      escapeHtml(value) {
+        return String(value || "");
+      },
+      normalizeWorkspaceTarget(value) {
+        return String(value || "").toLowerCase() === "wsl2" ? "wsl2" : "windows";
+      },
+      getWorkspaceTarget() {
+        return "windows";
+      },
+      hasDualWorkspaceTargets() {
+        return true;
+      },
+      pushThreadAnimDebug() {},
+      isThreadListActuallyVisible() {
+        return true;
+      },
+      workspaceKeyOfThread(thread) {
+        return thread.cwd;
+      },
+      truncateLabel(value) {
+        return String(value || "");
+      },
+      relativeTimeLabel() {
+        return "";
+      },
+      pickThreadTimestamp() {
+        return Date.now();
+      },
+      setMainTab() {},
+      setMobileTab() {},
+      setActiveThread() {},
+      setChatOpening() {},
+      detectThreadWorkspaceTarget(thread) {
+        return thread.workspace;
+      },
+      loadThreadMessages: async () => {},
+      api: async () => ({}),
+      setStatus() {},
+      scheduleThreadRefresh() {},
+      scrollToBottomReliable() {},
+      windowRef: { innerHeight: 720, getComputedStyle() { return { paddingTop: "0px", paddingBottom: "0px" }; } },
+      documentRef: {
+        body,
+        createElement(tagName) {
+          return createFakeElement(tagName);
+        },
+      },
+      requestAnimationFrameRef(callback) {
+        callback();
+        return 1;
+      },
+      performanceRef: { now() { return 0; } },
+      localStorageRef: { setItem() {} },
+      FAVORITE_THREADS_KEY: "favorites",
+    });
+    state.threadItems = Array.from({ length: 120 }, (_, index) => ({
+      id: `thread-${index}`,
+      workspace: "windows",
+      cwd: `C:\\Users\\yiyou\\project-${index}`,
+      title: `Thread ${index}`,
+    }));
+
+    module.renderThreads(state.threadItems);
+
+    expect(scrollHeightReads).toBe(0);
+    expect(list.style.overflowY).toBe("auto");
+  });
+
+  it("time-slices large expanded groups instead of synchronously rendering every card", () => {
+    const list = createFakeElement("div");
+    const body = createFakeElement("body");
+    body.classList.add("drawer-left-open");
+    const rafQueue = [];
+    const state = {
+      threadItems: [],
+      threadItemsAll: [],
+      threadSearchQuery: "",
+      threadListLoading: false,
+      threadListLoadingTarget: "",
+      workspaceAvailability: { windowsInstalled: true, wsl2Installed: true },
+      threadListPendingVisibleAnimationByWorkspace: {},
+      threadListAnimationHoldUntilByWorkspace: {},
+      threadListVisibleOpenAnimationUntil: 0,
+      threadListAnimateNextRender: false,
+      threadListAnimateThreadIds: new Set(),
+      threadListExpandAnimateGroupKeys: new Set(),
+      threadListCollapseAnimateGroupKeys: new Set(),
+      threadListChevronOpenAnimateKeys: new Set(),
+      threadListChevronCloseAnimateKeys: new Set(),
+      threadListSkipScrollRestoreOnce: false,
+      collapsedWorkspaceKeys: new Set(),
+      threadGroupCollapseInitializedByWorkspace: { windows: true, wsl2: true },
+      favoriteThreadIds: new Set(),
+    };
+    const module = createThreadListViewModule({
+      state,
+      byId(id) {
+        return id === "threadList" ? list : null;
+      },
+      escapeHtml(value) {
+        return String(value || "");
+      },
+      normalizeWorkspaceTarget(value) {
+        return String(value || "").toLowerCase() === "wsl2" ? "wsl2" : "windows";
+      },
+      getWorkspaceTarget() {
+        return "windows";
+      },
+      hasDualWorkspaceTargets() {
+        return true;
+      },
+      pushThreadAnimDebug() {},
+      isThreadListActuallyVisible() {
+        return true;
+      },
+      workspaceKeyOfThread(thread) {
+        return thread.cwd;
+      },
+      truncateLabel(value) {
+        return String(value || "");
+      },
+      relativeTimeLabel() {
+        return "";
+      },
+      pickThreadTimestamp() {
+        return Date.now();
+      },
+      setMainTab() {},
+      setMobileTab() {},
+      setActiveThread() {},
+      setChatOpening() {},
+      detectThreadWorkspaceTarget(thread) {
+        return thread.workspace;
+      },
+      loadThreadMessages: async () => {},
+      api: async () => ({}),
+      setStatus() {},
+      scheduleThreadRefresh() {},
+      scrollToBottomReliable() {},
+      windowRef: {
+        innerHeight: 720,
+        getComputedStyle() {
+          return { paddingTop: "0px", paddingBottom: "0px" };
+        },
+      },
+      documentRef: {
+        body,
+        createElement(tagName) {
+          return createFakeElement(tagName);
+        },
+      },
+      requestAnimationFrameRef(callback) {
+        rafQueue.push(callback);
+        return rafQueue.length;
+      },
+      performanceRef: { now() { return 0; } },
+      localStorageRef: { setItem() {} },
+      FAVORITE_THREADS_KEY: "favorites",
+    });
+    state.threadItems = Array.from({ length: 240 }, (_, index) => ({
+      id: `thread-${index}`,
+      workspace: "windows",
+      cwd: "C:\\Users\\yiyou\\large-project",
+      title: `Thread ${index}`,
+    }));
+
+    module.renderThreads(state.threadItems);
+
+    const groupBody = list.children[0].children[1];
+    expect(groupBody.children.length).toBeGreaterThan(0);
+    expect(groupBody.children.length).toBeLessThan(state.threadItems.length);
+
+    while (rafQueue.length) {
+      const callback = rafQueue.shift();
+      callback();
+    }
+
+    expect(groupBody.children).toHaveLength(state.threadItems.length);
   });
 
   it("renders grouped threads without touching entries before initialization", () => {

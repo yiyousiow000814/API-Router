@@ -110,6 +110,45 @@ export function shouldStaggerThreadGroupEnter(entries) {
   return populatedGroupCount > 1;
 }
 
+const THREAD_LIST_FALLBACK_VIEWPORT_HEIGHT_PX = 480;
+const THREAD_LIST_DRAWER_CHROME_ESTIMATE_PX = 238;
+const THREAD_LIST_GROUP_HEADER_ESTIMATE_PX = 40;
+const THREAD_LIST_ROW_ESTIMATE_PX = 50;
+const THREAD_LIST_STATE_ESTIMATE_PX = 96;
+const THREAD_LIST_SCROLL_BUFFER_PX = 8;
+const THREAD_LIST_INITIAL_CARD_SYNC_BUDGET = 96;
+const THREAD_LIST_INTERACTION_CARD_SYNC_BUDGET = 120;
+const THREAD_LIST_ASYNC_CARD_BATCH_SIZE = 96;
+
+function estimateThreadListViewportHeight(windowRef) {
+  const visualViewportHeight = Number(windowRef?.visualViewport?.height || 0);
+  const windowHeight = Number(windowRef?.innerHeight || 0);
+  const viewportHeight =
+    visualViewportHeight > 0 ? visualViewportHeight : windowHeight > 0 ? windowHeight : 0;
+  if (viewportHeight <= 0) return THREAD_LIST_FALLBACK_VIEWPORT_HEIGHT_PX;
+  return Math.max(
+    120,
+    Math.round(viewportHeight - THREAD_LIST_DRAWER_CHROME_ESTIMATE_PX)
+  );
+}
+
+function applyEstimatedThreadListScrollability(list, contentHeight, windowRef) {
+  const viewportHeight = estimateThreadListViewportHeight(windowRef);
+  const canScroll = contentHeight > viewportHeight + THREAD_LIST_SCROLL_BUFFER_PX;
+  if (canScroll) {
+    list.style.overflowY = "auto";
+    list.style.touchAction = "pan-y";
+    list.style.overscrollBehaviorY = "contain";
+    list.style.webkitOverflowScrolling = "touch";
+    return;
+  }
+  list.style.overflowY = "hidden";
+  list.style.touchAction = "none";
+  list.style.overscrollBehaviorY = "none";
+  list.style.webkitOverflowScrolling = "auto";
+  list.scrollTop = 0;
+}
+
 export function buildThreadResumeUrl(threadId, options = {}) {
   const params = new URLSearchParams();
   const workspace = String(options.workspace || "").trim();
@@ -310,55 +349,35 @@ export function createThreadListViewModule(deps) {
     localStorageRef = localStorage,
     FAVORITE_THREADS_KEY,
   } = deps;
+  let threadCardRenderToken = 0;
+  let threadListRenderToken = 0;
 
   function renderThreads(items) {
+    const renderToken = ++threadListRenderToken;
     const startedAt = performanceRef.now();
     let sourceItems = Array.isArray(items) ? items : [];
     let currentWorkspaceKey = "";
     let groupCount = 0;
     let renderedThreads = 0;
-    const estimateNodeContentHeight = (node) => {
-      if (!node) return 0;
-      const measuredScrollHeight = Number(node.scrollHeight || 0);
-      if (measuredScrollHeight > 0) return measuredScrollHeight;
-      const measuredClientHeight = Number(node.clientHeight || 0);
-      const children = Array.from(node.children || []);
-      if (!children.length) return measuredClientHeight > 0 ? measuredClientHeight : 0;
-      let maxBottom = 0;
-      for (const child of children) {
-        const childTop = Number(child?.offsetTop || 0);
-        const childHeight = Math.max(
-          Number(child?.scrollHeight || 0),
-          Number(child?.clientHeight || 0),
-          estimateNodeContentHeight(child),
-          38
-        );
-        maxBottom = Math.max(maxBottom, childTop + childHeight);
-      }
-      return Math.max(measuredClientHeight, maxBottom);
-    };
+    let synchronousCardBudget = THREAD_LIST_INITIAL_CARD_SYNC_BUDGET;
     try {
       const list = byId("threadList");
       if (!list) return;
+      let estimateCurrentListContentHeight = () => THREAD_LIST_STATE_ESTIMATE_PX;
       const applyListScrollability = () => {
-        const contentHeight = estimateNodeContentHeight(list);
-        const viewportHeight = Number(list.clientHeight || 0);
-        const canScroll = viewportHeight > 0 && contentHeight > viewportHeight + 1;
-        if (canScroll) {
-          list.style.overflowY = "auto";
-          list.style.touchAction = "pan-y";
-          list.style.overscrollBehaviorY = "contain";
-          list.style.webkitOverflowScrolling = "touch";
-          return;
-        }
-        list.style.overflowY = "hidden";
-        list.style.touchAction = "none";
-        list.style.overscrollBehaviorY = "none";
-        list.style.webkitOverflowScrolling = "auto";
-        list.scrollTop = 0;
+        if (renderToken !== threadListRenderToken) return;
+        applyEstimatedThreadListScrollability(
+          list,
+          estimateCurrentListContentHeight(),
+          windowRef
+        );
       };
+      let scrollabilityRefreshScheduled = false;
       const scheduleListScrollabilityRefresh = () => {
+        if (scrollabilityRefreshScheduled) return;
+        scrollabilityRefreshScheduled = true;
         requestAnimationFrameRef(() => {
+          scrollabilityRefreshScheduled = false;
           applyListScrollability();
         });
       };
@@ -429,11 +448,16 @@ export function createThreadListViewModule(deps) {
       body.style.opacity = "";
       body.style.transform = "";
       body.style.transitionDelay = "";
-      scheduleListScrollabilityRefresh();
+      if (!expanded) {
+        body.__threadCardsRenderToken = 0;
+        body.innerHTML = "";
+        body.__threadGroupRenderedKey = "";
+      }
     };
 
     const animateGroupBody = (body, expanded, { immediate = false, fromHeight = null, delayMs = 0 } = {}) => {
       if (!body) return;
+      if (!expanded) body.__threadCardsRenderToken = 0;
       if (immediate) {
         finishGroupBodyAnimation(body, expanded);
         return;
@@ -485,19 +509,81 @@ export function createThreadListViewModule(deps) {
     const resolveExpandedGroupRevealDelayMs = (groupEnterDelayMs) =>
       animateEnter ? groupEnterDelayMs + GROUP_EXPANDED_REVEAL_OFFSET_MS : groupEnterDelayMs;
 
-    const renderExpandedGroupThreads = (body, items, groupEnterDelayMs, groupKey) => {
+    const getRenderedGroupItems = (groupKey) => {
+      const key = String(groupKey || "");
+      if (key === "__section_favorites__") return favoriteItems;
+      const entry = entries.find(([, , workspaceKey]) => String(workspaceKey) === key);
+      if (!entry) return [];
+      const [workspace, threads] = entry;
+      return filterWorkspaceSectionThreads(threads, favoriteSet, query, workspace);
+    };
+
+    const takeSynchronousCardBudget = (requested) => {
+      const count = Math.min(
+        Math.max(0, Number(requested) || 0),
+        Math.max(0, synchronousCardBudget)
+      );
+      synchronousCardBudget -= count;
+      return count;
+    };
+
+    const renderExpandedGroupThreads = (body, items, groupEnterDelayMs, groupKey, options = {}) => {
+      if (!body) return;
+      body.innerHTML = "";
+      const renderedGroupKey = String(groupKey || "");
+      const groupItems = Array.isArray(items) ? items : [];
+      const token = ++threadCardRenderToken;
+      body.__threadGroupRenderedKey = renderedGroupKey;
+      body.__threadCardsRenderToken = token;
       const expandedGroupRevealDelayMs = resolveExpandedGroupRevealDelayMs(groupEnterDelayMs);
       const animateExpandedGroupCards =
+        options.animateExpandedCards !== false &&
         !state.collapsedWorkspaceKeys.has(groupKey) &&
         (animateEnter || expandAnimateGroupKeys.has(String(groupKey)));
-      for (const thread of items) {
-        body.appendChild(
-          renderThreadCard(thread, {
-            expandEnter: animateExpandedGroupCards,
-            expandEnterBaseDelayMs: animateEnter ? expandedGroupRevealDelayMs : 0,
-          })
-        );
+      const appendThreadCards = (startIndex, endIndex) => {
+        for (let i = startIndex; i < endIndex; i += 1) {
+          body.appendChild(
+            renderThreadCard(groupItems[i], {
+              expandEnter: animateExpandedGroupCards,
+              expandEnterBaseDelayMs: animateEnter ? expandedGroupRevealDelayMs : 0,
+            })
+          );
+        }
+      };
+      const requestedInitialCount =
+        Number.isFinite(options.initialCardCount) && options.initialCardCount >= 0
+          ? Number(options.initialCardCount)
+          : groupItems.length;
+      const initialCount = Math.min(
+        groupItems.length,
+        options.consumeInitialCardBudget === false
+          ? Math.max(0, requestedInitialCount)
+          : takeSynchronousCardBudget(requestedInitialCount)
+      );
+      appendThreadCards(0, initialCount);
+      if (initialCount >= groupItems.length) {
+        body.__threadCardsRenderToken = 0;
+        return;
       }
+      let nextIndex = initialCount;
+      const appendNextBatch = () => {
+        if (
+          body.__threadCardsRenderToken !== token ||
+          body.__threadGroupRenderedKey !== renderedGroupKey
+        ) {
+          return;
+        }
+        const endIndex = Math.min(nextIndex + THREAD_LIST_ASYNC_CARD_BATCH_SIZE, groupItems.length);
+        appendThreadCards(nextIndex, endIndex);
+        nextIndex = endIndex;
+        if (nextIndex < groupItems.length) {
+          requestAnimationFrameRef(appendNextBatch);
+          return;
+        }
+        if (body.__threadCardsRenderToken === token) body.__threadCardsRenderToken = 0;
+        scheduleListScrollabilityRefresh();
+      };
+      requestAnimationFrameRef(appendNextBatch);
     };
 
     const applyInitialGroupBodyState = (body, collapsed, groupEnterDelayMs) => {
@@ -514,6 +600,13 @@ export function createThreadListViewModule(deps) {
       const header = group?.children?.[0] || null;
       const body = group?.querySelector?.(".groupBody") || group?.children?.[1] || null;
       setGroupHeaderExpanded(header, expanded);
+      if (expanded) {
+        renderExpandedGroupThreads(body, getRenderedGroupItems(groupKey), 0, groupKey, {
+          consumeInitialCardBudget: false,
+          initialCardCount: THREAD_LIST_INTERACTION_CARD_SYNC_BUDGET,
+          animateExpandedCards: false,
+        });
+      }
       animateGroupBody(body, expanded, options);
     };
 
@@ -525,13 +618,13 @@ export function createThreadListViewModule(deps) {
         else state.collapsedWorkspaceKeys.add(key);
         setRenderedGroupExpanded(key, expanded);
       }
+      scheduleListScrollabilityRefresh();
       state.threadListAnimateNextRender = false;
       state.threadListAnimateThreadIds = new Set();
       state.threadListExpandAnimateGroupKeys = new Set();
       state.threadListCollapseAnimateGroupKeys = new Set();
       state.threadListChevronOpenAnimateKeys = new Set();
       state.threadListChevronCloseAnimateKeys = new Set();
-      state.threadListSkipScrollRestoreOnce = true;
     };
 
     const animateStateTextSwap = (node, nextLabel) => {
@@ -584,11 +677,8 @@ export function createThreadListViewModule(deps) {
       list.appendChild(plain);
     };
 
-    const drawerScrollResetActive =
-      documentRef.body.classList.contains("drawer-left-open") ||
-      documentRef.body.classList.contains("drawer-left-opening") ||
-      documentRef.body.classList.contains("drawer-left-previewing");
-    const skipScrollRestore = !!state.threadListSkipScrollRestoreOnce || drawerScrollResetActive;
+    const drawerScrollResetActive = !!state.threadListSkipScrollRestoreOnce;
+    const skipScrollRestore = drawerScrollResetActive;
     state.threadListSkipScrollRestoreOnce = false;
     const prevListScrollTop = list?.scrollTop ?? 0;
     if (drawerScrollResetActive) {
@@ -677,6 +767,22 @@ export function createThreadListViewModule(deps) {
       const id = thread.id || thread.threadId || "";
       return id && favoriteSet.has(id);
     });
+    const estimateSectionContentHeight = (sectionItems, sectionKey) => {
+      if (!Array.isArray(sectionItems) || sectionItems.length === 0) return 0;
+      const collapsed = state.collapsedWorkspaceKeys.has(sectionKey);
+      return (
+        THREAD_LIST_GROUP_HEADER_ESTIMATE_PX +
+        (collapsed ? 0 : sectionItems.length * THREAD_LIST_ROW_ESTIMATE_PX)
+      );
+    };
+    estimateCurrentListContentHeight = () => {
+      let height = estimateSectionContentHeight(favoriteItems, "__section_favorites__");
+      for (const [workspace, threads, workspaceKey] of entries) {
+        const filtered = filterWorkspaceSectionThreads(threads, favoriteSet, query, workspace);
+        height += estimateSectionContentHeight(filtered, workspaceKey);
+      }
+      return height > 0 ? height : THREAD_LIST_STATE_ESTIMATE_PX;
+    };
 
     const renderThreadCard = (thread, options = {}) => {
       const id = thread.id || thread.threadId || "";
@@ -854,18 +960,20 @@ export function createThreadListViewModule(deps) {
           state.collapsedWorkspaceKeys.delete(sectionKey);
           setGroupHeaderExpanded(header, true);
           setRenderedGroupExpanded(sectionKey, true);
+          scheduleListScrollabilityRefresh();
           return;
         }
         const bodyNode = group.querySelector(".groupBody");
         state.collapsedWorkspaceKeys.add(sectionKey);
         setGroupHeaderExpanded(header, false);
         animateGroupBody(bodyNode, false);
+        scheduleListScrollabilityRefresh();
       };
       group.appendChild(header);
       const body = documentRef.createElement("div");
       body.className = "groupBody";
       if (collapsed) body.classList.add("collapsed");
-      renderExpandedGroupThreads(body, sectionItems, groupEnterDelayMs, sectionKey);
+      if (!collapsed) renderExpandedGroupThreads(body, sectionItems, groupEnterDelayMs, sectionKey);
       group.appendChild(body);
       applyInitialGroupBodyState(body, collapsed, groupEnterDelayMs);
       const prevTop = prevGroupScroll.get(String(sectionKey));
@@ -908,12 +1016,13 @@ export function createThreadListViewModule(deps) {
         state.collapsedWorkspaceKeys.add(workspaceKey);
         setGroupHeaderExpanded(header, false);
         animateGroupBody(bodyNode, false);
+        scheduleListScrollabilityRefresh();
       };
       group.appendChild(header);
       const body = documentRef.createElement("div");
       body.className = "groupBody";
       if (collapsed) body.classList.add("collapsed");
-      renderExpandedGroupThreads(body, filtered, groupEnterDelayMs, workspaceKey);
+      if (!collapsed) renderExpandedGroupThreads(body, filtered, groupEnterDelayMs, workspaceKey);
       group.appendChild(body);
       applyInitialGroupBodyState(body, collapsed, groupEnterDelayMs);
       const prevTop = prevGroupScroll.get(String(workspaceKey));
