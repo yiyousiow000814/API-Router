@@ -891,6 +891,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn candidate_quota_bases_infers_codex_for_me_blackaicoding_origin() {
+        let p = ProviderConfig {
+            display_name: "Codex For Me".to_string(),
+            base_url: "https://blackaicoding.com/v1".to_string(),
+            group: None,
+            disabled: false,
+            supports_websockets: false,
+            usage_adapter: String::new(),
+            usage_base_url: None,
+            api_key: String::new(),
+        };
+        let bases = resolve_quota_profile(&p).candidate_bases;
+        assert_eq!(bases, vec!["https://blackaicoding.com".to_string()]);
+    }
+
+    #[tokio::test]
     async fn candidate_quota_bases_infers_codex_for_host_origin() {
         let p = ProviderConfig {
             display_name: "Codex For".to_string(),

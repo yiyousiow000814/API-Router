@@ -1395,10 +1395,14 @@ fn upsert_provider_impl(
             }
         })
     });
+    let base_url_changed;
     {
         let mut cfg = state.gateway.cfg.write();
         let existing = cfg.providers.get(&name).cloned();
         let is_new = existing.is_none();
+        base_url_changed = existing
+            .as_ref()
+            .is_some_and(|provider| provider.base_url != base_url);
         cfg.providers.insert(
             name.clone(),
             crate::orchestrator::config::ProviderConfig {
@@ -1429,6 +1433,13 @@ fn upsert_provider_impl(
         app_state::normalize_provider_order(&mut cfg);
     }
     persist_config_for_app_state(state).map_err(|e| e.to_string())?;
+    state
+        .gateway
+        .router
+        .sync_with_config(&state.gateway.cfg.read(), unix_ms());
+    if base_url_changed {
+        state.gateway.router.reset_provider_health(&name, unix_ms());
+    }
     let patch_payload = provider_definition_patch_payload(state, &name, &name)?;
     if let Err(err) = crate::lan_sync::record_provider_definition_patch(state, &name, patch_payload)
     {
@@ -2999,6 +3010,41 @@ mod provider_management_tests {
         let provider = cfg.providers.get("provider_1").expect("provider_1");
         assert_eq!(provider.group.as_deref(), Some("existing"));
         assert_eq!(provider.base_url, "https://example.com/v2");
+    }
+
+    #[test]
+    fn upsert_provider_base_url_change_resets_stale_health() {
+        let (_tmp, state) = build_test_state();
+        let mut cfg = state.gateway.cfg.read().clone();
+        cfg.routing.failure_threshold = 1;
+        {
+            let mut live_cfg = state.gateway.cfg.write();
+            live_cfg.routing.failure_threshold = 1;
+        }
+        state
+            .gateway
+            .router
+            .mark_failure("provider_1", &cfg, "old base failed", unix_ms());
+        assert!(
+            state.gateway.router.is_provider_in_cooldown("provider_1"),
+            "seeded failure should put provider_1 in cooldown"
+        );
+
+        upsert_provider_impl(
+            &state,
+            "provider_1".to_string(),
+            "Provider 1".to_string(),
+            "https://fresh.example.com/v1".to_string(),
+            None,
+        )
+        .expect("upsert provider");
+
+        let health = state.gateway.router.snapshot(unix_ms());
+        let provider_health = health.get("provider_1").expect("provider_1 health");
+        assert_eq!(provider_health.status, "unknown");
+        assert_eq!(provider_health.cooldown_until_unix_ms, 0);
+        assert_eq!(provider_health.consecutive_failures, 0);
+        assert_eq!(provider_health.last_error, "");
     }
 
     #[test]

@@ -1,7 +1,7 @@
 id = "codex-for-me"
 
 [match]
-base_url_host_contains = ["codex-for"]
+base_url_host_contains = ["codex-for", "blackaicoding"]
 
 [usage]
 refresh_flow = "login_then_summary"
