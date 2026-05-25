@@ -1974,16 +1974,14 @@ async fn responses(
                                 .and_then(|wt| windows_terminal::merge_wt_session_marker(None, wt)),
                             last_request_unix_ms: 0,
                             last_discovered_unix_ms: now_unix_ms,
-                            last_reported_model_provider: Some(
-                                GATEWAY_MODEL_PROVIDER_ID.to_string(),
-                            ),
+                            last_reported_model_provider: None,
                             last_reported_model: None,
                             last_reported_base_url: None,
                             rollout_path: None,
                             agent_parent_session_id: None,
                             is_agent: false,
                             is_review: false,
-                            confirmed_router: true,
+                            confirmed_router: false,
                         });
                 if let Some(inferred) = client_session.as_ref() {
                     if inferred.pid != 0 {
@@ -1996,14 +1994,8 @@ async fn responses(
                         observed_wt,
                     );
                 }
-                if let Some(base_url) = request_base_url.as_deref() {
-                    parent_entry.last_reported_base_url = Some(base_url.to_string());
-                }
                 parent_entry.last_discovered_unix_ms =
                     parent_entry.last_discovered_unix_ms.max(now_unix_ms);
-                parent_entry.last_reported_model_provider =
-                    Some(GATEWAY_MODEL_PROVIDER_ID.to_string());
-                parent_entry.confirmed_router = true;
             }
         }
     }
