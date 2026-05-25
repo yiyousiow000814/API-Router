@@ -1561,7 +1561,6 @@ struct VerifiedAgentParentAnchor {
     last_request_unix_ms: u64,
     last_discovered_unix_ms: u64,
     last_reported_model: Option<String>,
-    last_reported_base_url: Option<String>,
 }
 
 fn verified_agent_parent_anchors(
@@ -1582,7 +1581,6 @@ fn verified_agent_parent_anchors(
                 last_request_unix_ms: entry.last_request_unix_ms,
                 last_discovered_unix_ms: entry.last_discovered_unix_ms,
                 last_reported_model: entry.last_reported_model.clone(),
-                last_reported_base_url: entry.last_reported_base_url.clone(),
             })
         })
         .collect()
@@ -1654,35 +1652,16 @@ fn backfill_main_confirmation_from_verified_agent(
                     wt_session: anchor.wt_session.clone(),
                     last_request_unix_ms: anchor.last_request_unix_ms,
                     last_discovered_unix_ms: anchor.last_discovered_unix_ms,
-                    last_reported_model_provider: Some(
-                        crate::constants::GATEWAY_MODEL_PROVIDER_ID.to_string(),
-                    ),
+                    last_reported_model_provider: None,
                     last_reported_model: anchor.last_reported_model.clone(),
-                    last_reported_base_url: anchor.last_reported_base_url.clone(),
+                    last_reported_base_url: None,
                     rollout_path: None,
                     agent_parent_session_id: None,
                     is_agent: false,
                     is_review: false,
-                    confirmed_router: true,
+                    confirmed_router: false,
                 }
             });
-        }
-
-        let parent_ids: std::collections::HashSet<String> = parent_anchors
-            .iter()
-            .map(|anchor| anchor.parent_sid.clone())
-            .collect();
-
-        for parent_sid in parent_ids {
-            let Some(entry) = map.get_mut(&parent_sid) else {
-                continue;
-            };
-            if entry.confirmed_router || entry.is_agent || entry.is_review {
-                continue;
-            }
-            entry.confirmed_router = true;
-            entry.last_reported_model_provider =
-                Some(crate::constants::GATEWAY_MODEL_PROVIDER_ID.to_string());
         }
     }
 
@@ -1707,26 +1686,6 @@ fn backfill_main_confirmation_from_verified_agent(
             Some(crate::constants::GATEWAY_MODEL_PROVIDER_ID.to_string());
     }
 
-    for entry in map.values_mut() {
-        if entry.confirmed_router || entry.is_agent || entry.is_review {
-            continue;
-        }
-        let same_proc = parent_anchors.iter().any(|anchor| {
-            let pid_match = anchor.pid != 0 && entry.pid != 0 && anchor.pid == entry.pid;
-            let wt_match = anchor
-                .wt_session
-                .as_deref()
-                .zip(entry.wt_session.as_deref())
-                .is_some_and(|(a, b)| crate::platform::windows_terminal::wt_session_ids_equal(a, b));
-            pid_match || wt_match
-        });
-        if !same_proc {
-            continue;
-        }
-        entry.confirmed_router = true;
-        entry.last_reported_model_provider =
-            Some(crate::constants::GATEWAY_MODEL_PROVIDER_ID.to_string());
-    }
 }
 
 fn local_day_key_from_unix_ms(ts_unix_ms: u64) -> Option<String> {
@@ -3768,7 +3727,7 @@ mod tests {
     }
 
     #[test]
-    fn verified_review_backfills_main_session_confirmation() {
+    fn verified_review_does_not_backfill_main_session_confirmation() {
         let mut map = std::collections::HashMap::new();
         map.insert(
             "main".to_string(),
@@ -3810,15 +3769,12 @@ mod tests {
         backfill_main_confirmation_from_verified_agent(&mut map, 1);
 
         let main = map.get("main").expect("main row");
-        assert!(main.confirmed_router);
-        assert_eq!(
-            main.last_reported_model_provider.as_deref(),
-            Some(GATEWAY_MODEL_PROVIDER_ID)
-        );
+        assert!(!main.confirmed_router);
+        assert_eq!(main.last_reported_model_provider.as_deref(), None);
     }
 
     #[test]
-    fn backfill_can_confirm_old_main_session_when_review_verified() {
+    fn backfill_does_not_confirm_old_main_session_when_review_verified() {
         let mut map = std::collections::HashMap::new();
         map.insert(
             "main_old".to_string(),
@@ -3860,15 +3816,12 @@ mod tests {
         backfill_main_confirmation_from_verified_agent(&mut map, 2);
 
         let main = map.get("main_old").expect("main_old row");
-        assert!(main.confirmed_router);
-        assert_eq!(
-            main.last_reported_model_provider.as_deref(),
-            Some(GATEWAY_MODEL_PROVIDER_ID)
-        );
+        assert!(!main.confirmed_router);
+        assert_eq!(main.last_reported_model_provider.as_deref(), None);
     }
 
     #[test]
-    fn verified_review_recent_request_backfills_main_without_discovery_now() {
+    fn verified_review_recent_request_does_not_backfill_main_without_discovery_now() {
         let mut map = std::collections::HashMap::new();
         map.insert(
             "main_now".to_string(),
@@ -3910,15 +3863,12 @@ mod tests {
         backfill_main_confirmation_from_verified_agent(&mut map, 2_000);
 
         let main = map.get("main_now").expect("main_now row");
-        assert!(main.confirmed_router);
-        assert_eq!(
-            main.last_reported_model_provider.as_deref(),
-            Some(GATEWAY_MODEL_PROVIDER_ID)
-        );
+        assert!(!main.confirmed_router);
+        assert_eq!(main.last_reported_model_provider.as_deref(), None);
     }
 
     #[test]
-    fn verified_agent_backfills_main_by_same_wt_without_review_flag() {
+    fn verified_agent_does_not_backfill_main_by_same_wt_without_review_flag() {
         let mut map = std::collections::HashMap::new();
         map.insert(
             "main_agent_wt".to_string(),
@@ -3960,15 +3910,12 @@ mod tests {
         backfill_main_confirmation_from_verified_agent(&mut map, 2_000);
 
         let main = map.get("main_agent_wt").expect("main_agent_wt row");
-        assert!(main.confirmed_router);
-        assert_eq!(
-            main.last_reported_model_provider.as_deref(),
-            Some(GATEWAY_MODEL_PROVIDER_ID)
-        );
+        assert!(!main.confirmed_router);
+        assert_eq!(main.last_reported_model_provider.as_deref(), None);
     }
 
     #[test]
-    fn verified_agent_backfills_main_by_parent_sid_without_wt_or_pid_match() {
+    fn verified_agent_does_not_backfill_main_by_parent_sid_without_wt_or_pid_match() {
         let mut map = std::collections::HashMap::new();
         map.insert(
             "main_from_parent".to_string(),
@@ -4010,11 +3957,8 @@ mod tests {
         backfill_main_confirmation_from_verified_agent(&mut map, 2_000);
 
         let main = map.get("main_from_parent").expect("main_from_parent row");
-        assert!(main.confirmed_router);
-        assert_eq!(
-            main.last_reported_model_provider.as_deref(),
-            Some(GATEWAY_MODEL_PROVIDER_ID)
-        );
+        assert!(!main.confirmed_router);
+        assert_eq!(main.last_reported_model_provider.as_deref(), None);
     }
 
     #[test]
@@ -4068,7 +4012,7 @@ mod tests {
     }
 
     #[test]
-    fn verified_agent_synthesizes_missing_main_from_parent_sid() {
+    fn verified_agent_synthesizes_missing_main_from_parent_sid_as_unverified_context() {
         let mut map = std::collections::HashMap::new();
         map.insert(
             "agent-only".to_string(),
@@ -4094,13 +4038,10 @@ mod tests {
         let main = map.get("main-synth").expect("synthesized main row");
         assert!(!main.is_agent);
         assert!(!main.is_review);
-        assert!(main.confirmed_router);
+        assert!(!main.confirmed_router);
         assert_eq!(main.pid, 4242);
         assert_eq!(main.wt_session.as_deref(), Some("wsl:tab-1"));
-        assert_eq!(
-            main.last_reported_model_provider.as_deref(),
-            Some(GATEWAY_MODEL_PROVIDER_ID)
-        );
+        assert_eq!(main.last_reported_model_provider.as_deref(), None);
     }
 
     #[test]
@@ -4484,7 +4425,7 @@ mod tests {
     }
 
     #[test]
-    fn verified_review_backfills_main_when_wsl_prefix_differs() {
+    fn verified_review_does_not_backfill_main_when_wsl_prefix_differs() {
         let mut map = std::collections::HashMap::new();
         map.insert(
             "main_wsl".to_string(),
@@ -4526,15 +4467,12 @@ mod tests {
         backfill_main_confirmation_from_verified_agent(&mut map, 2_000);
 
         let main = map.get("main_wsl").expect("main_wsl row");
-        assert!(main.confirmed_router);
-        assert_eq!(
-            main.last_reported_model_provider.as_deref(),
-            Some(GATEWAY_MODEL_PROVIDER_ID)
-        );
+        assert!(!main.confirmed_router);
+        assert_eq!(main.last_reported_model_provider.as_deref(), None);
     }
 
     #[test]
-    fn verified_review_backfills_main_when_wsl_prefix_differs_reverse() {
+    fn verified_review_does_not_backfill_main_when_wsl_prefix_differs_reverse() {
         let mut map = std::collections::HashMap::new();
         map.insert(
             "main_wsl_rev".to_string(),
@@ -4576,11 +4514,8 @@ mod tests {
         backfill_main_confirmation_from_verified_agent(&mut map, 2_000);
 
         let main = map.get("main_wsl_rev").expect("main_wsl_rev row");
-        assert!(main.confirmed_router);
-        assert_eq!(
-            main.last_reported_model_provider.as_deref(),
-            Some(GATEWAY_MODEL_PROVIDER_ID)
-        );
+        assert!(!main.confirmed_router);
+        assert_eq!(main.last_reported_model_provider.as_deref(), None);
     }
 
     #[test]

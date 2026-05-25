@@ -1797,7 +1797,7 @@ async fn gateway_request_sets_session_model_provider_to_api_router() {
 }
 
 #[tokio::test]
-async fn review_request_backfills_parent_main_session_from_body_source() {
+async fn review_request_keeps_parent_main_session_unverified_from_body_source() {
     let app = Router::new().route(
         "/v1/responses",
         post(
@@ -1913,13 +1913,10 @@ async fn review_request_backfills_parent_main_session_from_body_source() {
     assert!(review.is_review);
 
     let main = sessions.get(parent_sid).expect("parent main session");
-    assert!(main.confirmed_router);
+    assert!(!main.confirmed_router);
     assert!(!main.is_agent);
     assert!(!main.is_review);
-    assert_eq!(
-        main.last_reported_model_provider.as_deref(),
-        Some(GATEWAY_MODEL_PROVIDER_ID)
-    );
+    assert_eq!(main.last_reported_model_provider.as_deref(), None);
 }
 
 #[tokio::test]
@@ -2035,12 +2032,9 @@ async fn parent_thread_backfill_detects_missing_review_header_path() {
     let sessions = client_sessions.read();
     let parent = sessions
         .get(parent_sid)
-        .expect("parent main session should be backfilled");
-    assert!(parent.confirmed_router);
-    assert_eq!(
-        parent.last_reported_model_provider.as_deref(),
-        Some(GATEWAY_MODEL_PROVIDER_ID)
-    );
+        .expect("parent main session should be retained as context only");
+    assert!(!parent.confirmed_router);
+    assert_eq!(parent.last_reported_model_provider.as_deref(), None);
 }
 
 #[tokio::test]
