@@ -569,7 +569,7 @@ describe('ProvidersTable', () => {
     expect(html).toContain('ends: unlimited')
   })
 
-  it('forces total-only usage presentation when the provider config requests it', () => {
+  it('shows hard cap budget windows instead of total-only presentation when a provider is closed', () => {
     const status = buildStatus()
     const config: Config = {
       listen: { host: '127.0.0.1', port: 4000 },
@@ -597,7 +597,7 @@ describe('ProvidersTable', () => {
     }
     status.providers = {
       'codex-for.me': {
-        status: 'healthy',
+        status: 'closed',
         consecutive_failures: 0,
         cooldown_until_unix_ms: 0,
         last_error: '',
@@ -609,15 +609,15 @@ describe('ProvidersTable', () => {
       'codex-for.me': {
         kind: 'budget_info',
         updated_at_unix_ms: 1234,
-        remaining: 332,
-        today_used: 29.06,
-        today_added: 573.33,
-        daily_spent_usd: 29.06,
-        daily_budget_usd: 573.33,
+        remaining: 151.01,
+        today_used: 202.17,
+        today_added: 200,
+        daily_spent_usd: 202.17,
+        daily_budget_usd: 200,
         weekly_spent_usd: null,
         weekly_budget_usd: null,
-        monthly_spent_usd: 0,
-        monthly_budget_usd: 50,
+        monthly_spent_usd: null,
+        monthly_budget_usd: null,
         package_expires_at_unix_ms: 4_070_908_800_000,
         last_error: '',
       },
@@ -634,9 +634,8 @@ describe('ProvidersTable', () => {
       />,
     )
 
-    expect(html).toContain('used: $241.33 / $573.33')
-    expect(html).not.toContain('daily: $29.06 / $573.33')
-    expect(html).not.toContain('monthly: $0 / $50')
+    expect(html).toContain('daily: $202.17 / $200')
+    expect(html).not.toContain('used: $48.99 / $200')
   })
 
   it('falls back to canonical total balance when total-only presentation lacks today_added', () => {

@@ -97,8 +97,8 @@ export function ProvidersTable({
           const kind = (q?.kind ?? 'none') as 'none' | 'token_stats' | 'budget_info' | 'balance_info'
           const quotaHardCap = config?.providers?.[p]?.quota_hard_cap ?? { daily: true, weekly: true, monthly: true }
           const usagePresentation = config?.providers?.[p]?.usage_presentation ?? 'standard'
-          const forceTotalOnly = usagePresentation === 'total_only'
           const isClosed = h.status === 'closed'
+          const forceTotalOnly = usagePresentation === 'total_only' && !isClosed
           const cooldownActive = !isClosed && h.cooldown_until_unix_ms > Date.now()
           const retryDue = !isClosed && h.status === 'unhealthy' && !cooldownActive
           const isActive = (status.active_provider_counts?.[p] ?? 0) > 0
