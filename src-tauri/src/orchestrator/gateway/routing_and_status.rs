@@ -12,24 +12,13 @@ pub(crate) fn provider_has_remaining_quota_with_hard_cap(
         return true;
     };
 
-    // Budget caps are hard limits. If any configured cap is exhausted,
-    // provider is closed regardless of token-style remaining fields.
-    let total_window_daily_spent = snap
-        .get("today_added")
-        .and_then(|v| v.as_f64())
-        .zip(snap.get("remaining").and_then(|v| v.as_f64()))
-        .and_then(|(added, remaining)| {
-            if added.is_finite() && added > 0.0 && remaining.is_finite() && remaining >= 0.0 {
-                Some(added - remaining)
-            } else {
-                None
-            }
-        });
+    // Budget caps are hard limits. For daily caps, prefer the total-window
+    // spend derived from today_added - remaining when available; fall back to
+    // the upstream daily_spent_usd field only when that window is absent.
     let budget_pairs = [
         (
             hard_cap.daily,
-            total_window_daily_spent
-                .or_else(|| snap.get("daily_spent_usd").and_then(|v| v.as_f64())),
+            provider_daily_spent_usd_for_quota(snap),
             snap.get("daily_budget_usd").and_then(|v| v.as_f64()),
         ),
         (
@@ -76,6 +65,20 @@ pub(crate) fn provider_has_remaining_quota_with_hard_cap(
     }
 
     true
+}
+
+fn provider_daily_spent_usd_for_quota(snap: &Value) -> Option<f64> {
+    snap.get("today_added")
+        .and_then(|v| v.as_f64())
+        .zip(snap.get("remaining").and_then(|v| v.as_f64()))
+        .and_then(|(added, remaining)| {
+            if added.is_finite() && added > 0.0 && remaining.is_finite() && remaining >= 0.0 {
+                Some(added - remaining)
+            } else {
+                None
+            }
+        })
+        .or_else(|| snap.get("daily_spent_usd").and_then(|v| v.as_f64()))
 }
 
 pub(crate) fn quota_snapshot_confirms_available(
@@ -280,7 +283,7 @@ fn provider_capacity_units_for_balancing(
     for (enabled, spent, budget) in [
         (
             hard_cap.daily,
-            snap.get("daily_spent_usd").and_then(|v| v.as_f64()),
+            provider_daily_spent_usd_for_quota(snap),
             snap.get("daily_budget_usd").and_then(|v| v.as_f64()),
         ),
         (
@@ -340,11 +343,7 @@ fn provider_daily_budget_pressure_for_balancing(
     else {
         return 0;
     };
-    let daily_spent = snap
-        .get("daily_spent_usd")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0)
-        .max(0.0);
+    let daily_spent = provider_daily_spent_usd_for_quota(snap).unwrap_or(0.0).max(0.0);
     let spent_ratio = (daily_spent / daily_budget).clamp(0.0, 2.0);
     // This is a soft balancing signal and stays active even when hard daily caps are disabled.
     let mut pressure_units = (spent_ratio.powf(BALANCED_DAILY_BUDGET_PRESSURE_EXPONENT)
@@ -1466,6 +1465,48 @@ mod routing_and_status_tests {
         assert!(
             pressure >= BALANCED_DAILY_BUDGET_PRESSURE_CRITICAL_FLOOR,
             "expected near-cap pressure floor, got {pressure}"
+        );
+    }
+
+    #[test]
+    fn provider_capacity_units_uses_total_remaining_window_before_stale_daily_spend() {
+        let hard_cap = crate::orchestrator::secrets::ProviderQuotaHardCapConfig::default();
+        let units = provider_capacity_units_for_balancing(
+            &json!({
+                "p1": {
+                    "remaining": 151.01,
+                    "today_added": 200.0,
+                    "daily_spent_usd": 205.15,
+                    "daily_budget_usd": 200.0
+                }
+            }),
+            "p1",
+            &hard_cap,
+        );
+        assert!(
+            units > 1.0,
+            "capacity should use today_added - remaining, not stale exhausted daily_spent_usd; got {units}"
+        );
+    }
+
+    #[test]
+    fn provider_daily_budget_pressure_uses_total_remaining_window_before_stale_daily_spend() {
+        let hard_cap = crate::orchestrator::secrets::ProviderQuotaHardCapConfig::default();
+        let pressure = provider_daily_budget_pressure_for_balancing(
+            &json!({
+                "p1": {
+                    "remaining": 151.01,
+                    "today_added": 200.0,
+                    "daily_spent_usd": 205.15,
+                    "daily_budget_usd": 200.0
+                }
+            }),
+            "p1",
+            &hard_cap,
+        );
+        assert!(
+            pressure < BALANCED_DAILY_BUDGET_PRESSURE_WARN_FLOOR,
+            "pressure should track the 48.99 / 200 total-window usage, got {pressure}"
         );
     }
 
