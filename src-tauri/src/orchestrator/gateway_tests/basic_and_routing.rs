@@ -3994,6 +3994,55 @@ fn decide_provider_budget_cap_wins_over_positive_remaining_field() {
 }
 
 #[test]
+fn decide_provider_uses_total_remaining_window_before_stale_daily_spend() {
+    let quota_snapshots = json!({
+        "p1": {
+            "kind": "budget_info",
+            "remaining": 151.01,
+            "today_used": 205.15,
+            "today_added": 200.0,
+            "daily_spent_usd": 205.15,
+            "daily_budget_usd": 200.0,
+            "updated_at_unix_ms": unix_ms()
+        }
+    });
+    let cfg = AppConfig::default_config();
+    assert!(
+        provider_has_remaining_quota_with_hard_cap(
+            &cfg,
+            &quota_snapshots,
+            "p1",
+            &ProviderQuotaHardCapConfig::default()
+        ),
+        "today_added - remaining is still below the daily limit, so stale daily_spent_usd should not close the provider"
+    );
+}
+
+#[test]
+fn decide_provider_closes_when_total_remaining_window_is_exhausted() {
+    let quota_snapshots = json!({
+        "p1": {
+            "kind": "budget_info",
+            "remaining": 0.0,
+            "today_added": 200.0,
+            "daily_spent_usd": 40.0,
+            "daily_budget_usd": 200.0,
+            "updated_at_unix_ms": unix_ms()
+        }
+    });
+    let cfg = AppConfig::default_config();
+    assert!(
+        !provider_has_remaining_quota_with_hard_cap(
+            &cfg,
+            &quota_snapshots,
+            "p1",
+            &ProviderQuotaHardCapConfig::default()
+        ),
+        "today_added - remaining reaches the daily limit, so the provider should close"
+    );
+}
+
+#[test]
 fn decide_provider_with_budget_fields_still_closes_when_remaining_is_zero() {
     let (picked, reason) = decide_with_budget_snapshot_for_p2(json!({
         "kind": "budget_info",

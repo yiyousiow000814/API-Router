@@ -14,10 +14,22 @@ pub(crate) fn provider_has_remaining_quota_with_hard_cap(
 
     // Budget caps are hard limits. If any configured cap is exhausted,
     // provider is closed regardless of token-style remaining fields.
+    let total_window_daily_spent = snap
+        .get("today_added")
+        .and_then(|v| v.as_f64())
+        .zip(snap.get("remaining").and_then(|v| v.as_f64()))
+        .and_then(|(added, remaining)| {
+            if added.is_finite() && added > 0.0 && remaining.is_finite() && remaining >= 0.0 {
+                Some(added - remaining)
+            } else {
+                None
+            }
+        });
     let budget_pairs = [
         (
             hard_cap.daily,
-            snap.get("daily_spent_usd").and_then(|v| v.as_f64()),
+            total_window_daily_spent
+                .or_else(|| snap.get("daily_spent_usd").and_then(|v| v.as_f64())),
             snap.get("daily_budget_usd").and_then(|v| v.as_f64()),
         ),
         (
