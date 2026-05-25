@@ -124,7 +124,11 @@ const CODEX_SESSION_BODY_ALIASES: [&str; 3] =
 fn codex_session_id_from_request(headers: &HeaderMap, body: &Value) -> Option<String> {
     for k in [
         "session_id",
+        "session-id",
         "x-session-id",
+        "thread-id",
+        "x-thread-id",
+        "x-codex-thread-id",
         "x-codex-session",
         "x-codex-session-id",
         "codex-session",
@@ -379,7 +383,7 @@ mod tests {
         scrub_session_id_aliases_from_body, session_history_snapshot_looks_incomplete,
         usage_origin_from_base_url,
     };
-    use axum::http::HeaderMap;
+    use axum::http::{HeaderMap, HeaderValue};
     use serde_json::json;
 
     #[test]
@@ -484,6 +488,36 @@ mod tests {
             "session": "generic-session",
         });
         assert!(codex_session_id_from_request(&headers, &body).is_none());
+    }
+
+    #[test]
+    fn app_server_hyphen_session_header_is_used_as_codex_session_id() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "session-id",
+            HeaderValue::from_static("019e55f0-0036-79a1-8b50-1e4198a79bfa"),
+        );
+        let body = json!({});
+
+        assert_eq!(
+            codex_session_id_from_request(&headers, &body).as_deref(),
+            Some("019e55f0-0036-79a1-8b50-1e4198a79bfa")
+        );
+    }
+
+    #[test]
+    fn app_server_thread_header_is_used_when_session_header_is_absent() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "thread-id",
+            HeaderValue::from_static("019e5b1a-faf7-74e0-a316-b8e9b58e0580"),
+        );
+        let body = json!({});
+
+        assert_eq!(
+            codex_session_id_from_request(&headers, &body).as_deref(),
+            Some("019e5b1a-faf7-74e0-a316-b8e9b58e0580")
+        );
     }
 
     #[test]
