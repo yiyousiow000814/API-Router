@@ -3,12 +3,14 @@ use crate::orchestrator::gateway::session_meta_identity::SessionMetaIdentity;
 use crate::orchestrator::gateway::web_codex_home::{
     default_windows_codex_dir, web_codex_wsl_session_home_for_launch, WorkspaceTarget,
 };
+#[cfg(test)]
 use crate::orchestrator::gateway::web_codex_rollout_path::session_candidate_should_replace_existing;
 use crate::orchestrator::gateway::web_codex_session_manager::{
     overlay_runtime_thread_item, runtime_thread_payload, CodexSessionManager,
 };
+use rusqlite::{Connection, OpenFlags};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -37,6 +39,7 @@ struct SessionFileScanCacheEntry {
 }
 
 #[derive(Clone)]
+#[cfg(test)]
 struct HistoryPreviewMapCacheEntry {
     file_len: u64,
     modified_unix_ms: u128,
@@ -63,6 +66,7 @@ fn session_file_scan_cache() -> &'static Mutex<HashMap<PathBuf, SessionFileScanC
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+#[cfg(test)]
 fn history_preview_map_cache() -> &'static Mutex<HashMap<PathBuf, HistoryPreviewMapCacheEntry>> {
     static CACHE: OnceLock<Mutex<HashMap<PathBuf, HistoryPreviewMapCacheEntry>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
@@ -89,16 +93,17 @@ pub(super) async fn rebuild_workspace_thread_items(
     target: WorkspaceTarget,
 ) -> Result<ThreadRebuildResult, String> {
     let fetched = match target {
-        WorkspaceTarget::Windows => Ok(ThreadFetchResult {
-            items: fetch_windows_threads_from_sessions(),
-            metrics: None,
-        }),
+        WorkspaceTarget::Windows => {
+            fetch_windows_threads_from_sessions().map(|items| ThreadFetchResult {
+                items,
+                metrics: None,
+            })
+        }
         WorkspaceTarget::Wsl2 => fetch_wsl2_threads_from_sessions().await,
     };
     let ThreadFetchResult { mut items, metrics } = fetched?;
     overlay_loaded_thread_runtime(target, &mut items).await;
     normalize_thread_items_shape(&mut items);
-    hydrate_missing_previews_from_session_files(&mut items);
     filter_auxiliary_threads(&mut items);
     filter_threads_within_last_month(&mut items);
     sort_threads_by_updated_desc(&mut items);
@@ -279,10 +284,6 @@ pub(super) fn is_filtered_test_thread_cwd(raw: &str) -> bool {
         || text.ends_with("\\home\\yiyou\\.tmp-codex-web-live-sync-debug")
 }
 
-fn extract_user_preview_from_session_file(path: &Path) -> Option<String> {
-    scan_session_file(path).and_then(|scan| scan.preview)
-}
-
 pub(super) fn scan_session_file_identity_hint(path: &Path) -> Option<SessionFileIdentityHint> {
     let scan = scan_session_file(path)?;
     Some(SessionFileIdentityHint {
@@ -292,6 +293,7 @@ pub(super) fn scan_session_file_identity_hint(path: &Path) -> Option<SessionFile
     })
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone)]
 struct SessionFileScan {
     id: String,
@@ -534,6 +536,7 @@ fn scan_session_file_uncached(path: &Path) -> Option<SessionFileScan> {
     })
 }
 
+#[cfg(test)]
 fn file_updated_unix_secs(path: &Path) -> i64 {
     let modified = match std::fs::metadata(path).and_then(|m| m.modified()) {
         Ok(v) => v,
@@ -545,6 +548,7 @@ fn file_updated_unix_secs(path: &Path) -> i64 {
     }
 }
 
+#[cfg(test)]
 fn collect_jsonl_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let read = match std::fs::read_dir(dir) {
         Ok(v) => v,
@@ -572,6 +576,7 @@ fn collect_jsonl_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+#[cfg(test)]
 fn parse_history_preview_map(history_path: &Path) -> HashMap<String, String> {
     let normalized_path = history_path.to_path_buf();
     if let Some((file_len, modified_unix_ms)) = session_file_fingerprint(history_path) {
@@ -636,29 +641,286 @@ fn parse_history_preview_map(history_path: &Path) -> HashMap<String, String> {
     map
 }
 
-fn fetch_windows_threads_from_sessions() -> Vec<Value> {
+fn parse_sqlite_session_source(raw: Option<String>) -> Option<Value> {
+    let text = raw
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    serde_json::from_str::<Value>(text)
+        .ok()
+        .filter(|value| !value.is_null())
+        .or_else(|| Some(Value::String(text.to_string())))
+}
+
+fn sqlite_thread_source_is_subagent(raw: &str) -> bool {
+    let text = raw.trim().to_ascii_lowercase();
+    text.contains("subagent") || text.contains("review")
+}
+
+fn sqlite_thread_table_columns(conn: &Connection) -> Result<HashSet<String>, String> {
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(threads)")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>("name"))
+        .map_err(|e| e.to_string())?;
+    let mut columns = HashSet::new();
+    for row in rows {
+        columns.insert(row.map_err(|e| e.to_string())?);
+    }
+    Ok(columns)
+}
+
+fn sqlite_optional_column_expr(columns: &HashSet<String>, name: &str) -> String {
+    if columns.contains(name) {
+        format!("{name} AS {name}")
+    } else {
+        format!("NULL AS {name}")
+    }
+}
+
+fn sqlite_time_expr(
+    columns: &HashSet<String>,
+    ms_column: &str,
+    seconds_column: &str,
+    fallback_expr: Option<&str>,
+) -> String {
+    let mut parts = Vec::new();
+    if columns.contains(ms_column) {
+        parts.push(ms_column.to_string());
+    }
+    if columns.contains(seconds_column) {
+        parts.push(format!("{seconds_column} * 1000"));
+    }
+    if let Some(fallback_expr) = fallback_expr {
+        parts.push(fallback_expr.to_string());
+    }
+    if parts.is_empty() {
+        "0".to_string()
+    } else {
+        format!("COALESCE({}, 0)", parts.join(", "))
+    }
+}
+
+fn normalize_optional_path_text(raw: Option<String>) -> Option<String> {
+    raw.as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| normalize_thread_path(value).to_string_lossy().to_string())
+}
+
+fn sqlite_thread_item_from_row(
+    row: &rusqlite::Row<'_>,
+    workspace: &str,
+    source: &str,
+) -> rusqlite::Result<Option<Value>> {
+    let id = row.get::<_, String>("id")?;
+    let id = id.trim();
+    if id.is_empty() {
+        return Ok(None);
+    }
+    let path = row
+        .get::<_, Option<String>>("rollout_path")?
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let cwd = normalize_optional_path_text(row.get::<_, Option<String>>("cwd")?);
+    let title = row
+        .get::<_, Option<String>>("title")?
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let preview = row
+        .get::<_, Option<String>>("preview")?
+        .as_deref()
+        .and_then(normalize_preview_text)
+        .or_else(|| title.as_deref().and_then(normalize_preview_text))
+        .or_else(|| {
+            row.get::<_, Option<String>>("first_user_message")
+                .ok()
+                .flatten()
+                .as_deref()
+                .and_then(normalize_preview_text)
+        })
+        .unwrap_or_default();
+    let session_source = parse_sqlite_session_source(row.get::<_, Option<String>>("source")?);
+    let thread_source = row
+        .get::<_, Option<String>>("thread_source")?
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let agent_role = row
+        .get::<_, Option<String>>("agent_role")?
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let created_at_ms = row.get::<_, i64>("created_at_ms_value")?;
+    let updated_at_ms = row.get::<_, i64>("updated_at_ms_value")?;
+    let is_subagent = session_source
+        .as_ref()
+        .and_then(crate::orchestrator::gateway::session_meta_identity::session_meta_source_subagent)
+        .is_some()
+        || thread_source
+            .as_deref()
+            .is_some_and(sqlite_thread_source_is_subagent)
+        || agent_role.is_some();
+
+    let mut item = json!({
+        "id": id,
+        "workspace": workspace,
+        "source": source,
+        "preview": preview,
+        "status": { "type": "notLoaded" },
+        "createdAt": created_at_ms,
+        "updatedAt": updated_at_ms,
+    });
+    let Some(obj) = item.as_object_mut() else {
+        return Ok(None);
+    };
+    if let Some(path) = path {
+        obj.insert("path".to_string(), Value::String(path));
+    }
+    if let Some(cwd) = cwd {
+        obj.insert("cwd".to_string(), Value::String(cwd));
+    }
+    if let Some(title) = title {
+        obj.insert("title".to_string(), Value::String(title));
+    }
+    if let Some(session_source) = session_source {
+        obj.insert("sessionSource".to_string(), session_source);
+    }
+    if let Some(thread_source) = thread_source {
+        obj.insert("threadSource".to_string(), Value::String(thread_source));
+    }
+    if let Some(agent_role) = agent_role {
+        obj.insert("agentRole".to_string(), Value::String(agent_role));
+    }
+    if is_subagent {
+        obj.insert("isSubagent".to_string(), Value::Bool(true));
+    }
+    Ok(Some(item))
+}
+
+fn fetch_threads_from_state_sqlite(
+    codex_dir: &Path,
+    workspace: &str,
+    source: &str,
+) -> Result<Option<Vec<Value>>, String> {
+    let state_path = codex_dir.join("state_5.sqlite");
+    if !state_path.exists() || !state_path.is_file() {
+        return Ok(None);
+    }
+    let conn = Connection::open_with_flags(&state_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|e| e.to_string())?;
+    let columns = sqlite_thread_table_columns(&conn)?;
+    if !columns.contains("id") {
+        return Err("threads table missing id column".to_string());
+    }
+    let created_at_expr = sqlite_time_expr(&columns, "created_at_ms", "created_at", None);
+    let updated_at_expr = sqlite_time_expr(
+        &columns,
+        "updated_at_ms",
+        "updated_at",
+        Some(&created_at_expr),
+    );
+    let archived_predicate = if columns.contains("archived") {
+        "COALESCE(archived, 0) = 0".to_string()
+    } else {
+        "1 = 1".to_string()
+    };
+    let has_time_columns = columns.contains("created_at_ms")
+        || columns.contains("created_at")
+        || columns.contains("updated_at_ms")
+        || columns.contains("updated_at");
+    let age_predicate = if has_time_columns {
+        format!("{updated_at_expr} >= ?1")
+    } else {
+        "1 = 1".to_string()
+    };
+    let query = format!(
+        r#"
+            SELECT
+                id,
+                {},
+                {},
+                {},
+                {},
+                {},
+                {},
+                {},
+                {},
+                {} AS created_at_ms_value,
+                {} AS updated_at_ms_value
+            FROM threads
+            WHERE {}
+              AND {}
+            ORDER BY updated_at_ms_value DESC
+        "#,
+        sqlite_optional_column_expr(&columns, "rollout_path"),
+        sqlite_optional_column_expr(&columns, "cwd"),
+        sqlite_optional_column_expr(&columns, "source"),
+        sqlite_optional_column_expr(&columns, "thread_source"),
+        sqlite_optional_column_expr(&columns, "agent_role"),
+        sqlite_optional_column_expr(&columns, "title"),
+        sqlite_optional_column_expr(&columns, "preview"),
+        sqlite_optional_column_expr(&columns, "first_user_message"),
+        created_at_expr,
+        updated_at_expr,
+        archived_predicate,
+        age_predicate,
+    );
+    let min_updated_ms = current_unix_secs()
+        .saturating_sub(THREADS_MAX_AGE_SECS)
+        .saturating_mul(1000);
+    let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
+    let mut items = Vec::new();
+    if has_time_columns {
+        let mut rows = stmt.query([min_updated_ms]).map_err(|e| e.to_string())?;
+        while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+            if let Some(item) =
+                sqlite_thread_item_from_row(row, workspace, source).map_err(|e| e.to_string())?
+            {
+                items.push(item);
+            }
+        }
+    } else {
+        let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+        while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+            if let Some(item) =
+                sqlite_thread_item_from_row(row, workspace, source).map_err(|e| e.to_string())?
+            {
+                items.push(item);
+            }
+        }
+    }
+    Ok(Some(items))
+}
+
+fn fetch_windows_threads_from_sessions() -> Result<Vec<Value>, String> {
     let codex_dirs = windows_thread_index_codex_dirs();
     if codex_dirs.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let mut items = Vec::new();
     for codex_dir in codex_dirs {
-        let sessions_dir = codex_dir.join("sessions");
-        if !sessions_dir.exists() {
-            continue;
+        match fetch_threads_from_state_sqlite(&codex_dir, "windows", "windows-session-index") {
+            Ok(Some(sqlite_items)) => {
+                items = merge_items_without_duplicates(items, sqlite_items);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                return Err(format!(
+                    "failed to read Windows Codex thread index sqlite at {}: {error}",
+                    codex_dir.join("state_5.sqlite").to_string_lossy()
+                ));
+            }
         }
-        items = merge_items_without_duplicates(
-            items,
-            build_threads_from_session_dir(
-                &sessions_dir,
-                &codex_dir.join("history.jsonl"),
-                "windows",
-                "windows-session-index",
-                |file| file.to_string_lossy().to_string(),
-            ),
-        );
     }
-    items
+    Ok(items)
 }
 
 fn push_unique_path(paths: &mut Vec<PathBuf>, path: Option<PathBuf>) {
@@ -714,6 +976,16 @@ fn parse_wsl_thread_scan_result(text: &str) -> Result<WslThreadScanResult, Strin
                 .and_then(|value| value.as_array().cloned())
                 .ok_or_else(|| "invalid WSL thread scan JSON: missing items array".to_string())?;
             let metrics = obj.remove("metrics");
+            if let Some(sqlite_error) = metrics
+                .as_ref()
+                .and_then(Value::as_object)
+                .and_then(|metrics| metrics.get("sqliteError"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                return Err(format!("WSL sqlite thread index failed: {sqlite_error}"));
+            }
             Ok(WslThreadScanResult { items, metrics })
         }
         _ => Err("invalid WSL thread scan JSON: expected array or object".to_string()),
@@ -728,15 +1000,13 @@ fn wsl_thread_scan_script() -> String {
     format!(
         r###"python3 - <<'PY'
 import json
-import re
-from pathlib import Path
 import os
+from pathlib import Path
+import sqlite3
 import time
 
 MAX_ITEMS = {THREADS_MAX_ITEMS}
 MAX_AGE_SECS = {THREADS_MAX_AGE_SECS}
-CACHE_VERSION = 2
-CACHE_FILE_NAME = "api-router-thread-index-cache-v1.json"
 
 def normalize_preview_text(raw):
     text = " ".join(str(raw).split()).strip()
@@ -793,29 +1063,7 @@ def normalize_session_path_like(raw):
         text = text.rstrip("/")
     return text.lower()
 
-def is_imported_session_path(raw):
-    path = normalize_session_path_like(raw)
-    return "/sessions/imported/" in path and path.endswith(".jsonl")
-
-def is_live_session_rollout_path(raw):
-    path = normalize_session_path_like(raw)
-    return (
-        "/sessions/" in path
-        and "/rollout-" in path
-        and "/sessions/imported/" not in path
-        and path.endswith(".jsonl")
-    )
-
-def should_replace_existing_thread(existing, candidate):
-    existing_path = existing.get("path") if isinstance(existing, dict) else None
-    candidate_path = candidate.get("path") if isinstance(candidate, dict) else None
-    if is_live_session_rollout_path(existing_path) and is_imported_session_path(candidate_path):
-        return False
-    if is_imported_session_path(existing_path) and is_live_session_rollout_path(candidate_path):
-        return True
-    return int(existing.get("updatedAt", 0)) < int(candidate.get("updatedAt", 0))
-
-def classify_filter_reason(preview, cwd, is_subagent, auxiliary_prompt_only):
+def classify_filter_reason(preview, cwd, auxiliary_prompt_only):
     if is_filtered_test_thread_cwd(cwd):
         return "temporary-workspace"
     if auxiliary_prompt_only:
@@ -852,260 +1100,173 @@ def int_or_none(raw):
     except Exception:
         return None
 
-def file_mtime_ns(stat_result):
-    return int(getattr(stat_result, "st_mtime_ns", int(stat_result.st_mtime * 1000000000)))
-
-def empty_metrics(started_ms, cache_path):
-    return {{
-        "scanVersion": CACHE_VERSION,
-        "cachePath": str(cache_path),
-        "manifestCount": 0,
-        "cacheHitCount": 0,
-        "cacheMissCount": 0,
-        "parsedFileCount": 0,
-        "cacheEntryCount": 0,
-        "removedCacheEntryCount": 0,
-        "outputItemCount": 0,
-        "cacheReadOk": False,
-        "cacheWriteOk": False,
-        "elapsedMs": int(time.time() * 1000) - started_ms,
-    }}
-
-def load_cache(cache_path):
+def parse_sqlite_session_source(raw):
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
     try:
-        with cache_path.open("r", encoding="utf-8") as fh:
-            raw = json.load(fh)
-        if not isinstance(raw, dict) or raw.get("version") != CACHE_VERSION:
-            return {{}}, False
-        files = raw.get("files")
-        return (files if isinstance(files, dict) else {{}}), True
-    except FileNotFoundError:
-        return {{}}, True
+        value = json.loads(text)
     except Exception:
-        return {{}}, False
+        value = None
+    return value if value is not None else text
 
-def write_cache(cache_path, files):
-    try:
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
-        with tmp_path.open("w", encoding="utf-8") as fh:
-            json.dump({{"version": CACHE_VERSION, "files": files}}, fh, ensure_ascii=False, separators=(",", ":"))
-        tmp_path.replace(cache_path)
-        return True
-    except Exception:
-        return False
+def sqlite_thread_source_is_subagent(raw):
+    text = str(raw or "").strip().lower()
+    return "subagent" in text or "review" in text
 
-def cache_entry_matches(entry, stat_result):
-    if not isinstance(entry, dict):
-        return False
-    cached_size = int_or_none(entry.get("size"))
-    cached_mtime_ns = int_or_none(entry.get("mtimeNs"))
-    return cached_size == int(stat_result.st_size) and cached_mtime_ns == file_mtime_ns(stat_result)
+def sqlite_optional_column_expr(columns, name):
+    return f"{{name}} AS {{name}}" if name in columns else f"NULL AS {{name}}"
+
+def sqlite_time_expr(columns, ms_column, seconds_column, fallback_expr=None):
+    parts = []
+    if ms_column in columns:
+        parts.append(ms_column)
+    if seconds_column in columns:
+        parts.append(f"{{seconds_column}} * 1000")
+    if fallback_expr:
+        parts.append(fallback_expr)
+    if not parts:
+        return "0"
+    return "COALESCE(" + ", ".join(parts) + ", 0)"
 
 root = Path(os.environ.get("API_ROUTER_WSL_CODEX_HOME") or (Path.home() / ".codex"))
-sessions_dir = root / "sessions"
-cache_path = root / CACHE_FILE_NAME
+state_path = root / "state_5.sqlite"
 distro = (os.environ.get("WSL_DISTRO_NAME") or "").strip()
 started_ms = int(time.time() * 1000)
-metrics = empty_metrics(started_ms, cache_path)
+metrics = {{
+    "indexSource": "sqlite",
+    "outputItemCount": 0,
+    "elapsedMs": 0,
+}}
 
-if not sessions_dir.exists():
-    print(json.dumps({{"items": [], "metrics": metrics}}, ensure_ascii=False))
-    raise SystemExit(0)
-
-cached_files, cache_read_ok = load_cache(cache_path)
-metrics["cacheReadOk"] = cache_read_ok
-items_by_id = {{}}
-next_cache_files = {{}}
-seen_cache_keys = set()
-id_re = re.compile(r"([0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}})", re.IGNORECASE)
-
-def to_windows_path(path_obj: Path) -> str:
-    text = str(path_obj)
+def to_windows_path(path_obj):
+    text = str(path_obj or "").strip()
+    if not text:
+        return None
     if distro and text.startswith("/"):
         return "\\\\wsl.localhost\\{{}}\\{{}}".format(distro, text.lstrip("/").replace("/", "\\\\"))
     return text
 
-def cached_candidate(path_key, path_obj, stat_result):
-    entry = cached_files.get(path_key)
-    if not cache_entry_matches(entry, stat_result):
-        return False, None
-    item = entry.get("item")
-    if item is None:
-        return True, None
-    if not isinstance(item, dict):
-        return False, None
-    candidate = dict(item)
-    candidate["path"] = to_windows_path(path_obj)
-    candidate["updatedAt"] = int(stat_result.st_mtime)
-    if not is_visible_candidate(candidate):
-        return True, None
-    return True, candidate
-
-def parse_session_candidate(p, stat_result):
-    sid = ""
-    cwd = ""
-    created_at = 0
-    session_source = None
-    is_subagent = False
-    parent_thread_id = None
-    agent_role = None
-    fallback_preview = None
-    first_preview = None
-    first_non_aux_preview = None
-    saw_aux_prompt = False
-    saw_non_aux_prompt = False
-    updated_at = int(stat_result.st_mtime)
-    try:
-        with p.open("r", encoding="utf-8", errors="ignore") as fh:
-            for idx, line in enumerate(fh):
-                if idx >= 320:
-                    break
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except Exception:
-                    continue
-                if obj.get("type") == "session_meta" and not sid:
-                    payload = obj.get("payload") or {{}}
-                    sid = str(payload.get("id") or payload.get("session_id") or payload.get("sessionId") or sid).strip()
-                    cwd = str(payload.get("cwd") or cwd).strip()
-                    created_raw = payload.get("created_at") or payload.get("createdAt")
-                    source = payload.get("source")
-                    session_source = source
-                    source_subagent = source.get("subagent") or source.get("subAgent") if isinstance(source, dict) else None
-                    thread_spawn = None
-                    if isinstance(source_subagent, dict):
-                        thread_spawn = source_subagent.get("thread_spawn") or source_subagent.get("threadSpawn")
-                    parent_thread_id = None
-                    if isinstance(thread_spawn, dict):
-                        raw_parent = thread_spawn.get("parent_thread_id") or thread_spawn.get("parentThreadId")
-                        if isinstance(raw_parent, str) and raw_parent.strip():
-                            parent_thread_id = raw_parent.strip()
-                    agent_role = payload.get("agent_role") or payload.get("agentRole")
-                    agent_nickname = payload.get("agent_nickname") or payload.get("agentNickname")
-                    has_agent_role = isinstance(agent_role, str) and bool(agent_role.strip())
-                    has_agent_nickname = isinstance(agent_nickname, str) and bool(agent_nickname.strip())
-                    thread_source = payload.get("thread_source") or payload.get("threadSource")
-                    has_thread_source = isinstance(thread_source, str) and (
-                        "subagent" in thread_source.lower() or "review" in thread_source.lower()
-                    )
-                    has_source_string = isinstance(source, str) and (
-                        "subagent" in source.lower() or "review" in source.lower()
-                    )
-                    is_subagent = bool(source_subagent) or has_agent_role or has_agent_nickname or has_thread_source or has_source_string
-                    try:
-                        created_at = int(created_raw or 0)
-                    except Exception:
-                        created_at = 0
-                    continue
-                if obj.get("type") == "event_msg" and fallback_preview is None:
-                    message = ((obj.get("payload") or {{}}).get("message"))
-                    if isinstance(message, str):
-                        fallback_preview = normalize_preview_text(message)
-                    continue
-                if obj.get("type") != "response_item":
-                    continue
-                payload = obj.get("payload") or {{}}
-                if payload.get("type") != "message" or payload.get("role") != "user":
-                    continue
-                for item in payload.get("content") or []:
-                    text = item.get("text") if isinstance(item, dict) else None
-                    if not isinstance(text, str) or not text.strip():
-                        continue
-                    normalized = normalize_preview_text(text)
-                    if normalized:
-                        if first_preview is None:
-                            first_preview = normalized
-                        if not is_auxiliary_instruction_text(text) and first_non_aux_preview is None:
-                            first_non_aux_preview = normalized
-                    if is_auxiliary_instruction_text(text):
-                        saw_aux_prompt = True
-                    else:
-                        saw_non_aux_prompt = True
-                    break
-    except Exception:
-        return None
-
-    if not sid:
-        m = id_re.search(p.name)
-        if m:
-            sid = m.group(1)
-    if not sid or not cwd:
-        return None
-
-    preview = first_non_aux_preview or first_preview or fallback_preview or ""
-    filter_reason = classify_filter_reason(preview, cwd, is_subagent, saw_aux_prompt and not saw_non_aux_prompt)
-    return {{
-        "id": sid,
-        "cwd": cwd,
-        "workspace": "wsl2",
-        "preview": preview,
-        "path": to_windows_path(p),
-        "source": "wsl-session-index",
-        "sessionSource": session_source,
-        "isSubagent": is_subagent,
-        "agent_parent_session_id": parent_thread_id,
-        "agentRole": agent_role.strip() if isinstance(agent_role, str) and agent_role.strip() else None,
-        "isAuxiliary": filter_reason == "auxiliary-prompt-only",
-        "filterReason": filter_reason,
-        "status": {{"type": "notLoaded"}},
-        "createdAt": created_at or updated_at,
-        "updatedAt": updated_at,
+def fetch_sqlite_items(state_path: Path):
+    conn = sqlite3.connect(f"file:{{state_path}}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    columns = {{
+        str(row["name"]).strip()
+        for row in conn.execute("PRAGMA table_info(threads)")
+        if row["name"] is not None
     }}
+    if "id" not in columns:
+        raise RuntimeError("threads table missing id column")
+    created_at_expr = sqlite_time_expr(columns, "created_at_ms", "created_at")
+    updated_at_expr = sqlite_time_expr(columns, "updated_at_ms", "updated_at", created_at_expr)
+    archived_predicate = "COALESCE(archived, 0) = 0" if "archived" in columns else "1 = 1"
+    has_time_columns = any(
+        name in columns for name in ("created_at_ms", "created_at", "updated_at_ms", "updated_at")
+    )
+    age_predicate = f"{{updated_at_expr}} >= ?" if has_time_columns else "1 = 1"
+    query = f"""
+        SELECT
+            id,
+            {{sqlite_optional_column_expr(columns, "rollout_path")}},
+            {{sqlite_optional_column_expr(columns, "cwd")}},
+            {{sqlite_optional_column_expr(columns, "source")}},
+            {{sqlite_optional_column_expr(columns, "thread_source")}},
+            {{sqlite_optional_column_expr(columns, "agent_role")}},
+            {{sqlite_optional_column_expr(columns, "title")}},
+            {{sqlite_optional_column_expr(columns, "preview")}},
+            {{sqlite_optional_column_expr(columns, "first_user_message")}},
+            {{created_at_expr}} AS created_at_ms_value,
+            {{updated_at_expr}} AS updated_at_ms_value
+        FROM threads
+        WHERE {{archived_predicate}}
+          AND {{age_predicate}}
+        ORDER BY updated_at_ms_value DESC
+    """
+    params = (int((time.time() - MAX_AGE_SECS) * 1000),) if has_time_columns else ()
+    items = []
+    for row in conn.execute(query, params):
+        sid = str(row["id"] or "").strip()
+        if not sid:
+            continue
+        raw_title = row["title"]
+        title = str(raw_title).strip() if isinstance(raw_title, str) and raw_title.strip() else None
+        preview = (
+            normalize_preview_text(row["preview"])
+            or (normalize_preview_text(title) if title else None)
+            or normalize_preview_text(row["first_user_message"])
+            or ""
+        )
+        session_source = parse_sqlite_session_source(row["source"])
+        thread_source = (
+            str(row["thread_source"]).strip()
+            if isinstance(row["thread_source"], str) and row["thread_source"].strip()
+            else None
+        )
+        agent_role = (
+            str(row["agent_role"]).strip()
+            if isinstance(row["agent_role"], str) and row["agent_role"].strip()
+            else None
+        )
+        is_subagent = (
+            isinstance(session_source, dict)
+            and bool(session_source.get("subagent") or session_source.get("subAgent"))
+        ) or (
+            isinstance(session_source, str) and sqlite_thread_source_is_subagent(session_source)
+        ) or (
+            thread_source is not None and sqlite_thread_source_is_subagent(thread_source)
+        ) or bool(agent_role)
+        created_at = int_or_none(row["created_at_ms_value"]) or 0
+        updated_at = int_or_none(row["updated_at_ms_value"]) or created_at
+        cwd = str(row["cwd"]).strip() if isinstance(row["cwd"], str) and row["cwd"].strip() else ""
+        filter_reason = classify_filter_reason(preview, cwd, False)
+        candidate = {{
+            "id": sid,
+            "cwd": cwd,
+            "workspace": "wsl2",
+            "preview": preview,
+            "source": "wsl-session-index",
+            "isSubagent": is_subagent,
+            "agentRole": agent_role,
+            "isAuxiliary": filter_reason == "auxiliary-prompt-only",
+            "filterReason": filter_reason,
+            "status": {{"type": "notLoaded"}},
+            "createdAt": created_at or updated_at,
+            "updatedAt": updated_at,
+        }}
+        if title:
+            candidate["title"] = title
+        if session_source is not None:
+            candidate["sessionSource"] = session_source
+        if thread_source is not None:
+            candidate["threadSource"] = thread_source
+        path = to_windows_path(row["rollout_path"])
+        if path:
+            candidate["path"] = path
+        if not is_visible_candidate(candidate):
+            continue
+        items.append(candidate)
+        if len(items) >= MAX_ITEMS:
+            break
+    conn.close()
+    return items
 
-for p in sessions_dir.rglob("*.jsonl"):
-    try:
-        stat_result = p.stat()
-    except Exception:
-        continue
-    updated_at = int(stat_result.st_mtime)
-    if updated_at > 0 and int(time.time()) - updated_at > MAX_AGE_SECS:
-        continue
-    path_key = str(p)
-    seen_cache_keys.add(path_key)
-    metrics["manifestCount"] += 1
+if not state_path.exists():
+    metrics["disabledReason"] = "sqlite-not-found"
+    metrics["elapsedMs"] = int(time.time() * 1000) - started_ms
+    print(json.dumps({{"items": [], "metrics": metrics}}, ensure_ascii=False))
+    raise SystemExit(0)
 
-    hit, candidate = cached_candidate(path_key, p, stat_result)
-    if hit:
-        metrics["cacheHitCount"] += 1
-        next_cache_files[path_key] = cached_files.get(path_key)
-        if candidate is not None:
-            sid = str(candidate.get("id") or "").strip()
-            if sid:
-                existing = items_by_id.get(sid)
-                if existing is None or should_replace_existing_thread(existing, candidate):
-                    items_by_id[sid] = candidate
-        continue
-
-    metrics["cacheMissCount"] += 1
-    metrics["parsedFileCount"] += 1
-    candidate = parse_session_candidate(p, stat_result)
-    if candidate is not None and not is_visible_candidate(candidate):
-        candidate = None
-    next_cache_files[path_key] = {{
-        "size": int(stat_result.st_size),
-        "mtimeNs": file_mtime_ns(stat_result),
-        "item": candidate,
-    }}
-    if candidate is None:
-        continue
-    sid = str(candidate.get("id") or "").strip()
-    if sid:
-        existing = items_by_id.get(sid)
-        if existing is None or should_replace_existing_thread(existing, candidate):
-            items_by_id[sid] = candidate
-
-items = sorted(items_by_id.values(), key=lambda x: int(x.get("updatedAt", 0)), reverse=True)
-items = items[:MAX_ITEMS]
-metrics["removedCacheEntryCount"] = max(0, len(cached_files) - len(seen_cache_keys))
-metrics["cacheEntryCount"] = len(next_cache_files)
-metrics["outputItemCount"] = len(items)
-metrics["elapsedMs"] = int(time.time() * 1000) - started_ms
-metrics["cacheWriteOk"] = write_cache(cache_path, next_cache_files)
-print(json.dumps({{"items": items, "metrics": metrics}}, ensure_ascii=False))
+try:
+    items = fetch_sqlite_items(state_path)
+    metrics["outputItemCount"] = len(items)
+    metrics["elapsedMs"] = int(time.time() * 1000) - started_ms
+    print(json.dumps({{"items": items, "metrics": metrics}}, ensure_ascii=False))
+except Exception as exc:
+    metrics["sqliteError"] = str(exc)
+    metrics["elapsedMs"] = int(time.time() * 1000) - started_ms
+    print(json.dumps({{"items": [], "metrics": metrics}}, ensure_ascii=False))
 PY"###
     )
 }
@@ -1171,6 +1332,7 @@ async fn fetch_wsl2_threads_from_sessions() -> Result<ThreadFetchResult, String>
     })
 }
 
+#[cfg(test)]
 fn build_threads_from_session_dir<F>(
     sessions_dir: &Path,
     history_path: &Path,
@@ -1284,7 +1446,7 @@ pub(super) fn has_missing_session_rollout_path(items: &[Value]) -> bool {
         if source == "live-notification" {
             return false;
         }
-        if source == "wsl-session-index" {
+        if matches!(source, "windows-session-index" | "wsl-session-index") {
             return false;
         }
         if !is_session_cache_source
@@ -1298,33 +1460,6 @@ pub(super) fn has_missing_session_rollout_path(items: &[Value]) -> bool {
         }
         !normalize_thread_path(path).exists()
     })
-}
-
-fn hydrate_missing_previews_from_session_files(items: &mut [Value]) {
-    for item in items {
-        let has_preview = item
-            .get("preview")
-            .and_then(|x| x.as_str())
-            .map(str::trim)
-            .map(|s| !s.is_empty())
-            .unwrap_or(false);
-        if has_preview {
-            continue;
-        }
-        let Some(path_raw) = item.get("path").and_then(|x| x.as_str()) else {
-            continue;
-        };
-        let path = normalize_thread_path(path_raw);
-        if !path.exists() {
-            continue;
-        }
-        let Some(preview) = extract_user_preview_from_session_file(&path) else {
-            continue;
-        };
-        if let Some(obj) = item.as_object_mut() {
-            obj.insert("preview".to_string(), Value::String(preview));
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1564,12 +1699,13 @@ mod tests {
         fetch_windows_threads_from_sessions, fetch_wsl2_threads_from_sessions,
         filter_auxiliary_threads, find_rollout_path_in_items, has_missing_session_rollout_path,
         merge_items_without_duplicates, overlay_loaded_thread_runtime, parse_history_preview_map,
-        parse_wsl_thread_scan_output, scan_session_file, sort_threads_by_updated_desc,
-        thread_item_should_be_visible, wsl_thread_scan_script, ThreadFilterReason,
-        THREADS_MAX_AGE_SECS,
+        parse_wsl_thread_scan_output, parse_wsl_thread_scan_result, rebuild_workspace_thread_items,
+        scan_session_file, sort_threads_by_updated_desc, thread_item_should_be_visible,
+        wsl_thread_scan_script, ThreadFilterReason, THREADS_MAX_AGE_SECS,
     };
     use crate::codex_app_server;
     use crate::orchestrator::gateway::web_codex_home::WorkspaceTarget;
+    use rusqlite::params;
     use serde_json::{json, Value};
     use std::sync::Arc;
 
@@ -1599,6 +1735,85 @@ mod tests {
                     std::env::remove_var(self.key);
                 }
             }
+        }
+    }
+
+    type TestThreadStateRow<'a> = (
+        &'a str,
+        &'a str,
+        &'a str,
+        &'a str,
+        &'a str,
+        &'a str,
+        i64,
+        i64,
+        i64,
+    );
+
+    fn write_test_thread_state_db(codex_home: &std::path::Path, rows: &[TestThreadStateRow<'_>]) {
+        let state = codex_home.join("state_5.sqlite");
+        let conn = rusqlite::Connection::open(&state).expect("open sqlite");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                rollout_path TEXT,
+                created_at_ms INTEGER,
+                updated_at_ms INTEGER,
+                source TEXT,
+                cwd TEXT,
+                title TEXT,
+                archived INTEGER,
+                thread_source TEXT,
+                preview TEXT,
+                first_user_message TEXT,
+                agent_role TEXT
+            );
+            "#,
+        )
+        .expect("create threads table");
+        for (
+            id,
+            rollout_path,
+            cwd,
+            title,
+            preview,
+            first_user_message,
+            archived,
+            created_at_ms,
+            updated_at_ms,
+        ) in rows
+        {
+            conn.execute(
+                r#"
+                INSERT INTO threads (
+                    id,
+                    rollout_path,
+                    created_at_ms,
+                    updated_at_ms,
+                    source,
+                    cwd,
+                    title,
+                    archived,
+                    thread_source,
+                    preview,
+                    first_user_message,
+                    agent_role
+                ) VALUES (?1, ?2, ?3, ?4, 'vscode', ?5, ?6, ?7, 'user', ?8, ?9, NULL)
+                "#,
+                params![
+                    id,
+                    rollout_path,
+                    created_at_ms,
+                    updated_at_ms,
+                    cwd,
+                    title,
+                    archived,
+                    preview,
+                    first_user_message
+                ],
+            )
+            .expect("insert thread row");
         }
     }
 
@@ -1715,16 +1930,34 @@ mod tests {
     }
 
     #[test]
-    fn wsl_thread_scan_script_uses_incremental_cache_metrics() {
+    fn rejects_wsl_thread_scan_output_when_sqlite_probe_failed() {
+        let result = parse_wsl_thread_scan_result(
+            r#"{"items":[],"metrics":{"indexSource":"sqlite","sqliteError":"database is locked"}}"#,
+        );
+        let error = match result {
+            Ok(_) => panic!("sqlite scan error should be treated as rebuild failure"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error.contains("database is locked"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn wsl_thread_scan_script_uses_sqlite_index_only() {
         let script = wsl_thread_scan_script();
 
-        assert!(script.contains("CACHE_VERSION = 2"));
-        assert!(script.contains("api-router-thread-index-cache-v1.json"));
-        assert!(script.contains("cacheHitCount"));
-        assert!(script.contains("parsedFileCount"));
-        assert!(script.contains("removedCacheEntryCount"));
+        assert!(script.contains("import sqlite3"));
+        assert!(script.contains("state_5.sqlite"));
+        assert!(script.contains("def fetch_sqlite_items(state_path: Path):"));
+        assert!(script.contains("\"indexSource\": \"sqlite\""));
         assert!(script.contains("def is_visible_candidate(item):"));
-        assert!(script.contains("if not is_visible_candidate(candidate):"));
+        assert!(script.contains("disabledReason"));
+        assert!(!script.contains("rglob(\"*.jsonl\")"));
+        assert!(!script.contains("api-router-thread-index-cache-v1.json"));
+        assert!(!script.contains("cacheHitCount"));
     }
 
     #[tokio::test]
@@ -1762,17 +1995,68 @@ mod tests {
         let user_profile = tempfile::tempdir().expect("user profile temp dir");
         let app_data = tempfile::tempdir().expect("app data temp dir");
         let codex_home = user_profile.path().join(".codex");
+        std::fs::create_dir_all(codex_home.join("sessions")).expect("create sessions");
+        write_test_thread_state_db(
+            &codex_home,
+            &[(
+                "thread-main",
+                r"C:\Users\yiyou\.codex\sessions\2026\04\24\rollout-2026-04-24T04-18-55-thread-main.jsonl",
+                r"\\?\C:\Users\yiyou\API-Router",
+                "current api router session",
+                "current api router session",
+                "current api router session",
+                0,
+                1_780_145_810_000,
+                1_780_145_810_957,
+            )],
+        );
+
+        let _user_profile_guard =
+            EnvGuard::set("USERPROFILE", &user_profile.path().to_string_lossy());
+        let _app_data_guard = EnvGuard::set(
+            "API_ROUTER_USER_DATA_DIR",
+            &app_data.path().to_string_lossy(),
+        );
+        let _web_home_guard = EnvGuard::set("API_ROUTER_WEB_CODEX_CODEX_HOME", "");
+        let _codex_home_guard = EnvGuard::set(
+            "CODEX_HOME",
+            &app_data.path().join("codex-home").to_string_lossy(),
+        );
+
+        let items = fetch_windows_threads_from_sessions().expect("windows thread items");
+
+        assert!(items.iter().any(|item| {
+            item.get("id").and_then(Value::as_str) == Some("thread-main")
+                && item.get("preview").and_then(Value::as_str) == Some("current api router session")
+        }));
+        assert!(!items.iter().any(|item| {
+            item.get("path")
+                .and_then(Value::as_str)
+                .is_some_and(|path| {
+                    path.contains("codex-home") || path.contains("sessions\\imported")
+                })
+        }));
+    }
+
+    #[test]
+    fn windows_thread_index_does_not_fallback_to_session_rollout_scan_without_sqlite() {
+        clear_session_file_scan_cache_for_test();
+        clear_history_preview_map_cache_for_test();
+        let _test_guard = codex_app_server::lock_test_globals();
+        let user_profile = tempfile::tempdir().expect("user profile temp dir");
+        let app_data = tempfile::tempdir().expect("app data temp dir");
+        let codex_home = user_profile.path().join(".codex");
         let sessions = codex_home
             .join("sessions")
             .join("2026")
-            .join("04")
-            .join("24");
+            .join("05")
+            .join("30");
         std::fs::create_dir_all(&sessions).expect("create sessions");
         std::fs::write(
-            sessions.join("rollout-2026-04-24T04-18-55-thread-main.jsonl"),
+            sessions.join("rollout-2026-05-30T20-25-34-thread-main.jsonl"),
             concat!(
-                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-main\",\"cwd\":\"C:\\\\Users\\\\yiyou\\\\API-Router\"}}\n",
-                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"current api router session\"}]}}\n"
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-main\",\"cwd\":\"C:\\\\Users\\\\you\\\\API-Router\"}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"should never be scanned for sidebar label\"}]}}\n"
             ),
         )
         .expect("write session");
@@ -1789,19 +2073,176 @@ mod tests {
             &app_data.path().join("codex-home").to_string_lossy(),
         );
 
-        let items = fetch_windows_threads_from_sessions();
+        let items = fetch_windows_threads_from_sessions().expect("windows thread items");
 
-        assert!(items.iter().any(|item| {
-            item.get("id").and_then(Value::as_str) == Some("thread-main")
-                && item.get("preview").and_then(Value::as_str) == Some("current api router session")
-        }));
-        assert!(!items.iter().any(|item| {
-            item.get("path")
-                .and_then(Value::as_str)
-                .is_some_and(|path| {
-                    path.contains("codex-home") || path.contains("sessions\\imported")
-                })
-        }));
+        assert!(
+            items.is_empty(),
+            "sidebar index must not scan rollout files without sqlite"
+        );
+    }
+
+    #[test]
+    fn windows_thread_index_prefers_sqlite_title_over_first_user_message() {
+        clear_session_file_scan_cache_for_test();
+        clear_history_preview_map_cache_for_test();
+        let _test_guard = codex_app_server::lock_test_globals();
+        let user_profile = tempfile::tempdir().expect("user profile temp dir");
+        let app_data = tempfile::tempdir().expect("app data temp dir");
+        let codex_home = user_profile.path().join(".codex");
+        let sessions = codex_home
+            .join("sessions")
+            .join("2026")
+            .join("05")
+            .join("30");
+        std::fs::create_dir_all(&sessions).expect("create sessions");
+        let rollout = sessions.join("rollout-2026-05-30T20-25-34-thread-main.jsonl");
+        std::fs::write(
+            &rollout,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-main\",\"cwd\":\"C:\\\\Users\\\\yiyou\\\\API-Router\"}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"very long first user prompt\"}]}}\n"
+            ),
+        )
+        .expect("write session");
+        write_test_thread_state_db(
+            &codex_home,
+            &[(
+                "thread-main",
+                &rollout.to_string_lossy(),
+                r"\\?\C:\Users\yiyou\API-Router",
+                "Short sqlite title",
+                "Short sqlite title",
+                "very long first user prompt",
+                0,
+                1_780_145_810_000,
+                1_780_145_810_957,
+            )],
+        );
+
+        let _user_profile_guard =
+            EnvGuard::set("USERPROFILE", &user_profile.path().to_string_lossy());
+        let _app_data_guard = EnvGuard::set(
+            "API_ROUTER_USER_DATA_DIR",
+            &app_data.path().to_string_lossy(),
+        );
+        let _web_home_guard = EnvGuard::set("API_ROUTER_WEB_CODEX_CODEX_HOME", "");
+        let _codex_home_guard = EnvGuard::set(
+            "CODEX_HOME",
+            &app_data.path().join("codex-home").to_string_lossy(),
+        );
+
+        let items = fetch_windows_threads_from_sessions().expect("windows thread items");
+        let item = items
+            .iter()
+            .find(|item| item.get("id").and_then(Value::as_str) == Some("thread-main"))
+            .expect("thread item");
+        assert_eq!(
+            item.get("title").and_then(Value::as_str),
+            Some("Short sqlite title")
+        );
+        assert_eq!(
+            item.get("preview").and_then(Value::as_str),
+            Some("Short sqlite title")
+        );
+    }
+
+    #[test]
+    fn windows_thread_index_can_list_sqlite_threads_without_rollout_files() {
+        clear_session_file_scan_cache_for_test();
+        clear_history_preview_map_cache_for_test();
+        let _test_guard = codex_app_server::lock_test_globals();
+        let user_profile = tempfile::tempdir().expect("user profile temp dir");
+        let app_data = tempfile::tempdir().expect("app data temp dir");
+        let codex_home = user_profile.path().join(".codex");
+        std::fs::create_dir_all(codex_home.join("sessions")).expect("create sessions root");
+        write_test_thread_state_db(
+            &codex_home,
+            &[(
+                "thread-sqlite-only",
+                r"C:\Users\yiyou\.codex\sessions\2026\05\30\missing-rollout.jsonl",
+                r"\\?\C:\Users\yiyou\API-Router",
+                "SQLite-only title",
+                "SQLite-only title",
+                "fallback first user message",
+                0,
+                1_780_145_810_000,
+                1_780_145_810_957,
+            )],
+        );
+
+        let _user_profile_guard =
+            EnvGuard::set("USERPROFILE", &user_profile.path().to_string_lossy());
+        let _app_data_guard = EnvGuard::set(
+            "API_ROUTER_USER_DATA_DIR",
+            &app_data.path().to_string_lossy(),
+        );
+        let _web_home_guard = EnvGuard::set("API_ROUTER_WEB_CODEX_CODEX_HOME", "");
+        let _codex_home_guard = EnvGuard::set(
+            "CODEX_HOME",
+            &app_data.path().join("codex-home").to_string_lossy(),
+        );
+
+        let items = fetch_windows_threads_from_sessions().expect("windows thread items");
+        let item = items
+            .iter()
+            .find(|item| item.get("id").and_then(Value::as_str) == Some("thread-sqlite-only"))
+            .expect("sqlite-only thread item");
+        assert_eq!(
+            item.get("title").and_then(Value::as_str),
+            Some("SQLite-only title")
+        );
+        assert_eq!(
+            item.get("path").and_then(Value::as_str),
+            Some(r"C:\Users\yiyou\.codex\sessions\2026\05\30\missing-rollout.jsonl")
+        );
+    }
+
+    #[tokio::test]
+    async fn windows_thread_rebuild_errors_when_sqlite_index_is_invalid() {
+        clear_session_file_scan_cache_for_test();
+        clear_history_preview_map_cache_for_test();
+        let _test_guard = codex_app_server::lock_test_globals();
+        let user_profile = tempfile::tempdir().expect("user profile temp dir");
+        let app_data = tempfile::tempdir().expect("app data temp dir");
+        let codex_home = user_profile.path().join(".codex");
+        std::fs::create_dir_all(&codex_home).expect("create codex home");
+        std::fs::write(codex_home.join("state_5.sqlite"), "not a sqlite database")
+            .expect("write invalid sqlite");
+
+        let _user_profile_guard =
+            EnvGuard::set("USERPROFILE", &user_profile.path().to_string_lossy());
+        let _app_data_guard = EnvGuard::set(
+            "API_ROUTER_USER_DATA_DIR",
+            &app_data.path().to_string_lossy(),
+        );
+        let _web_home_guard = EnvGuard::set("API_ROUTER_WEB_CODEX_CODEX_HOME", "");
+        let _codex_home_guard = EnvGuard::set(
+            "CODEX_HOME",
+            &app_data.path().join("codex-home").to_string_lossy(),
+        );
+
+        codex_app_server::_set_test_request_handler(Some(Arc::new(
+            move |_home, method, _params| match method {
+                "thread/loaded/list" => Ok(serde_json::json!({ "data": [] })),
+                other => Err(format!(
+                    "{other} should not be called while sqlite rebuild is failing"
+                )),
+            },
+        )))
+        .await;
+        let result = rebuild_workspace_thread_items(WorkspaceTarget::Windows).await;
+        codex_app_server::_set_test_request_handler(None).await;
+        let error = match result {
+            Ok(_) => panic!("invalid sqlite should fail rebuild"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error.contains("not a database")
+                || error.contains("file is not a database")
+                || error.contains("malformed"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
@@ -2256,6 +2697,21 @@ mod tests {
         assert!(
             !has_missing_session_rollout_path(&items),
             "status polling should not probe WSL UNC rollout paths synchronously"
+        );
+    }
+
+    #[test]
+    fn missing_rollout_check_trusts_windows_sqlite_index_paths() {
+        let items = vec![json!({
+            "id": "thread-win",
+            "source": "windows-session-index",
+            "workspace": "windows",
+            "path": r"C:\Users\yiyou\.codex\sessions\2026\05\30\missing-rollout.jsonl"
+        })];
+
+        assert!(
+            !has_missing_session_rollout_path(&items),
+            "sqlite-backed Windows rows should not force missing-rollout refreshes"
         );
     }
 

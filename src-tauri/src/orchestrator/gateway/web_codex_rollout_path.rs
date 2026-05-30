@@ -45,6 +45,7 @@ pub(super) fn runtime_path_should_override_existing(
     )
 }
 
+#[cfg(test)]
 pub(super) fn session_candidate_should_replace_existing(
     existing_path: Option<&str>,
     existing_updated_at: i64,
