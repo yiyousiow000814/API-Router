@@ -12,7 +12,15 @@ import {
   resolveRequestPageCached,
   resolveRequestTableSummary,
   resolveSummaryFetchWindow,
+  shouldRefreshRequestOnlyUsageData,
 } from './UsageStatisticsPanel'
+
+describe('shouldRefreshRequestOnlyUsageData', () => {
+  it('keeps request-only refreshes off the analytics entry path', () => {
+    expect(shouldRefreshRequestOnlyUsageData('analytics')).toBe(false)
+    expect(shouldRefreshRequestOnlyUsageData('requests')).toBe(true)
+  })
+})
 
 describe('resolveRequestPageCached', () => {
   const exact = { queryKey: 'exact', rows: [], hasMore: false, usingTestFallback: false }

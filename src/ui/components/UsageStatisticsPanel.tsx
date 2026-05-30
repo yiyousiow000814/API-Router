@@ -396,7 +396,6 @@ export const USAGE_REQUESTS_CANONICAL_QUERY_KEY = buildUsageRequestsQueryKey({
   sessions: null,
 });
 const USAGE_REQUESTS_CACHE_PRIMED_EVENT = "ao:usage-requests-cache-primed";
-const USAGE_REQUESTS_PAGE_PREFETCH_COOLDOWN_MS = 4_000;
 const USAGE_REQUEST_GRAPH_FETCH_HOURS = 24 * 365 * 20;
 const USAGE_REQUEST_GRAPH_BASE_FETCH_ORIGINS = [
   "windows",
@@ -421,6 +420,12 @@ let usageRequestGraphRowsCache: UsageRequestGraphRowsCache | null = null;
 let usageRequestSyntheticRevisionCacheTag: string | null = null;
 let usageRequestGraphLastRefreshAtCache = 0;
 let usageRequestLastMergeAtCache = 0;
+
+export function shouldRefreshRequestOnlyUsageData(
+  detailsTab: UsageDetailsTab,
+): boolean {
+  return detailsTab === "requests";
+}
 
 export function resolveRequestFetchHours(input: {
   effectiveDetailsTab: UsageDetailsTab;
@@ -1800,8 +1805,6 @@ export function UsageStatisticsPanel({
   const usageRequestVirtualRowCountRef = useRef(0);
   const usageRequestWarmupAtRef = useRef(0);
   const usageRequestDefaultTodayAutoPageRef = useRef(false);
-  const usageRequestsPagePrefetchInFlightRef = useRef(false);
-  const usageRequestsPagePrefetchAtRef = useRef(0);
   const usageRequestForceSyntheticProviders = useMemo(
     () => readTestFlagFromLocation(),
     [],
@@ -2041,6 +2044,8 @@ export function UsageStatisticsPanel({
   const effectiveDetailsTab = forceDetailsTab ?? "requests";
   const isRequestsTab = effectiveDetailsTab === "requests";
   const isAnalyticsTab = effectiveDetailsTab === "analytics";
+  const shouldRefreshRequestOnlyData =
+    shouldRefreshRequestOnlyUsageData(effectiveDetailsTab);
   const wasRequestsTabRef = useRef(false);
   const justActivatedRequestsTab = isRequestsTabActivationEdge({
     isRequestsTab,
@@ -2488,80 +2493,6 @@ export function UsageStatisticsPanel({
       markUsageRequestMerged,
     ],
   );
-  const prefetchUsageRequestsPageCache = useCallback(
-    async (limit: number) => {
-      if (usageRequestsPagePrefetchInFlightRef.current) return;
-      const now = Date.now();
-      if (
-        now - usageRequestsPagePrefetchAtRef.current <
-        USAGE_REQUESTS_PAGE_PREFETCH_COOLDOWN_MS
-      )
-        return;
-      const cached =
-        usageRequestsPageCache != null &&
-        usageRequestsPageCache.queryKey === USAGE_REQUESTS_CANONICAL_QUERY_KEY
-          ? usageRequestsPageCache
-          : null;
-      if (cached && cached.rows.length > 0) return;
-      usageRequestsPagePrefetchAtRef.current = now;
-      usageRequestsPagePrefetchInFlightRef.current = true;
-      try {
-        const res = await invoke<UsageRequestEntriesResponse>(
-          "get_usage_request_entries",
-          {
-            ...buildUsageRequestEntriesArgs({
-              hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
-              fromUnixMs: null,
-              toUnixMs: null,
-              nodes: null,
-              providers: null,
-              models: null,
-              origins: null,
-              transports: null,
-              sessions: null,
-              limit,
-              offset: 0,
-            }),
-          },
-        );
-        const nextRows = res.rows ?? [];
-        usageRequestsPageCache = {
-          queryKey: USAGE_REQUESTS_CANONICAL_QUERY_KEY,
-          rows: nextRows,
-          hasMore: Boolean(res.has_more),
-          usingTestFallback: false,
-        };
-        if (nextRows.length > 0) {
-          usageRequestsLastNonEmptyPageCache = {
-            queryKey: USAGE_REQUESTS_CANONICAL_QUERY_KEY,
-            rows: nextRows,
-            hasMore: Boolean(res.has_more),
-            usingTestFallback: false,
-          };
-          primeUsageRequestGraphCacheFromBaseRows(nextRows);
-        }
-        emitUsageRequestsCachePrimed(USAGE_REQUESTS_CANONICAL_QUERY_KEY);
-      } catch {
-        if (usageRequestTestFallbackEnabled) {
-          const nextRows = usageRequestTestRows.slice(0, Math.max(1, limit));
-          usageRequestsPageCache = {
-            queryKey: USAGE_REQUESTS_CANONICAL_QUERY_KEY,
-            rows: nextRows,
-            hasMore: usageRequestTestRows.length > nextRows.length,
-            usingTestFallback: true,
-          };
-          if (nextRows.length > 0) {
-            usageRequestsLastNonEmptyPageCache = usageRequestsPageCache;
-            primeUsageRequestGraphCacheFromBaseRows(nextRows);
-          }
-          emitUsageRequestsCachePrimed(USAGE_REQUESTS_CANONICAL_QUERY_KEY);
-        }
-      } finally {
-        usageRequestsPagePrefetchInFlightRef.current = false;
-      }
-    },
-    [usageRequestTestFallbackEnabled, usageRequestTestRows],
-  );
   const refreshUsageRequestGraphRows = useCallback(async () => {
     if (usageRequestGraphRefreshInFlightRef.current) {
       usageRequestGraphRefreshPendingRef.current = true;
@@ -2884,7 +2815,7 @@ export function UsageStatisticsPanel({
   const initialRefreshLimit = 1000;
 
   useEffect(() => {
-    if (!isRequestsTab && !isAnalyticsTab) return;
+    if (!shouldRefreshRequestOnlyData) return;
     if (
       usageRequestDailyTotalsDays.length === 0 &&
       usageRequestDailyTotalsCache
@@ -2896,9 +2827,8 @@ export function UsageStatisticsPanel({
     }
     void refreshUsageRequestDailyTotals();
   }, [
-    isAnalyticsTab,
-    isRequestsTab,
     refreshUsageRequestDailyTotals,
+    shouldRefreshRequestOnlyData,
     usageRequestDailyTotalsDays.length,
   ]);
 
@@ -2911,11 +2841,6 @@ export function UsageStatisticsPanel({
     requestQueryKey,
     requestDefaultDay,
   ]);
-
-  useEffect(() => {
-    if (!isAnalyticsTab) return;
-    void prefetchUsageRequestsPageCache(initialRefreshLimit);
-  }, [initialRefreshLimit, isAnalyticsTab, prefetchUsageRequestsPageCache]);
 
   useEffect(() => {
     if (!isAnalyticsTab && !isRequestsTab) return;
@@ -3160,7 +3085,7 @@ export function UsageStatisticsPanel({
   ]);
 
   useEffect(() => {
-    if (!isRequestsTab && !isAnalyticsTab) return;
+    if (!shouldRefreshRequestOnlyData) return;
     if (usageActivityUnixMs == null) return;
     const last = usageRequestLastActivityRef.current;
     if (last == null) {
@@ -3170,24 +3095,16 @@ export function UsageStatisticsPanel({
     if (usageActivityUnixMs <= last) return;
     usageRequestLastActivityRef.current = usageActivityUnixMs;
     void refreshUsageRequestDailyTotals();
-    if (isRequestsTab) {
-      void refreshUsageRequestSummary();
-    }
-    if (!isRequestsTab) {
-      void prefetchUsageRequestsPageCache(USAGE_REQUEST_PAGE_SIZE);
-      return;
-    }
+    void refreshUsageRequestSummary();
     void refreshUsageRequestGraphRows();
     void mergeLatestUsageRequests(USAGE_REQUEST_PAGE_SIZE);
   }, [
-    isAnalyticsTab,
-    isRequestsTab,
     usageActivityUnixMs,
     mergeLatestUsageRequests,
-    prefetchUsageRequestsPageCache,
     refreshUsageRequestDailyTotals,
     refreshUsageRequestSummary,
     refreshUsageRequestGraphRows,
+    shouldRefreshRequestOnlyData,
   ]);
 
   const loadMoreUsageRequests = useCallback(async () => {
