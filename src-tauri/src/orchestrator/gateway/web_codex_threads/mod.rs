@@ -2044,7 +2044,7 @@ mod tests {
                 "workspace": "windows",
                 "preview": "stale",
                 "path": "C:\\temp\\definitely-missing-rollout.jsonl",
-                "source": "windows-session-index",
+                "source": "app-server-loaded-thread",
                 "status": { "type": "notLoaded" },
                 "updatedAt": 1742269999
             }),
@@ -2058,7 +2058,7 @@ mod tests {
             );
             assert!(
                 has_missing_session_rollout_path(&bucket.items),
-                "cached missing-rollout hint should force rebuild"
+                "cached missing loaded-thread rollout should force rebuild"
             );
         }
 

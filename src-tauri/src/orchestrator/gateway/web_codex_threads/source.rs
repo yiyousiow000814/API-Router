@@ -93,10 +93,12 @@ pub(super) async fn rebuild_workspace_thread_items(
     target: WorkspaceTarget,
 ) -> Result<ThreadRebuildResult, String> {
     let fetched = match target {
-        WorkspaceTarget::Windows => Ok(ThreadFetchResult {
-            items: fetch_windows_threads_from_sessions(),
-            metrics: None,
-        }),
+        WorkspaceTarget::Windows => {
+            fetch_windows_threads_from_sessions().map(|items| ThreadFetchResult {
+                items,
+                metrics: None,
+            })
+        }
         WorkspaceTarget::Wsl2 => fetch_wsl2_threads_from_sessions().await,
     };
     let ThreadFetchResult { mut items, metrics } = fetched?;
@@ -898,10 +900,10 @@ fn fetch_threads_from_state_sqlite(
     Ok(Some(items))
 }
 
-fn fetch_windows_threads_from_sessions() -> Vec<Value> {
+fn fetch_windows_threads_from_sessions() -> Result<Vec<Value>, String> {
     let codex_dirs = windows_thread_index_codex_dirs();
     if codex_dirs.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let mut items = Vec::new();
     for codex_dir in codex_dirs {
@@ -911,14 +913,14 @@ fn fetch_windows_threads_from_sessions() -> Vec<Value> {
             }
             Ok(None) => {}
             Err(error) => {
-                log::warn!(
+                return Err(format!(
                     "failed to read Windows Codex thread index sqlite at {}: {error}",
                     codex_dir.join("state_5.sqlite").to_string_lossy()
-                );
+                ));
             }
         }
     }
-    items
+    Ok(items)
 }
 
 fn push_unique_path(paths: &mut Vec<PathBuf>, path: Option<PathBuf>) {
@@ -974,6 +976,16 @@ fn parse_wsl_thread_scan_result(text: &str) -> Result<WslThreadScanResult, Strin
                 .and_then(|value| value.as_array().cloned())
                 .ok_or_else(|| "invalid WSL thread scan JSON: missing items array".to_string())?;
             let metrics = obj.remove("metrics");
+            if let Some(sqlite_error) = metrics
+                .as_ref()
+                .and_then(Value::as_object)
+                .and_then(|metrics| metrics.get("sqliteError"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                return Err(format!("WSL sqlite thread index failed: {sqlite_error}"));
+            }
             Ok(WslThreadScanResult { items, metrics })
         }
         _ => Err("invalid WSL thread scan JSON: expected array or object".to_string()),
@@ -1434,7 +1446,7 @@ pub(super) fn has_missing_session_rollout_path(items: &[Value]) -> bool {
         if source == "live-notification" {
             return false;
         }
-        if source == "wsl-session-index" {
+        if matches!(source, "windows-session-index" | "wsl-session-index") {
             return false;
         }
         if !is_session_cache_source
@@ -1687,9 +1699,9 @@ mod tests {
         fetch_windows_threads_from_sessions, fetch_wsl2_threads_from_sessions,
         filter_auxiliary_threads, find_rollout_path_in_items, has_missing_session_rollout_path,
         merge_items_without_duplicates, overlay_loaded_thread_runtime, parse_history_preview_map,
-        parse_wsl_thread_scan_output, scan_session_file, sort_threads_by_updated_desc,
-        thread_item_should_be_visible, wsl_thread_scan_script, ThreadFilterReason,
-        THREADS_MAX_AGE_SECS,
+        parse_wsl_thread_scan_output, parse_wsl_thread_scan_result, rebuild_workspace_thread_items,
+        scan_session_file, sort_threads_by_updated_desc, thread_item_should_be_visible,
+        wsl_thread_scan_script, ThreadFilterReason, THREADS_MAX_AGE_SECS,
     };
     use crate::codex_app_server;
     use crate::orchestrator::gateway::web_codex_home::WorkspaceTarget;
@@ -1918,6 +1930,22 @@ mod tests {
     }
 
     #[test]
+    fn rejects_wsl_thread_scan_output_when_sqlite_probe_failed() {
+        let result = parse_wsl_thread_scan_result(
+            r#"{"items":[],"metrics":{"indexSource":"sqlite","sqliteError":"database is locked"}}"#,
+        );
+        let error = match result {
+            Ok(_) => panic!("sqlite scan error should be treated as rebuild failure"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error.contains("database is locked"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn wsl_thread_scan_script_uses_sqlite_index_only() {
         let script = wsl_thread_scan_script();
 
@@ -1995,7 +2023,7 @@ mod tests {
             &app_data.path().join("codex-home").to_string_lossy(),
         );
 
-        let items = fetch_windows_threads_from_sessions();
+        let items = fetch_windows_threads_from_sessions().expect("windows thread items");
 
         assert!(items.iter().any(|item| {
             item.get("id").and_then(Value::as_str) == Some("thread-main")
@@ -2045,7 +2073,7 @@ mod tests {
             &app_data.path().join("codex-home").to_string_lossy(),
         );
 
-        let items = fetch_windows_threads_from_sessions();
+        let items = fetch_windows_threads_from_sessions().expect("windows thread items");
 
         assert!(
             items.is_empty(),
@@ -2103,7 +2131,7 @@ mod tests {
             &app_data.path().join("codex-home").to_string_lossy(),
         );
 
-        let items = fetch_windows_threads_from_sessions();
+        let items = fetch_windows_threads_from_sessions().expect("windows thread items");
         let item = items
             .iter()
             .find(|item| item.get("id").and_then(Value::as_str) == Some("thread-main"))
@@ -2154,7 +2182,7 @@ mod tests {
             &app_data.path().join("codex-home").to_string_lossy(),
         );
 
-        let items = fetch_windows_threads_from_sessions();
+        let items = fetch_windows_threads_from_sessions().expect("windows thread items");
         let item = items
             .iter()
             .find(|item| item.get("id").and_then(Value::as_str) == Some("thread-sqlite-only"))
@@ -2166,6 +2194,54 @@ mod tests {
         assert_eq!(
             item.get("path").and_then(Value::as_str),
             Some(r"C:\Users\yiyou\.codex\sessions\2026\05\30\missing-rollout.jsonl")
+        );
+    }
+
+    #[tokio::test]
+    async fn windows_thread_rebuild_errors_when_sqlite_index_is_invalid() {
+        clear_session_file_scan_cache_for_test();
+        clear_history_preview_map_cache_for_test();
+        let _test_guard = codex_app_server::lock_test_globals();
+        let user_profile = tempfile::tempdir().expect("user profile temp dir");
+        let app_data = tempfile::tempdir().expect("app data temp dir");
+        let codex_home = user_profile.path().join(".codex");
+        std::fs::create_dir_all(&codex_home).expect("create codex home");
+        std::fs::write(codex_home.join("state_5.sqlite"), "not a sqlite database")
+            .expect("write invalid sqlite");
+
+        let _user_profile_guard =
+            EnvGuard::set("USERPROFILE", &user_profile.path().to_string_lossy());
+        let _app_data_guard = EnvGuard::set(
+            "API_ROUTER_USER_DATA_DIR",
+            &app_data.path().to_string_lossy(),
+        );
+        let _web_home_guard = EnvGuard::set("API_ROUTER_WEB_CODEX_CODEX_HOME", "");
+        let _codex_home_guard = EnvGuard::set(
+            "CODEX_HOME",
+            &app_data.path().join("codex-home").to_string_lossy(),
+        );
+
+        codex_app_server::_set_test_request_handler(Some(Arc::new(
+            move |_home, method, _params| match method {
+                "thread/loaded/list" => Ok(serde_json::json!({ "data": [] })),
+                other => Err(format!(
+                    "{other} should not be called while sqlite rebuild is failing"
+                )),
+            },
+        )))
+        .await;
+        let result = rebuild_workspace_thread_items(WorkspaceTarget::Windows).await;
+        codex_app_server::_set_test_request_handler(None).await;
+        let error = match result {
+            Ok(_) => panic!("invalid sqlite should fail rebuild"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error.contains("not a database")
+                || error.contains("file is not a database")
+                || error.contains("malformed"),
+            "unexpected error: {error}"
         );
     }
 
@@ -2621,6 +2697,21 @@ mod tests {
         assert!(
             !has_missing_session_rollout_path(&items),
             "status polling should not probe WSL UNC rollout paths synchronously"
+        );
+    }
+
+    #[test]
+    fn missing_rollout_check_trusts_windows_sqlite_index_paths() {
+        let items = vec![json!({
+            "id": "thread-win",
+            "source": "windows-session-index",
+            "workspace": "windows",
+            "path": r"C:\Users\yiyou\.codex\sessions\2026\05\30\missing-rollout.jsonl"
+        })];
+
+        assert!(
+            !has_missing_session_rollout_path(&items),
+            "sqlite-backed Windows rows should not force missing-rollout refreshes"
         );
     }
 
